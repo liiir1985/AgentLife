@@ -272,3 +272,4 @@ Skill 应识别设计文档中缺失、冲突或无法确定的内容，避免�
 * [世界系统设计](docs/world-system.md)
 * [人物系统设计](docs/character-system.md)
 * [身体与行动系统设计](docs/body-system.md)
+* [感知系统设计](docs/perception-system.md)
