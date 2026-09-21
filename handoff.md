@@ -18,6 +18,8 @@
 
 总设计及详细设计索引位于 `Readme.md`。具体语义以各详细设计文档为准，本交接只记录阶段结论和后续约束。
 
+实现层面已按 `docs/implementation-roadmap.md` 完成**阶段 0：技术 Spike**（工程入口 + 五组组件验证），结论、风险与阶段 1 硬约束见 `docs/phase-0-spike-report.md`。当前处于阶段 1 起点（内容、配置与规则基础），尚无领域实现。
+
 ## 已有配置生成 Skill 设计内容
 
 新增 `docs/configuration-authoring-skill.md`，覆盖：
@@ -251,4 +253,6 @@ AI 没有提交立即行动时，必须等待可验证外部事件、登记确�
 
 ## 工作区状态
 
-最新一轮新增 `docs/configuration-authoring-skill.md`，并同步修改 `Readme.md`、`handoff.md`、`docs/configuration-rule-infrastructure.md`、`docs/character-system.md`、`docs/body-system.md`、`docs/perception-system.md`、`docs/cognition-system.md` 和 `docs/memory-system.md`。未实现实际 Skill、结构化资料编辑工具或配置审阅及应用系统；第三方行为树内部设计不属于 AgentLife。当前没有 Git 提交要求。
+设计阶段新增 `docs/configuration-authoring-skill.md`，并同步修改 `Readme.md`、`handoff.md`、`docs/configuration-rule-infrastructure.md`、`docs/character-system.md`、`docs/body-system.md`、`docs/perception-system.md`、`docs/cognition-system.md` 和 `docs/memory-system.md`。未实现实际 Skill、结构化资料编辑工具或配置审阅及应用系统；第三方行为树内部设计不属于 AgentLife。
+
+随后按 `docs/implementation-roadmap.md` 的**阶段 0：技术 Spike** 建立了工程入口（Node 24 + ESM + pnpm + Vitest + 严格 TS，依赖精确锁定并提交 lockfile），五组 Spike 的适配器与测试位于 `src/{agent,content,storage,behavior,tui}` 与 `tests`，结论、风险和阶段 1 硬约束记录在 `docs/phase-0-spike-report.md`。阶段 0 已判定完成（自动测试 59 passed | 1 skipped，`pnpm phase0:verify` 全绿，Windows Terminal 人工清单全部通过）：Mistreevous **受限接受**，Drizzle node-sqlite RC 线接受，TUI 保留 Pi TUI、不启用 Web 回退。下一步是阶段 1（内容、配置与规则基础）；进入阶段 1 前先读 `docs/phase-0-spike-report.md` 的 §7 硬约束汇总。

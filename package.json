@@ -1,0 +1,38 @@
+{
+  "name": "agent-life",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.19.0",
+  "engines": {
+    "node": ">=24.14.0"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "check:format": "prettier --check .",
+    "spike:agent": "vitest run tests/agent-runtime-probe.test.ts",
+    "spike:tui": "vitest run tests/tui-spike.test.ts",
+    "spike:content": "vitest run tests/content-pack-loader.test.ts",
+    "spike:storage": "vitest run tests/runtime-store-probe.test.ts",
+    "spike:behavior": "vitest run tests/behavior-tree-adapter.test.ts",
+    "tui:manual": "tsx src/tui/manual-spike.ts",
+    "phase0:verify": "tsc --noEmit && prettier --check . && vitest run"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.86.1",
+    "@earendil-works/pi-ai": "0.86.1",
+    "@earendil-works/pi-tui": "0.86.1",
+    "drizzle-orm": "1.0.0-rc.4",
+    "mistreevous": "4.3.1",
+    "typebox": "1.3.34",
+    "yaml": "2.9.1"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.2",
+    "prettier": "3.9.8",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "vitest": "5.0.1"
+  }
+}

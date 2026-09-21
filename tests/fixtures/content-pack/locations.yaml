@@ -1,0 +1,4 @@
+locations:
+  - id: plaza
+    name: Plaza
+    detail: plaza.md
