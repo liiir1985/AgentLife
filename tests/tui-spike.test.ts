@@ -164,6 +164,34 @@ describe("SpikeApp log viewport", () => {
     expect(visible("新的一行")).toBe(true);
   });
 
+  it("scrolls the log with the arrow keys the terminal sends for the wheel", () => {
+    // Windows Terminal's alternate-scroll mode (default since 1.20) turns the wheel into
+    // Up/Down while the app holds the alternate screen without capturing the mouse.
+    const harness = startSpike(80, 24);
+    for (let index = 0; index < 120; index += 1) harness.app.appendLog(`日志 ${index}`);
+    harness.app.render();
+    const followingTop = harness.app.tui.viewportTop;
+
+    harness.terminal.sendInput("\x1b[A");
+    harness.app.render();
+    expect(harness.app.tui.isFollowingOutput).toBe(false);
+    expect(harness.app.tui.viewportTop).toBe(followingTop - 1);
+
+    harness.terminal.sendInput("\x1bOA");
+    harness.app.render();
+    expect(harness.app.tui.viewportTop).toBe(followingTop - 2);
+
+    harness.terminal.sendInput("\x1bOB");
+    harness.app.render();
+    expect(harness.app.tui.viewportTop).toBe(followingTop - 1);
+
+    // The arrows never leak into the line, and typing still reaches it.
+    expect(harness.app.inputField.getValue()).toBe("");
+    harness.terminal.sendInput("abc");
+    expect(harness.app.inputField.getValue()).toBe("abc");
+    expect(harness.app.tui.viewportTop).toBe(followingTop - 1);
+  });
+
   it("scrolls the log with the mouse wheel", () => {
     const harness = startSpike(80, 24);
     for (let index = 0; index < 120; index += 1) harness.app.appendLog(`日志 ${index}`);

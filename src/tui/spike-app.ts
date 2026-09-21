@@ -90,10 +90,18 @@ export class SpikeApp {
     // Home/End belong to the focused input line (readline habit); the transcript keeps
     // Ctrl+Home/Ctrl+End. Without this the alt screen's listener — registered before the
     // app's — swallows Home/End for "scroll to top/bottom" and the caret never moves.
+    //
+    // Windows Terminal's alternate-scroll mode (on by default since 1.20) turns the wheel
+    // into Up/Down while the app holds the alternate screen and does *not* capture the
+    // mouse, so binding bare arrows to the one-line scroll is what makes the wheel work
+    // in the default, terminal-owned-mouse mode. A single-line input has no use for bare
+    // vertical arrows; phase 1 must give prompt history priority once it exists.
     setKeybindings(
       new KeybindingsManager(TUI_KEYBINDINGS, {
         "tui.altScreen.top": ["ctrl+home"],
         "tui.altScreen.bottom": ["ctrl+end"],
+        "tui.altScreen.lineUp": ["up"],
+        "tui.altScreen.lineDown": ["down"],
       }),
     );
     this.readClipboard = options.readClipboard ?? (() => getNativeClipboard()?.getText() ?? Promise.resolve(undefined));

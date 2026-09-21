@@ -29,11 +29,13 @@ import { SpikeApp } from "./spike-app.js";
  *     (Backspace) and the card must disappear with it — nothing from the paste is submitted.
  *  4. Home/End must move the input caret to line start/end (Ctrl+A / Ctrl+E also work);
  *     Ctrl+Home / Ctrl+End jump the transcript to top/bottom, PageUp/PageDown page it.
- *  5. Scroll the log with PageUp/PageDown; a scrollbar appears, follow stops while scrolled
- *     back, and resumes when scrolled back to the end. The header and the input bar must
- *     stay visible the whole time. The wheel is the terminal's while the app does not
- *     capture the mouse: record what the wheel does without `--mouse` (scrollback, arrow
- *     keys, or nothing), then confirm it scrolls the log with `--mouse`.
+ *  5. Scroll the log with PageUp/PageDown and with the mouse wheel; a scrollbar appears,
+ *     follow stops while scrolled back, and resumes when scrolled back to the end. The
+ *     header and the input bar must stay visible the whole time. The wheel works in both
+ *     modes by different routes: without `--mouse` Windows Terminal's alternate-scroll
+ *     mode (on by default since 1.20) sends Up/Down for each notch, which this app maps to
+ *     the one-line scroll; with `--mouse` the wheel arrives as an SGR wheel event. Record
+ *     which route the terminal actually used if the wheel does not move the log.
  *  6. Resize across 120 columns (drag the window border, or Ctrl+scroll to change the font
  *     size); the side-by-side panes must turn into tabs below 120 columns. Open F2 to read
  *     the live column count and layout from the monitor pane.
@@ -45,7 +47,9 @@ import { SpikeApp } from "./spike-app.js";
  * Selection, mouse mode:
  *  - Without `--mouse` the terminal owns the mouse: drag-select, right-click paste and
  *    clearing the selection are Windows Terminal's own, exactly as in OMP (its `tui.mouse`
- *    defaults to false) — no app highlight is left behind.
+ *    defaults to false) — no app highlight is left behind. The app receives no mouse event
+ *    at all, so there is no hover or click-to-place caret; the wheel still scrolls the log
+ *    because the terminal forwards it as arrow keys (see item 5).
  *  - With `--mouse` the app owns selection and scrolls the log with the wheel. Then native
  *    selection moves to Shift+drag, a left click in the log clears the app's highlight, and
  *    a release copies the selection ("Copied") because `copyOnSelect` defaults to true.
@@ -92,10 +96,10 @@ app.model.setLocation("中央广场", [
   { id: "npc-2", name: "商人", detail: "整理货物" },
 ]);
 app.appendLog(
-  `提示：F2 监视 · Tab 切换标签 · PageUp/PageDown 滚动 · 多行粘贴生成 [粘贴 #N] 标记 · Esc 取消流式 · Ctrl+R 重播 · Ctrl+C 退出 · 鼠标：${
+  `提示：F2 监视 · Tab 切换标签 · PageUp/PageDown 或滚轮滚动 · 多行粘贴生成 [粘贴 #N] 标记 · Esc 取消流式 · Ctrl+R 重播 · Ctrl+C 退出 · 鼠标：${
     process.argv.includes("--mouse")
-      ? "应用捕获（Shift+拖拽为终端框选）"
-      : "终端原生（框选/右键由 Windows Terminal 处理）"
+      ? "应用捕获（滚轮走 SGR；原生框选需 Shift+拖拽）"
+      : "终端原生（框选/右键由 Windows Terminal 处理，滚轮由终端转成方向键）"
   }`,
 );
 
