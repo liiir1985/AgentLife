@@ -330,3 +330,4 @@ Skill 只生产结构化候选和诊断，不负责持久化、用户审阅、�
 * [记忆系统设计](docs/memory-system.md)
 * [时间与整体调度系统设计](docs/time-orchestration-system.md)
 * [配置生成 Skill 设计](docs/configuration-authoring-skill.md)
+* [第一版实现步骤规划](docs/implementation-roadmap.md)
