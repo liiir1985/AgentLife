@@ -1,56 +1,56 @@
-import { compileConfiguration, type CompiledRuntimeConfig } from "./compile.js";
-import { ExtensionCapabilities } from "./capabilities.js";
-import { error, DiagnosticBag, type Diagnostic } from "./diagnostics.js";
-import { ExtensionRegistry, type DomainExtension, type RegistrationResult } from "./extension.js";
+import { buildConfig, type RuntimeConfig } from "./config-builder.js";
+import { SystemIndex } from "./system-index.js";
+import { error, IssueList, type ConfigIssue } from "./diagnostics.js";
+import { SystemCatalog, type SystemSpec, type LoadResult } from "./system-spec.js";
 import { PackSet } from "./packs.js";
-import { resolveDefinitions } from "./resolve.js";
-import { parseSourcePack, type SourceManifest, type SourcePack } from "./source.js";
-import { validateConfiguration } from "./validate.js";
-import { evaluate, type EvaluationRequest, type EvaluationResult } from "./evaluate.js";
+import { mergeItems } from "./config-merge.js";
+import { parsePack, type PackManifest, type ParsedPack } from "./source.js";
+import { checkConfig } from "./config-checker.js";
+import { runRules, type RuleRequest, type RuleResult } from "./rule-engine.js";
 import type { ContentPackSnapshot } from "../content/content-pack-loader.js";
 
-export interface ContentPackInput {
+export interface PackInput {
   /** Root-relative path of every participating file. */
   readonly files: readonly { readonly path: string; readonly document: unknown; readonly text?: string }[];
   readonly manifest: unknown;
   /** Human-readable label used in diagnostics. */
   readonly label: string;
-  /** Content identity of the pack, part of the runtime config identity. */
-  readonly identity: string;
+  /** Content identity of the pack, part of the runtime config id. */
+  readonly contentId: string;
 }
 
-export interface ConfigurationInput {
-  readonly root: ContentPackInput;
-  readonly dependencies?: readonly ContentPackInput[];
+export interface ConfigInput {
+  readonly root: PackInput;
+  readonly dependencies?: readonly PackInput[];
 }
 
-export type ApplyStatus = "valid" | "rejected" | "config-unavailable";
+export type PublishStatus = "valid" | "rejected" | "config-unavailable";
 
-export interface ApplyResult {
-  readonly status: ApplyStatus;
-  readonly diagnostics: readonly Diagnostic[];
-  readonly config?: CompiledRuntimeConfig;
+export interface PublishResult {
+  readonly status: PublishStatus;
+  readonly diagnostics: readonly ConfigIssue[];
+  readonly config?: RuntimeConfig;
 }
 
 export interface RestoreResult {
   readonly status: "valid" | "config-unavailable";
-  readonly diagnostics: readonly Diagnostic[];
-  readonly config?: CompiledRuntimeConfig;
+  readonly diagnostics: readonly ConfigIssue[];
+  readonly config?: RuntimeConfig;
 }
 
 /** Port used by the registry to persist a committed runtime config version. */
-export interface ConfigPersistence {
-  saveRuntimeConfig(config: {
-    readonly identity: string;
+export interface ConfigStore {
+  saveConfig(config: {
+    readonly configId: string;
     readonly namespace: string;
     readonly packVersion: string;
     readonly document: unknown;
   }): "committed" | "duplicate";
-  currentRuntimeConfig(): { readonly identity: string; readonly document: unknown } | undefined;
-  configDocument(identity: string): unknown | undefined;
+  currentConfig(): { readonly configId: string; readonly document: unknown } | undefined;
+  loadConfig(configId: string): unknown | undefined;
 }
 
-function manifestLabel(input: ContentPackInput): string {
+function manifestLabel(input: PackInput): string {
   const manifest = input.manifest;
   if (typeof manifest === "object" && manifest !== null) {
     const namespace: unknown = Reflect.get(manifest, "namespace") ?? Reflect.get(manifest, "pack");
@@ -59,9 +59,9 @@ function manifestLabel(input: ContentPackInput): string {
   return input.label;
 }
 
-function toSourcePack(input: ContentPackInput, bag: DiagnosticBag): SourcePack | undefined {
+function toParsedPack(input: PackInput, bag: IssueList): ParsedPack | undefined {
   const label = manifestLabel(input);
-  const pack = parseSourcePack(
+  const pack = parsePack(
     input.manifest,
     input.files,
     (relativePath, message) => {
@@ -72,7 +72,7 @@ function toSourcePack(input: ContentPackInput, bag: DiagnosticBag): SourcePack |
         }),
       );
     },
-    input.identity,
+    input.contentId,
     (target) => input.files.find((file) => file.path === target)?.text,
   );
   return pack;
@@ -86,10 +86,10 @@ function toSourcePack(input: ContentPackInput, bag: DiagnosticBag): SourcePack |
  * untouched. A successful update commits the new version to the store and only
  * then becomes observable, so no caller can observe a partial update.
  */
-export function contentPackInput(snapshot: ContentPackSnapshot): ContentPackInput {
+export function packInput(snapshot: ContentPackSnapshot): PackInput {
   return {
     label: snapshot.root,
-    identity: snapshot.identity,
+    contentId: snapshot.identity,
     manifest: snapshot.manifest,
     files: snapshot.files.map((file) => ({
       path: file.path,
@@ -99,70 +99,70 @@ export function contentPackInput(snapshot: ContentPackSnapshot): ContentPackInpu
   };
 }
 
-export class ConfigurationRegistry {
-  private readonly extensions: ExtensionRegistry;
-  private cachedCapabilities: ExtensionCapabilities | undefined;
-  private currentConfig: CompiledRuntimeConfig | undefined;
+export class CoreRuntime {
+  private readonly systems: SystemCatalog;
+  private cachedIndex: SystemIndex | undefined;
+  private currentConfig: RuntimeConfig | undefined;
 
   constructor(
-    extensions: ExtensionRegistry = new ExtensionRegistry(),
-    private readonly persistence?: ConfigPersistence,
+    systems: SystemCatalog = new SystemCatalog(),
+    private readonly store?: ConfigStore,
   ) {
-    this.extensions = extensions;
+    this.systems = systems;
   }
 
-  registerExtension(extension: DomainExtension): RegistrationResult {
-    const result = this.extensions.register(extension);
-    if (result.status === "registered") this.cachedCapabilities = undefined;
+  addSystem(system: SystemSpec): LoadResult {
+    const result = this.systems.add(system);
+    if (result.status === "registered") this.cachedIndex = undefined;
     return result;
   }
 
-  capabilities(): ExtensionCapabilities {
-    this.cachedCapabilities ??= new ExtensionCapabilities(this.extensions);
-    return this.cachedCapabilities;
+  systemIndex(): SystemIndex {
+    this.cachedIndex ??= new SystemIndex(this.systems);
+    return this.cachedIndex;
   }
 
-  extensionRegistry(): ExtensionRegistry {
-    return this.extensions;
+  systemCatalog(): SystemCatalog {
+    return this.systems;
   }
 
   /** The single runtime config version visible to evaluation. */
-  current(): CompiledRuntimeConfig | undefined {
+  current(): RuntimeConfig | undefined {
     return this.currentConfig;
   }
 
-  apply(input: ConfigurationInput): ApplyResult {
-    const bag = new DiagnosticBag();
-    const root = toSourcePack(input.root, bag);
-    const dependencies: SourcePack[] = [];
+  publish(input: ConfigInput): PublishResult {
+    const bag = new IssueList();
+    const root = toParsedPack(input.root, bag);
+    const dependencies: ParsedPack[] = [];
     for (const dependency of input.dependencies ?? []) {
-      const parsed = toSourcePack(dependency, bag);
+      const parsed = toParsedPack(dependency, bag);
       if (parsed !== undefined) dependencies.push(parsed);
     }
     if (root === undefined || bag.hasErrors) return { status: "rejected", diagnostics: bag.all };
-    const built = this.buildFromPacks(root, dependencies, bag);
+    const built = this.buildPacks(root, dependencies, bag);
     if (built === undefined) return { status: "rejected", diagnostics: bag.all };
 
     const namespace = root.manifest.namespace;
     const packVersion = root.manifest.version;
-    if (this.persistence !== undefined) {
+    if (this.store !== undefined) {
       try {
-        this.persistence.saveRuntimeConfig({
-          identity: built.identity,
+        this.store.saveConfig({
+          configId: built.configId,
           namespace,
           packVersion,
-          document: built.sourceDocument,
+          document: built.sourceData,
         });
       } catch (failure) {
         // A hard failure after the commit means the version is durable but the
         // acknowledgement was lost; the durable state decides, never the caller.
-        const durable = this.persistence.currentRuntimeConfig();
-        if (durable?.identity !== built.identity) {
+        const durable = this.store.currentConfig();
+        if (durable?.configId !== built.configId) {
           bag.add(
             error(
               "compatibility",
               "config-unavailable",
-              `Runtime config ${built.identity} could not be persisted: ${
+              `Runtime config ${built.configId} could not be persisted: ${
                 failure instanceof Error ? failure.message : String(failure)
               }`,
             ),
@@ -177,10 +177,10 @@ export class ConfigurationRegistry {
 
   /**
    * Rebuilds a stored runtime config version and checks that it still compiles
-   * to the same identity. A restore never silently substitutes another version.
+   * to the same configId. A restore never silently substitutes another version.
    */
-  restore(identity: string): RestoreResult {
-    const document = this.persistence?.configDocument(identity);
+  restore(configId: string): RestoreResult {
+    const document = this.store?.loadConfig(configId);
     if (document === undefined)
       return {
         status: "config-unavailable",
@@ -188,7 +188,7 @@ export class ConfigurationRegistry {
           error(
             "compatibility",
             "config-unavailable",
-            `Runtime config version ${identity} is not available for restore`,
+            `Runtime config version ${configId} is not available for restore`,
           ),
         ],
       };
@@ -197,20 +197,20 @@ export class ConfigurationRegistry {
       return {
         status: "config-unavailable",
         diagnostics: [
-          error("compatibility", "config-unavailable", `Stored runtime config ${identity} is not readable`),
+          error("compatibility", "config-unavailable", `Stored runtime config ${configId} is not readable`),
         ],
       };
-    const bag = new DiagnosticBag();
-    const built = this.buildFromPacks(parsed.root, parsed.dependencies, bag);
+    const bag = new IssueList();
+    const built = this.buildPacks(parsed.root, parsed.dependencies, bag);
     if (built === undefined) return { status: "config-unavailable", diagnostics: bag.all };
-    if (built.identity !== identity) {
+    if (built.configId !== configId) {
       return {
         status: "config-unavailable",
         diagnostics: [
           error(
             "compatibility",
             "config-unavailable",
-            `Restored content compiles to ${built.identity}, but the saved state refers to ${identity}`,
+            `Restored content compiles to ${built.configId}, but the saved state refers to ${configId}`,
           ),
         ],
       };
@@ -219,56 +219,54 @@ export class ConfigurationRegistry {
   }
 
   /** Evaluates against the current runtime config version. */
-  evaluate(request: EvaluationRequest): EvaluationResult {
+  runRules(request: RuleRequest): RuleResult {
     if (this.currentConfig === undefined)
       return {
         status: "config-unavailable",
-        configIdentity: "",
+        configId: "",
+        stateChanges: [],
+        processChanges: [],
         trace: {
-          requestId: request.requestId,
+          runId: request.runId,
           trigger: request.trigger,
-          configIdentity: "",
-          stateVersion: request.snapshot.stateVersion,
-          simulationTime: request.snapshot.simulationTime,
-          indexed: [],
-          notIndexed: [],
+          configId: "",
+          stateVersion: request.input.stateVersion,
+          simTime: request.input.simTime,
+          selectedRules: [],
+          skippedRules: [],
           rules: [],
-          compositions: [],
-          candidates: [],
-          processOperations: [],
+          combines: [],
+          stateChanges: [],
+          processChanges: [],
         },
       };
-    return evaluate(this.currentConfig, request);
+    return runRules(this.currentConfig, request);
   }
 
-  private buildFromPacks(
-    root: SourcePack,
-    dependencies: readonly SourcePack[],
-    bag: DiagnosticBag,
-  ): CompiledRuntimeConfig | undefined {
-    bag.addAll(this.extensions.finalize());
+  private buildPacks(root: ParsedPack, dependencies: readonly ParsedPack[], bag: IssueList): RuntimeConfig | undefined {
+    bag.addAll(this.systems.finalize());
     const packs = PackSet.build(root, dependencies, bag);
     if (bag.hasErrors) return undefined;
-    const definitions = resolveDefinitions(packs, this.extensions, bag);
+    const items = mergeItems(packs, this.systems, bag);
     if (bag.hasErrors) return undefined;
-    const validated = validateConfiguration(packs, this.capabilities(), definitions, bag);
+    const validated = checkConfig(packs, this.systemIndex(), items, bag);
     if (validated === undefined) return undefined;
-    return compileConfiguration(validated);
+    return buildConfig(validated);
   }
 }
 
 /** Reads back the already-parsed manifest of a stored runtime config document. */
-function readStoredManifest(value: unknown): SourceManifest | undefined {
+function readStoredManifest(value: unknown): PackManifest | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const namespace: unknown = Reflect.get(value, "namespace");
   const version: unknown = Reflect.get(value, "version");
   const kernel: unknown = Reflect.get(value, "kernel");
   const dependencies: unknown = Reflect.get(value, "dependencies");
-  const extensions: unknown = Reflect.get(value, "extensions");
+  const systems: unknown = Reflect.get(value, "systems");
   const sections: unknown = Reflect.get(value, "sections");
   if (typeof namespace !== "string" || typeof version !== "string" || typeof kernel !== "string") return undefined;
   if (!Array.isArray(dependencies) || dependencies.some((item) => typeof item !== "string")) return undefined;
-  if (!Array.isArray(extensions) || extensions.some((item) => typeof item !== "string")) return undefined;
+  if (!Array.isArray(systems) || systems.some((item) => typeof item !== "string")) return undefined;
   if (typeof sections !== "object" || sections === null) return undefined;
   const parsedSections: Record<string, string> = {};
   for (const [directory, typeRef] of Object.entries(sections)) {
@@ -280,14 +278,14 @@ function readStoredManifest(value: unknown): SourceManifest | undefined {
     version,
     kernel,
     dependencies: dependencies as readonly string[],
-    extensions: extensions as readonly string[],
+    systems: systems as readonly string[],
     sections: parsedSections,
   };
 }
 
 interface StoredDocument {
-  readonly root: SourcePack;
-  readonly dependencies: readonly SourcePack[];
+  readonly root: ParsedPack;
+  readonly dependencies: readonly ParsedPack[];
 }
 
 function readStoredDocument(document: unknown): StoredDocument | undefined {
@@ -297,23 +295,23 @@ function readStoredDocument(document: unknown): StoredDocument | undefined {
   const parsed = packs.map((entry) => {
     if (typeof entry !== "object" || entry === null) return undefined;
     const manifest: unknown = Reflect.get(entry, "manifest");
-    const definitions: unknown = Reflect.get(entry, "definitions");
+    const items: unknown = Reflect.get(entry, "items");
     const rules: unknown = Reflect.get(entry, "rules");
-    const derivations: unknown = Reflect.get(entry, "derivations");
-    if (!Array.isArray(definitions) || !Array.isArray(rules) || !Array.isArray(derivations)) return undefined;
-    const contentIdentity: unknown = Reflect.get(entry, "identity");
+    const formulas: unknown = Reflect.get(entry, "formulas");
+    if (!Array.isArray(items) || !Array.isArray(rules) || !Array.isArray(formulas)) return undefined;
+    const contentId: unknown = Reflect.get(entry, "contentId");
     const storedManifest = readStoredManifest(manifest);
     if (storedManifest === undefined) return undefined;
     return {
       manifest: storedManifest,
-      identity: typeof contentIdentity === "string" ? contentIdentity : "",
-      definitions: definitions as SourcePack["definitions"],
-      rules: rules as SourcePack["rules"],
-      derivations: derivations as SourcePack["derivations"],
-    } satisfies SourcePack;
+      contentId: typeof contentId === "string" ? contentId : "",
+      items: items as ParsedPack["items"],
+      rules: rules as ParsedPack["rules"],
+      formulas: formulas as ParsedPack["formulas"],
+    } satisfies ParsedPack;
   });
   if (parsed.some((entry) => entry === undefined)) return undefined;
-  const stored = parsed as readonly SourcePack[];
+  const stored = parsed as readonly ParsedPack[];
   const rootIndex = packs.findIndex((entry) => Reflect.get(entry as object, "root") === true);
   const root = stored[rootIndex === -1 ? 0 : rootIndex];
   if (root === undefined) return undefined;

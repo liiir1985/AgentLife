@@ -7,10 +7,10 @@
  */
 
 /** The seven validation stages of the shared pipeline, in execution order. */
-export type ValidationStage =
-  "structure" | "reference" | "dependency" | "composition" | "permission" | "domain" | "compatibility";
+export type CheckStage =
+  "structure" | "reference" | "dependency" | "combine" | "permission" | "system" | "compatibility";
 
-export type DiagnosticCode =
+export type IssueCode =
   | "structure-invalid"
   | "unknown-reference"
   | "reference-type-mismatch"
@@ -20,21 +20,21 @@ export type DiagnosticCode =
   | "unit-mismatch"
   | "unused-read"
   | "field-not-overridable"
-  | "missing-composition"
-  | "composition-not-allowed"
+  | "missing-combine"
+  | "combine-not-allowed"
   | "incompatible-output-type"
   | "invalid-value"
   | "multiple-writers"
   | "unauthorized-read"
-  | "unauthorized-effect"
+  | "unauthorized-change"
   | "unknown-trigger"
-  | "domain-rejected"
+  | "system-rejected"
   | "unsupported-semantics"
   | "identity-conflict"
-  | "incompatible-extension"
+  | "incompatible-system"
   | "config-unavailable";
 
-export interface DiagnosticSource {
+export interface FileLocation {
   /** Content pack namespace the document came from. */
   readonly pack: string;
   /** Root-relative path inside the pack. */
@@ -43,49 +43,49 @@ export interface DiagnosticSource {
   readonly path?: string;
 }
 
-export interface Diagnostic {
+export interface ConfigIssue {
   readonly severity: "error" | "warning";
-  readonly stage: ValidationStage;
-  readonly code: DiagnosticCode;
+  readonly stage: CheckStage;
+  readonly code: IssueCode;
   readonly message: string;
   /** Qualified identity of the subject the failure belongs to. */
   readonly subject?: string;
-  readonly source?: DiagnosticSource;
+  readonly source?: FileLocation;
 }
 
-export function error(stage: ValidationStage, code: DiagnosticCode, message: string): Diagnostic;
+export function error(stage: CheckStage, code: IssueCode, message: string): ConfigIssue;
 export function error(
-  stage: ValidationStage,
-  code: DiagnosticCode,
+  stage: CheckStage,
+  code: IssueCode,
   message: string,
-  extra: { readonly subject?: string; readonly source?: DiagnosticSource },
-): Diagnostic;
+  extra: { readonly subject?: string; readonly source?: FileLocation },
+): ConfigIssue;
 export function error(
-  stage: ValidationStage,
-  code: DiagnosticCode,
+  stage: CheckStage,
+  code: IssueCode,
   message: string,
-  extra?: { readonly subject?: string; readonly source?: DiagnosticSource },
-): Diagnostic {
+  extra?: { readonly subject?: string; readonly source?: FileLocation },
+): ConfigIssue {
   return { severity: "error", stage, code, message, ...extra };
 }
 
-export function warning(stage: ValidationStage, code: DiagnosticCode, message: string): Diagnostic {
+export function warning(stage: CheckStage, code: IssueCode, message: string): ConfigIssue {
   return { severity: "warning", stage, code, message };
 }
 
 /** Accumulates diagnostics so a single run reports every failure it can reach. */
-export class DiagnosticBag {
-  private readonly entries: Diagnostic[] = [];
+export class IssueList {
+  private readonly entries: ConfigIssue[] = [];
 
-  add(diagnostic: Diagnostic): void {
+  add(diagnostic: ConfigIssue): void {
     this.entries.push(diagnostic);
   }
 
-  addAll(diagnostics: readonly Diagnostic[]): void {
+  addAll(diagnostics: readonly ConfigIssue[]): void {
     this.entries.push(...diagnostics);
   }
 
-  get all(): readonly Diagnostic[] {
+  get all(): readonly ConfigIssue[] {
     return this.entries;
   }
 
@@ -94,7 +94,7 @@ export class DiagnosticBag {
   }
 
   /** Runs a structural parse, converting a thrown failure into a diagnostic. */
-  guard<T>(run: () => T, onError: (message: string) => Diagnostic): T | undefined {
+  guard<T>(run: () => T, onError: (message: string) => ConfigIssue): T | undefined {
     try {
       return run();
     } catch (failure) {
@@ -106,9 +106,9 @@ export class DiagnosticBag {
 
 /** Thrown by the stages that cannot continue (parsing, compilation) . */
 export class ConfigError extends Error {
-  readonly diagnostic: Diagnostic;
+  readonly diagnostic: ConfigIssue;
 
-  constructor(diagnostic: Diagnostic) {
+  constructor(diagnostic: ConfigIssue) {
     super(diagnostic.message);
     this.diagnostic = diagnostic;
   }
@@ -120,14 +120,14 @@ export class ConfigError extends Error {
  */
 export type ResultStatus =
   | "valid"
-  | "candidates"
+  | "changes"
   | "condition-false"
   | "no-match"
   | "input-invalid"
   | "conflict"
   | "state-version-stale"
   | "config-unavailable"
-  | "domain-rejected"
+  | "system-rejected"
   | "inexpressible";
 
 /**
@@ -144,7 +144,7 @@ export const STATUS_PRECEDENCE: readonly ResultStatus[] = [
   "input-invalid",
   "inexpressible",
   "conflict",
-  "candidates",
+  "changes",
   "condition-false",
   "no-match",
 ];

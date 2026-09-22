@@ -177,7 +177,7 @@ embedding 记录至少包含记忆 ID、提供器、模型、表示版本、维�
 第一版按以下模块组织：
 
 * `ContentPackLoader`：加载 YAML/Markdown、限制引用范围并计算内容身份。
-* `ConfigurationRegistry`：共享验证、领域验证、编译和原子配置切换。
+* `CoreRuntime`：共享验证、领域验证、编译和原子配置切换。
 * `DeterministicRuleKernel`：受限条件、映射、组合、索引和追踪。
 * `WorldService`：地点、实体、物品、过程、客观事实和事件。
 * `CharacterService`：能力层级、控制来源、主要标记和子系统关联。

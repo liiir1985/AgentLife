@@ -1,31 +1,30 @@
 kind: rule
 id: lamp-stimulus
-domain: agentlife.body/extension
+system: agentlife.body
 triggers:
   - agentlife.body/tick-elapsed
-reads:
-  - alias: lamp
-    view: agentlife.world/environment
-    field: lamp-state
+inputs:
+  - name: lamp
+    state: agentlife.world/environment.lamp-state
 condition:
   op: compare
   left:
     kind: read
-    alias: lamp
+    name: lamp
   right:
     kind: literal
     value: 1
     unit: state
   operator: eq
-effects:
-  - target: agentlife.body/values.wakefulness
-    composition: priority
+changes:
+  - state: agentlife.body/values.wakefulness
+    combine: priority
     priority: 5
     value:
       kind: map
       input:
         kind: read
-        alias: lamp
+        name: lamp
       mapping:
         kind: threshold
         inputUnit: state

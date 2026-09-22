@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { ContentPackLoader } from "../content/content-pack-loader.js";
-import { createDomainExtensions } from "../domains/index.js";
-import { ConfigurationRegistry, contentPackInput, type ApplyResult } from "./registry.js";
+import { createSystemSpecs } from "../systems/index.js";
+import { CoreRuntime, packInput, type PublishResult } from "./core-runtime.js";
 
 /**
  * Readable evidence for the stage 1 exit condition: the demo pack builds one
@@ -48,28 +48,28 @@ interface Run {
 }
 
 async function run(): Promise<Run> {
-  const registry = new ConfigurationRegistry();
-  for (const extension of createDomainExtensions()) {
-    const registration = registry.registerExtension(extension);
+  const registry = new CoreRuntime();
+  for (const system of createSystemSpecs()) {
+    const registration = registry.addSystem(system);
     if (registration.status !== "registered")
-      throw new Error(`Extension ${extension.namespace} did not register: ${JSON.stringify(registration.diagnostics)}`);
+      throw new Error(`System ${system.namespace} did not load: ${JSON.stringify(registration.diagnostics)}`);
   }
   const snapshot = await new ContentPackLoader().load(DEMO_PACK);
-  const applied: ApplyResult = registry.apply({ root: contentPackInput(snapshot) });
+  const applied: PublishResult = registry.publish({ root: packInput(snapshot) });
   if (applied.status !== "valid" || applied.config === undefined)
     throw new Error(`Demo pack did not apply: ${JSON.stringify(applied.diagnostics, null, 2)}`);
   const config = applied.config;
 
   const lines: string[] = [];
-  lines.push(`configId      ${config.identity}`);
+  lines.push(`configId      ${config.configId}`);
   lines.push(`kernel        ${config.kernelVersion}`);
   lines.push(
-    `packs         ${config.packs.map((pack) => `${pack.namespace}@${pack.version} (content ${pack.contentIdentity.slice(0, 12)})`).join(", ")}`,
+    `packs         ${config.packs.map((pack) => `${pack.namespace}@${pack.version} (content ${pack.contentId.slice(0, 12)})`).join(", ")}`,
   );
-  for (const extension of config.extensions)
-    lines.push(`extension     ${extension.ref}@${extension.version} fingerprint ${extension.fingerprint.slice(0, 12)}`);
+  for (const system of config.systems)
+    lines.push(`system        ${system.systemId}@${system.version} spec ${system.specHash.slice(0, 12)}`);
   lines.push(
-    `content       ${config.definitions.length} definitions, ${config.rules.length} rules, ${config.derivations.length} derivations`,
+    `content       ${config.items.length} items, ${config.rules.length} rules, ${config.formulas.length} formulas`,
   );
   const indexed = Object.keys(config.triggerIndex)
     .sort()
@@ -78,29 +78,31 @@ async function run(): Promise<Run> {
 
   const traces: unknown[] = [];
   for (const trigger of TRIGGERS) {
-    const evaluated = registry.evaluate({
-      requestId: `demo-${trigger}`,
+    const evaluated = registry.runRules({
+      runId: `demo-${trigger}`,
       trigger,
-      snapshot: { stateVersion: "state-1", simulationTime: { tick: 3, seconds: 30 }, views: SNAPSHOT },
+      input: { stateVersion: "state-1", simTime: { tick: 3, seconds: 30 }, inputs: SNAPSHOT },
     });
     lines.push(`\nevaluate ${trigger}`);
     lines.push(`  status      ${evaluated.status}`);
-    for (const composition of evaluated.trace.compositions) {
-      const contributions = composition.contributions
-        .map((contribution) => `${contribution.rule}=${render(contribution.value)}`)
+    for (const combine of evaluated.trace.combines) {
+      const ruleValues = combine.ruleValues
+        .map((ruleValue) => `${ruleValue.ruleId}=${render(ruleValue.value)}`)
         .join(", ");
       lines.push(
-        `  ${composition.composition.padEnd(9)} ${composition.target} = ${render(composition.result)} [${contributions}]${composition.status === "composed" ? "" : ` (${composition.status})`}`,
+        `  ${combine.combine.padEnd(9)} ${combine.stateRef} = ${render(combine.result)} [${ruleValues}]${combine.status === "composed" ? "" : ` (${combine.status})`}`,
       );
     }
     for (const rule of evaluated.trace.rules)
-      if (rule.outcome !== "evaluated")
-        lines.push(`  ${rule.outcome.padEnd(16)} ${rule.rule}${rule.message === undefined ? "" : `: ${rule.message}`}`);
+      if (rule.status !== "evaluated")
+        lines.push(
+          `  ${rule.status.padEnd(16)} ${rule.ruleId}${rule.message === undefined ? "" : `: ${rule.message}`}`,
+        );
     traces.push(evaluated.trace);
   }
   lines.push("");
   lines.push(`trace digest  ${digestOf(traces)}`);
-  return { lines, digest: digestOf({ identity: config.identity, traces }) };
+  return { lines, digest: digestOf({ configId: config.configId, traces }) };
 }
 
 async function main(): Promise<void> {
@@ -113,7 +115,7 @@ async function main(): Promise<void> {
     console.error("Two runs produced different candidates or traces; the runtime config is not deterministic.");
     process.exit(1);
   }
-  console.log("same identity, same candidates, same trace.");
+  console.log("same config id, same changes, same trace.");
 }
 
 await main();

@@ -2,10 +2,10 @@ pack: agentlife.demo
 version: "1.0.0"
 kernel: ">=1.0.0 <2.0.0"
 dependencies: []
-extensions:
-  - agentlife.world/extension@1.0.0
-  - agentlife.body/extension@1.0.0
-  - agentlife.character/extension@1.0.0
+systems:
+  - agentlife.world@1.0.0
+  - agentlife.body@1.0.0
+  - agentlife.character@1.0.0
 sections:
   world: agentlife.world/world
   locations: agentlife.world/location

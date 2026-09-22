@@ -1,22 +1,21 @@
 kind: rule
 id: darkness-visibility
-domain: agentlife.world/extension
+system: agentlife.world
 triggers:
   - agentlife.world/environment-changed
-reads:
-  - alias: light
-    view: agentlife.world/environment
-    field: light-level
+inputs:
+  - name: light
+    state: agentlife.world/environment.light-level
 condition:
   op: always
-effects:
-  - target: agentlife.world/environment.visibility
-    composition: min
+changes:
+  - state: agentlife.world/environment.visibility
+    combine: min
     value:
       kind: map
       input:
         kind: read
-        alias: light
+        name: light
       mapping:
         kind: piecewise-linear
         inputUnit: lux

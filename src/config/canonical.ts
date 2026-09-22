@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 /**
  * Deterministic serialization used for every identity in the infrastructure.
  *
- * Object keys are sorted, `undefined` members are dropped, and non-finite
+ * Object keys are sorted, `undefined` fields are dropped, and non-finite
  * numbers are refused: two logically equal documents must never produce two
  * different identities, and no identity may depend on insertion order.
  */
@@ -38,7 +38,7 @@ export function canonicalize(value: unknown): unknown {
 }
 
 /** SHA-256 over the canonical form of a value; the only identity the kernel uses. */
-export function identityOf(value: unknown): string {
+export function hashId(value: unknown): string {
   return createHash("sha256").update(canonicalJson(value)).digest("hex");
 }
 

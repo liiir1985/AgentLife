@@ -38,7 +38,7 @@ const document = {
 };
 
 try {
-  store.saveRuntimeConfig({ identity, namespace: "agentlife.demo", packVersion: "1.0.0", document }, failurePoint);
+  store.saveConfig({ configId: identity, namespace: "agentlife.demo", packVersion: "1.0.0", document }, failurePoint);
 } catch (error) {
   if (failurePoint !== "after-commit") throw error;
 }

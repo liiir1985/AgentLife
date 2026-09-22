@@ -1,97 +1,95 @@
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
-import { evaluateCondition } from "../src/config/conditions.js";
-import type { DomainExtension } from "../src/config/extension.js";
-import { ExtensionRegistry } from "../src/config/extension.js";
+import { runCondition } from "../src/config/conditions.js";
+import type { SystemSpec } from "../src/config/system-spec.js";
+import { SystemCatalog } from "../src/config/system-spec.js";
 import {
-  applyNumericPolicy,
-  evaluateMapping,
+  applyNumberPolicy,
+  runMap,
   isWithinRange,
-  validateMapping,
-  validateNumericPolicy,
-  type NumericMapping,
-  type NumericPolicy,
+  checkMap,
+  checkNumberPolicy,
+  type ValueMap,
+  type NumberPolicy,
 } from "../src/config/numeric.js";
-import { resolveNumericPolicy } from "../src/config/numeric.js";
+import { resolveNumberPolicy } from "../src/config/numeric.js";
 import { defineValueContainer } from "../src/config/value-shapes.js";
-import { evaluateValue, type ValueScope } from "../src/config/values.js";
+import { runExpr, type ValueContext } from "../src/config/value-expr.js";
 
-const POLICY: NumericPolicy = {
+const POLICY: NumberPolicy = {
   unit: "points",
   rounding: { mode: "half-away-from-zero", precision: 1 },
   range: { min: 0, max: 100, boundary: "inclusive" },
   overflow: "saturate",
 };
 
-function scopeOf(values: Readonly<Record<string, unknown>>): ValueScope {
+function scopeOf(values: Readonly<Record<string, unknown>>): ValueContext {
   return {
-    read: (alias) => (alias in values ? { found: true, value: values[alias] } : { found: false }),
+    read: (name) => (name in values ? { found: true, value: values[name] } : { found: false }),
     unitOf: () => "points",
-    derive: (ref) => ({ ok: false, reason: "inexpressible", message: `no derivation ${ref}` }),
-    simulationTime: { tick: 5, seconds: 50 },
+    formula: (formulaRef) => ({ ok: false, reason: "inexpressible", message: `no formula ${formulaRef}` }),
+    simTime: { tick: 5, seconds: 50 },
   };
 }
 
 describe("numeric policy", () => {
   it("rounds by the declared mode and precision", () => {
-    expect(applyNumericPolicy(2.25, POLICY)).toEqual({ ok: true, value: 2.3 });
-    expect(applyNumericPolicy(-2.25, POLICY)).toEqual({ ok: true, value: 0 });
-    expect(applyNumericPolicy(-0.05, { ...POLICY, range: { min: -10, max: 10, boundary: "inclusive" } })).toEqual({
+    expect(applyNumberPolicy(2.25, POLICY)).toEqual({ ok: true, value: 2.3 });
+    expect(applyNumberPolicy(-2.25, POLICY)).toEqual({ ok: true, value: 0 });
+    expect(applyNumberPolicy(-0.05, { ...POLICY, range: { min: -10, max: 10, boundary: "inclusive" } })).toEqual({
       ok: true,
       value: -0.1,
     });
-    const flooring: NumericPolicy = { ...POLICY, rounding: { mode: "floor", precision: 0 } };
-    expect(applyNumericPolicy(2.9, flooring)).toEqual({ ok: true, value: 2 });
-    const ceiling: NumericPolicy = { ...POLICY, rounding: { mode: "ceil", precision: 0 } };
-    expect(applyNumericPolicy(2.1, ceiling)).toEqual({ ok: true, value: 3 });
-    const truncating: NumericPolicy = { ...POLICY, rounding: { mode: "truncate", precision: 0 } };
-    expect(applyNumericPolicy(-2.9, { ...truncating, range: { min: -10, max: 10, boundary: "inclusive" } })).toEqual({
+    const flooring: NumberPolicy = { ...POLICY, rounding: { mode: "floor", precision: 0 } };
+    expect(applyNumberPolicy(2.9, flooring)).toEqual({ ok: true, value: 2 });
+    const ceiling: NumberPolicy = { ...POLICY, rounding: { mode: "ceil", precision: 0 } };
+    expect(applyNumberPolicy(2.1, ceiling)).toEqual({ ok: true, value: 3 });
+    const truncating: NumberPolicy = { ...POLICY, rounding: { mode: "truncate", precision: 0 } };
+    expect(applyNumberPolicy(-2.9, { ...truncating, range: { min: -10, max: 10, boundary: "inclusive" } })).toEqual({
       ok: true,
       value: -2,
     });
   });
 
   it("saturates or refuses an out-of-range result as declared", () => {
-    expect(applyNumericPolicy(140, POLICY)).toEqual({ ok: true, value: 100 });
-    expect(applyNumericPolicy(-40, POLICY)).toEqual({ ok: true, value: 0 });
-    const exclusive: NumericPolicy = {
+    expect(applyNumberPolicy(140, POLICY)).toEqual({ ok: true, value: 100 });
+    expect(applyNumberPolicy(-40, POLICY)).toEqual({ ok: true, value: 0 });
+    const exclusive: NumberPolicy = {
       ...POLICY,
       rounding: { mode: "none", precision: 0 },
       range: { min: 0, max: 1, boundary: "exclusive" },
     };
-    const saturated = applyNumericPolicy(2, exclusive);
+    const saturated = applyNumberPolicy(2, exclusive);
     expect(saturated.ok && saturated.value > 0 && saturated.value < 1).toBe(true);
     expect(isWithinRange(saturated.ok ? saturated.value : 0, exclusive.range)).toBe(true);
-    expect(applyNumericPolicy(140, { ...POLICY, overflow: "reject" })).toEqual({
+    expect(applyNumberPolicy(140, { ...POLICY, overflow: "reject" })).toEqual({
       ok: false,
       reason: "out-of-range",
       message: expect.any(String),
     });
-    expect(applyNumericPolicy(Number.NaN, POLICY).ok).toBe(false);
+    expect(applyNumberPolicy(Number.NaN, POLICY).ok).toBe(false);
   });
 
   it("requires every part of the numeric semantics to be declared", () => {
-    expect(validateNumericPolicy(POLICY, "policy")).toEqual([]);
-    expect(validateNumericPolicy({ ...POLICY, unit: "" }, "policy")).toEqual([]);
-    expect(validateNumericPolicy({ ...POLICY, unit: "two words" }, "policy")).toContain(
-      "policy.unit is not a unit name",
-    );
-    expect(validateNumericPolicy({ ...POLICY, rounding: { mode: "none", precision: 2 } }, "policy")).toContain(
+    expect(checkNumberPolicy(POLICY, "policy")).toEqual([]);
+    expect(checkNumberPolicy({ ...POLICY, unit: "" }, "policy")).toEqual([]);
+    expect(checkNumberPolicy({ ...POLICY, unit: "two words" }, "policy")).toContain("policy.unit is not a unit name");
+    expect(checkNumberPolicy({ ...POLICY, rounding: { mode: "none", precision: 2 } }, "policy")).toContain(
       'policy.rounding.precision must be 0 when the rounding mode is "none"',
     );
     expect(
-      validateNumericPolicy({ ...POLICY, rounding: { mode: "half-away-from-zero", precision: 12 } }, "policy"),
+      checkNumberPolicy({ ...POLICY, rounding: { mode: "half-away-from-zero", precision: 12 } }, "policy"),
     ).toContain("policy.rounding.precision must be an integer between 0 and 9");
-    expect(validateNumericPolicy({ ...POLICY, range: { min: 10, max: 1, boundary: "inclusive" } }, "policy")).toContain(
+    expect(checkNumberPolicy({ ...POLICY, range: { min: 10, max: 1, boundary: "inclusive" } }, "policy")).toContain(
       "policy.range.min must not exceed range.max",
     );
-    expect(validateNumericPolicy({ ...POLICY, range: { min: 5, max: 5, boundary: "exclusive" } }, "policy")).toContain(
+    expect(checkNumberPolicy({ ...POLICY, range: { min: 5, max: 5, boundary: "exclusive" } }, "policy")).toContain(
       "policy.range has an empty interval",
     );
   });
 
   it("refuses a mapping whose bands overlap or whose out-of-range behaviour is undeclared", () => {
-    const overlapping: NumericMapping = {
+    const overlapping: ValueMap = {
       kind: "piecewise-constant",
       inputUnit: "points",
       bands: [
@@ -102,16 +100,16 @@ describe("numeric policy", () => {
       outOfRange: { kind: "clamp" },
       policy: POLICY,
     };
-    expect(validateMapping(overlapping, "mapping").join(" ")).toContain("increase strictly");
+    expect(checkMap(overlapping, "mapping").join(" ")).toContain("increase strictly");
 
-    const displaced: NumericMapping = {
+    const displaced: ValueMap = {
       ...overlapping,
       bands: [
         { from: 5, value: 0 },
         { from: null, value: 1 },
       ],
     };
-    expect(validateMapping(displaced, "mapping").join(" ")).toContain("only for the first band");
+    expect(checkMap(displaced, "mapping").join(" ")).toContain("only for the first band");
 
     const undeclared = {
       kind: "piecewise-linear",
@@ -121,28 +119,28 @@ describe("numeric policy", () => {
         { x: 1, y: 1 },
       ],
       policy: POLICY,
-    } as unknown as NumericMapping;
-    expect(validateMapping(undeclared, "mapping").join(" ")).toContain("out-of-range behaviour");
+    } as unknown as ValueMap;
+    expect(checkMap(undeclared, "mapping").join(" ")).toContain("out-of-range behaviour");
 
-    const singlePoint: NumericMapping = {
+    const singlePoint: ValueMap = {
       kind: "piecewise-linear",
       inputUnit: "points",
       points: [{ x: 0, y: 0 }],
       outOfRange: { kind: "invalid" },
       policy: POLICY,
     };
-    expect(validateMapping(singlePoint, "mapping").join(" ")).toContain("at least two points");
+    expect(checkMap(singlePoint, "mapping").join(" ")).toContain("at least two points");
   });
 
   it("fills an absent policy part with the constraint-free default instead of guessing", () => {
-    expect(resolveNumericPolicy(undefined)).toBeNull();
-    expect(resolveNumericPolicy({})).toEqual({
+    expect(resolveNumberPolicy(undefined)).toBeNull();
+    expect(resolveNumberPolicy({})).toEqual({
       unit: "",
       rounding: { mode: "none", precision: 0 },
       range: { min: null, max: null, boundary: "inclusive" },
       overflow: "saturate",
     });
-    expect(resolveNumericPolicy({ unit: "lux", range: { max: 10 } })).toEqual({
+    expect(resolveNumberPolicy({ unit: "lux", range: { max: 10 } })).toEqual({
       unit: "lux",
       rounding: { mode: "none", precision: 0 },
       range: { min: null, max: 10, boundary: "inclusive" },
@@ -152,7 +150,7 @@ describe("numeric policy", () => {
 });
 
 describe("declared mappings", () => {
-  const threshold: NumericMapping = {
+  const threshold: ValueMap = {
     kind: "threshold",
     inputUnit: "points",
     at: 30,
@@ -163,15 +161,15 @@ describe("declared mappings", () => {
   };
 
   it("assigns the switch point to the band the declaration names", () => {
-    expect(evaluateMapping(threshold, 29.9)).toEqual({ ok: true, value: 5 });
-    expect(evaluateMapping(threshold, 30)).toEqual({ ok: true, value: 1 });
-    const upper: NumericMapping = { ...threshold, boundary: "upper" };
-    expect(evaluateMapping(upper, 30)).toEqual({ ok: true, value: 5 });
-    expect(evaluateMapping(upper, 30.1)).toEqual({ ok: true, value: 1 });
+    expect(runMap(threshold, 29.9)).toEqual({ ok: true, value: 5 });
+    expect(runMap(threshold, 30)).toEqual({ ok: true, value: 1 });
+    const upper: ValueMap = { ...threshold, boundary: "upper" };
+    expect(runMap(upper, 30)).toEqual({ ok: true, value: 5 });
+    expect(runMap(upper, 30.1)).toEqual({ ok: true, value: 1 });
   });
 
   it("maps piecewise-constant bands and clamps below the first anchor", () => {
-    const mapping: NumericMapping = {
+    const mapping: ValueMap = {
       kind: "piecewise-constant",
       inputUnit: "points",
       bands: [
@@ -181,26 +179,26 @@ describe("declared mappings", () => {
       outOfRange: { kind: "clamp" },
       policy: POLICY,
     };
-    expect(evaluateMapping(mapping, 5)).toEqual({ ok: true, value: 1 });
-    expect(evaluateMapping(mapping, 20)).toEqual({ ok: true, value: 1.5 });
-    expect(evaluateMapping(mapping, 900)).toEqual({ ok: true, value: 1.5 });
+    expect(runMap(mapping, 5)).toEqual({ ok: true, value: 1 });
+    expect(runMap(mapping, 20)).toEqual({ ok: true, value: 1.5 });
+    expect(runMap(mapping, 900)).toEqual({ ok: true, value: 1.5 });
 
-    const anchored: NumericMapping = {
+    const anchored: ValueMap = {
       ...mapping,
       bands: [
         { from: 10, value: 2 },
         { from: 20, value: 3 },
       ],
     };
-    expect(evaluateMapping(anchored, 5)).toEqual({ ok: true, value: 2 });
-    const refusing: NumericMapping = { ...anchored, outOfRange: { kind: "invalid" } };
-    expect(evaluateMapping(refusing, 5).ok).toBe(false);
-    const constant: NumericMapping = { ...anchored, outOfRange: { kind: "value", value: 9 } };
-    expect(evaluateMapping(constant, 5)).toEqual({ ok: true, value: 9 });
+    expect(runMap(anchored, 5)).toEqual({ ok: true, value: 2 });
+    const refusing: ValueMap = { ...anchored, outOfRange: { kind: "invalid" } };
+    expect(runMap(refusing, 5).ok).toBe(false);
+    const constant: ValueMap = { ...anchored, outOfRange: { kind: "value", value: 9 } };
+    expect(runMap(constant, 5)).toEqual({ ok: true, value: 9 });
   });
 
   it("interpolates piecewise-linear segments and reports an undeclared interval", () => {
-    const mapping: NumericMapping = {
+    const mapping: ValueMap = {
       kind: "piecewise-linear",
       inputUnit: "points",
       points: [
@@ -211,29 +209,29 @@ describe("declared mappings", () => {
       outOfRange: { kind: "clamp" },
       policy: { ...POLICY, rounding: { mode: "half-away-from-zero", precision: 4 } },
     };
-    expect(evaluateMapping(mapping, 25)).toEqual({ ok: true, value: 0.15 });
-    expect(evaluateMapping(mapping, 50)).toEqual({ ok: true, value: 0.3 });
-    expect(evaluateMapping(mapping, 0)).toEqual({ ok: true, value: 0 });
-    expect(evaluateMapping(mapping, -5)).toEqual({ ok: true, value: 0 });
-    expect(evaluateMapping(mapping, 5000)).toEqual({ ok: true, value: 1 });
-    const refusing: NumericMapping = { ...mapping, outOfRange: { kind: "invalid" } };
-    expect(evaluateMapping(refusing, -5)).toEqual({
+    expect(runMap(mapping, 25)).toEqual({ ok: true, value: 0.15 });
+    expect(runMap(mapping, 50)).toEqual({ ok: true, value: 0.3 });
+    expect(runMap(mapping, 0)).toEqual({ ok: true, value: 0 });
+    expect(runMap(mapping, -5)).toEqual({ ok: true, value: 0 });
+    expect(runMap(mapping, 5000)).toEqual({ ok: true, value: 1 });
+    const refusing: ValueMap = { ...mapping, outOfRange: { kind: "invalid" } };
+    expect(runMap(refusing, -5)).toEqual({
       ok: false,
       reason: "out-of-range",
       message: expect.any(String),
     });
-    expect(evaluateMapping(mapping, Number.POSITIVE_INFINITY).ok).toBe(false);
+    expect(runMap(mapping, Number.POSITIVE_INFINITY).ok).toBe(false);
   });
 });
 
 describe("value sources", () => {
   it("refuses a missing read instead of defaulting it", () => {
-    const result = evaluateValue({ kind: "read", alias: "stamina" }, scopeOf({}));
+    const result = runExpr({ kind: "read", name: "stamina" }, scopeOf({}));
     expect(result).toEqual({ ok: false, reason: "input-missing", message: expect.any(String) });
   });
 
   it("refuses a mapping applied to the wrong unit", () => {
-    const mapping: NumericMapping = {
+    const mapping: ValueMap = {
       kind: "threshold",
       inputUnit: "mass",
       at: 10,
@@ -242,7 +240,7 @@ describe("value sources", () => {
       above: 2,
       policy: POLICY,
     };
-    const result = evaluateValue(
+    const result = runExpr(
       { kind: "map", mapping, input: { kind: "literal", value: 12, unit: "points" } },
       scopeOf({}),
     );
@@ -255,18 +253,18 @@ describe("value sources", () => {
 
   it("combines declared operands under one declared method and one unit", () => {
     const scope = scopeOf({ light: 40, fog: 0.9 });
-    const operands = [{ kind: "read", alias: "light" } as const];
-    const minimum = evaluateValue(
+    const operands = [{ kind: "read", name: "light" } as const];
+    const minimum = runExpr(
       { kind: "combine", method: "min", operands: [...operands, { kind: "literal", value: 5, unit: "points" }] },
       scope,
     );
     expect(minimum).toEqual({ ok: true, value: 5, unit: "points" });
-    const additive = evaluateValue(
+    const additive = runExpr(
       { kind: "combine", method: "add", operands: [...operands, { kind: "literal", value: 2, unit: "points" }] },
       scope,
     );
     expect(additive).toEqual({ ok: true, value: 42, unit: "points" });
-    const mixed = evaluateValue(
+    const mixed = runExpr(
       {
         kind: "combine",
         method: "min",
@@ -279,7 +277,7 @@ describe("value sources", () => {
       reason: "input-invalid",
       message: "Combination min requires one unit but received points and mass",
     });
-    const factored = evaluateValue(
+    const factored = runExpr(
       {
         kind: "combine",
         method: "multiply",
@@ -291,7 +289,7 @@ describe("value sources", () => {
       scope,
     );
     expect(factored).toEqual({ ok: true, value: 12, unit: "" });
-    const dimensional = evaluateValue(
+    const dimensional = runExpr(
       {
         kind: "combine",
         method: "multiply",
@@ -308,10 +306,10 @@ describe("value sources", () => {
   it("compares declared values into a boolean and selects one of two declared values", () => {
     const scope = scopeOf({ stamina: 25 });
     expect(
-      evaluateValue(
+      runExpr(
         {
           kind: "compare",
-          left: { kind: "read", alias: "stamina" },
+          left: { kind: "read", name: "stamina" },
           right: { kind: "literal", value: 20, unit: "points" },
           operator: "lt",
         },
@@ -319,16 +317,16 @@ describe("value sources", () => {
       ),
     ).toEqual({ ok: true, value: false, unit: "" });
     expect(
-      evaluateValue(
+      runExpr(
         {
           kind: "select",
-          left: { kind: "read", alias: "stamina" },
+          left: { kind: "read", name: "stamina" },
           right: { kind: "literal", value: 20, unit: "points" },
           operator: "lt",
           then: { kind: "literal", value: "forbidden", unit: "" },
           otherwise: {
             kind: "select",
-            left: { kind: "read", alias: "stamina" },
+            left: { kind: "read", name: "stamina" },
             right: { kind: "literal", value: 60, unit: "points" },
             operator: "lt",
             then: { kind: "literal", value: "restricted", unit: "" },
@@ -340,10 +338,10 @@ describe("value sources", () => {
     ).toEqual({ ok: true, value: "restricted", unit: "" });
   });
 
-  it("keeps the declared unit of literals and derived values", () => {
-    const literal = evaluateValue({ kind: "literal", value: 5, unit: "points" }, scopeOf({}));
+  it("keeps the declared unit of literals and formula values", () => {
+    const literal = runExpr({ kind: "literal", value: 5, unit: "points" }, scopeOf({}));
     expect(literal).toEqual({ ok: true, value: 5, unit: "points" });
-    const text = evaluateValue({ kind: "literal", value: "stamina", unit: "" }, scopeOf({}));
+    const text = runExpr({ kind: "literal", value: "stamina", unit: "" }, scopeOf({}));
     expect(text).toEqual({ ok: true, value: "stamina", unit: "" });
   });
 });
@@ -352,10 +350,10 @@ describe("conditions", () => {
   it("compares declared values and refuses mismatched units", () => {
     const scope = scopeOf({ stamina: 25 });
     expect(
-      evaluateCondition(
+      runCondition(
         {
           op: "compare",
-          left: { kind: "read", alias: "stamina" },
+          left: { kind: "read", name: "stamina" },
           right: { kind: "literal", value: 20, unit: "points" },
           operator: "gt",
         },
@@ -363,10 +361,10 @@ describe("conditions", () => {
       ),
     ).toEqual({ ok: true, value: true });
     expect(
-      evaluateCondition(
+      runCondition(
         {
           op: "compare",
-          left: { kind: "read", alias: "stamina" },
+          left: { kind: "read", name: "stamina" },
           right: { kind: "literal", value: 20, unit: "mass" },
           operator: "gt",
         },
@@ -378,10 +376,10 @@ describe("conditions", () => {
   it("treats booleans as equality-only and strings as ordered", () => {
     const scope = scopeOf({ mode: "sleep", awake: true });
     expect(
-      evaluateCondition(
+      runCondition(
         {
           op: "compare",
-          left: { kind: "read", alias: "mode" },
+          left: { kind: "read", name: "mode" },
           right: { kind: "literal", value: "rest", unit: "" },
           operator: "gt",
         },
@@ -389,10 +387,10 @@ describe("conditions", () => {
       ),
     ).toEqual({ ok: true, value: true });
     expect(
-      evaluateCondition(
+      runCondition(
         {
           op: "compare",
-          left: { kind: "read", alias: "awake" },
+          left: { kind: "read", name: "awake" },
           right: { kind: "literal", value: true, unit: "" },
           operator: "lt",
         },
@@ -401,13 +399,13 @@ describe("conditions", () => {
     ).toEqual({ ok: false, reason: "input-invalid", message: "Operator lt does not apply to booleans" });
   });
 
-  it("reads the explicit simulated time and never the machine clock", () => {
+  it("inputs the explicit simulated time and never the machine clock", () => {
     const scope = scopeOf({});
-    expect(evaluateCondition({ op: "simulation-time", operator: "before", tick: 6 }, scope)).toEqual({
+    expect(runCondition({ op: "simulation-time", operator: "before", tick: 6 }, scope)).toEqual({
       ok: true,
       value: true,
     });
-    expect(evaluateCondition({ op: "simulation-time", operator: "at-or-after", tick: 5 }, scope)).toEqual({
+    expect(runCondition({ op: "simulation-time", operator: "at-or-after", tick: 5 }, scope)).toEqual({
       ok: true,
       value: true,
     });
@@ -417,25 +415,25 @@ describe("conditions", () => {
     const scope = scopeOf({ stamina: 25 });
     const missing: {
       readonly op: "compare";
-      readonly left: { readonly kind: "read"; readonly alias: string };
+      readonly left: { readonly kind: "read"; readonly name: string };
       readonly right: { readonly kind: "literal"; readonly value: number; readonly unit: string };
       readonly operator: "gt";
     } = {
       op: "compare",
-      left: { kind: "read", alias: "absent" },
+      left: { kind: "read", name: "absent" },
       right: { kind: "literal", value: 1, unit: "points" },
       operator: "gt",
     };
-    expect(evaluateCondition({ op: "any", operands: [missing, { op: "always" }] }, scope)).toEqual({
+    expect(runCondition({ op: "any", operands: [missing, { op: "always" }] }, scope)).toEqual({
       ok: true,
       value: true,
     });
     expect(
-      evaluateCondition(
+      runCondition(
         {
           op: "all",
           operands: [
-            { op: "within", value: { kind: "read", alias: "stamina" }, min: 0, max: 25, boundary: "exclusive" },
+            { op: "within", value: { kind: "read", name: "stamina" }, min: 0, max: 25, boundary: "exclusive" },
             { op: "always" },
           ],
         },
@@ -443,12 +441,12 @@ describe("conditions", () => {
       ),
     ).toEqual({ ok: true, value: false });
     expect(
-      evaluateCondition(
-        { op: "within", value: { kind: "read", alias: "stamina" }, min: 0, max: 50, boundary: "exclusive" },
+      runCondition(
+        { op: "within", value: { kind: "read", name: "stamina" }, min: 0, max: 50, boundary: "exclusive" },
         scope,
       ),
     ).toEqual({ ok: true, value: true });
-    expect(evaluateCondition({ op: "not", operand: missing }, scope)).toEqual({
+    expect(runCondition({ op: "not", operand: missing }, scope)).toEqual({
       ok: false,
       reason: "input-missing",
       message: expect.any(String),
@@ -456,40 +454,40 @@ describe("conditions", () => {
   });
 });
 
-describe("extension registration", () => {
-  const base: DomainExtension = {
-    name: "extension",
+describe("system registration", () => {
+  const base: SystemSpec = {
+    name: "system",
     namespace: "test.registry",
     version: "1.0.0",
     kernel: ">=1.0.0 <2.0.0",
-    configTypes: [],
-    views: [],
+    items: [],
+    inputs: [],
     triggers: [],
-    outputTargets: [],
+    outputs: [],
   };
 
-  it("accepts a well-formed extension and keeps its fingerprint stable", () => {
-    const registry = new ExtensionRegistry();
-    const first = registry.register(base);
+  it("accepts a well-formed system and keeps its fingerprint stable", () => {
+    const registry = new SystemCatalog();
+    const first = registry.add(base);
     expect(first.status).toBe("registered");
-    const fingerprint = registry.get("test.registry/extension")?.fingerprint;
-    expect(registry.register({ ...base }).status).toBe("registered");
-    expect(registry.get("test.registry/extension")?.fingerprint).toBe(fingerprint);
+    const specHash = registry.get("test.registry")?.specHash;
+    expect(registry.add({ ...base }).status).toBe("registered");
+    expect(registry.get("test.registry")?.specHash).toBe(specHash);
   });
 
   it("refuses content that changes under the same identity", () => {
-    const registry = new ExtensionRegistry();
-    registry.register(base);
-    const conflicting = registry.register({ ...base, version: "1.1.0" });
+    const registry = new SystemCatalog();
+    registry.add(base);
+    const conflicting = registry.add({ ...base, version: "1.1.0" });
     expect(conflicting.status).toBe("identity-conflict");
     expect(conflicting.diagnostics[0]?.code).toBe("identity-conflict");
   });
 
   it("refuses schema constructs outside the supported model", () => {
-    const registry = new ExtensionRegistry();
-    const result = registry.register({
+    const registry = new SystemCatalog();
+    const result = registry.add({
       ...base,
-      configTypes: [
+      items: [
         {
           kind: "widget",
           fields: Type.Object({ payload: Type.Any() }),
@@ -505,18 +503,18 @@ describe("extension registration", () => {
   });
 
   it("refuses wildcard exposure, undeclared defaults and impossible merge strategies", () => {
-    const wildcard = new ExtensionRegistry().register({
+    const wildcard = new SystemCatalog().add({
       ...base,
-      views: [
+      inputs: [
         { name: "state", fields: Type.Object({ value: Type.Number() }), units: { value: "points" }, exposedTo: ["*"] },
       ],
     });
     expect(wildcard.status).toBe("unauthorized-capability");
     expect(wildcard.diagnostics[0]?.message).toContain("wildcard exposure");
 
-    const defaults = new ExtensionRegistry().register({
+    const defaults = new SystemCatalog().add({
       ...base,
-      configTypes: [
+      items: [
         {
           kind: "widget",
           fields: Type.Object({ label: Type.String() }),
@@ -531,9 +529,9 @@ describe("extension registration", () => {
       "default does not match its declared type",
     );
 
-    const appending = new ExtensionRegistry().register({
+    const appending = new SystemCatalog().add({
       ...base,
-      configTypes: [
+      items: [
         {
           kind: "widget",
           fields: Type.Object({ label: Type.String() }),
@@ -549,25 +547,25 @@ describe("extension registration", () => {
   });
 
   it("accepts an unconstrained numeric target and refuses a vocabulary on a non-string target", () => {
-    const unconstrained = new ExtensionRegistry().register({
+    const unconstrained = new SystemCatalog().add({
       ...base,
-      outputTargets: [{ name: "stamina", valueType: "number", exposedTo: [] }],
+      outputs: [{ name: "stamina", valueType: "number", exposedTo: [] }],
     });
     expect(unconstrained.status).toBe("registered");
 
-    const vocabularied = new ExtensionRegistry().register({
+    const vocabularied = new SystemCatalog().add({
       ...base,
-      outputTargets: [{ name: "stamina", valueType: "number", allowedValues: ["low"], exposedTo: [] }],
+      outputs: [{ name: "stamina", valueType: "number", allowedValues: ["low"], exposedTo: [] }],
     });
     expect(vocabularied.status).toBe("unsupported-semantics");
     expect(vocabularied.diagnostics.map((diagnostic) => diagnostic.message).join(" ")).toContain(
       "declares a vocabulary but holds number",
     );
 
-    const duplicated = new ExtensionRegistry().register({
+    const duplicated = new SystemCatalog().add({
       ...base,
-      configTypes: [{ kind: "state", fields: Type.Object({ value: Type.Number() }), overridable: [], merge: {} }],
-      views: [
+      items: [{ kind: "state", fields: Type.Object({ value: Type.Number() }), overridable: [], merge: {} }],
+      inputs: [
         { name: "state", fields: Type.Object({ value: Type.Number() }), units: { value: "points" }, exposedTo: [] },
       ],
     });
@@ -575,24 +573,24 @@ describe("extension registration", () => {
     expect(duplicated.diagnostics.map((diagnostic) => diagnostic.message).join(" ")).toContain("declared twice");
   });
 
-  it("refuses a value family whose member does not match the config type", () => {
-    const unknownState = new ExtensionRegistry().register({
+  it("refuses a value valueSet whose field does not match the config type", () => {
+    const unknownState = new SystemCatalog().add({
       ...base,
-      configTypes: [defineValueContainer({ kind: "value", family: "values", contract: false })],
+      items: [defineValueContainer({ kind: "value", valueSet: "values", contract: false })],
     });
     expect(unknownState.status).toBe("registered");
 
-    const wrongKind = new ExtensionRegistry().register({
+    const wrongKind = new SystemCatalog().add({
       ...base,
-      configTypes: [
+      items: [
         {
           kind: "value",
           fields: Type.Object({ type: Type.String(), initial: Type.String() }),
           overridable: [],
           merge: {},
-          family: {
+          valueSet: {
             name: "values",
-            members: [{ key: "", typeField: "type", stateField: "initial", policyField: "state" }],
+            fields: [{ key: "", typeField: "type", stateField: "initial", policyField: "state" }],
           },
         },
       ],
@@ -602,15 +600,15 @@ describe("extension registration", () => {
       "declares unknown field state",
     );
 
-    const noType = new ExtensionRegistry().register({
+    const noType = new SystemCatalog().add({
       ...base,
-      configTypes: [
+      items: [
         {
           kind: "value",
           fields: Type.Object({ initial: Type.Number() }),
           overridable: [],
           merge: {},
-          family: { name: "values", members: [{ key: "", stateField: "initial" }] },
+          valueSet: { name: "values", fields: [{ key: "", stateField: "initial" }] },
         },
       ],
     });
@@ -620,40 +618,40 @@ describe("extension registration", () => {
     );
   });
 
-  it("warns about an exposure granted to an extension that is not registered yet", () => {
-    const registry = new ExtensionRegistry();
-    registry.register({
+  it("warns about an exposure granted to an system that is not registered yet", () => {
+    const registry = new SystemCatalog();
+    registry.add({
       ...base,
-      views: [
+      inputs: [
         {
           name: "state",
           fields: Type.Object({ value: Type.Number() }),
           units: { value: "points" },
-          exposedTo: ["test.future/extension"],
+          exposedTo: ["test.future"],
         },
       ],
     });
     const warnings = registry.finalize();
     expect(warnings.map((diagnostic) => diagnostic.code)).toEqual(["unauthorized-read"]);
-    expect(warnings[0]?.message).toContain("test.future/extension");
+    expect(warnings[0]?.message).toContain("test.future");
   });
 
-  it("refuses an extension written against an incompatible kernel", () => {
-    const result = new ExtensionRegistry().register({ ...base, kernel: ">=9.0.0" });
+  it("refuses an system written against an incompatible kernel", () => {
+    const result = new SystemCatalog().add({ ...base, kernel: ">=9.0.0" });
     expect(result.status).toBe("semantic-incompatible");
-    expect(result.diagnostics[0]?.code).toBe("incompatible-extension");
+    expect(result.diagnostics[0]?.code).toBe("incompatible-system");
   });
 
   it("checks peer requirements independently of registration order", () => {
-    const registry = new ExtensionRegistry();
-    const consumer: DomainExtension = {
+    const registry = new SystemCatalog();
+    const consumer: SystemSpec = {
       ...base,
       namespace: "test.consumer",
-      requires: ["test.registry/extension@1.0.0"],
+      requires: ["test.registry@1.0.0"],
     };
-    registry.register(consumer);
-    expect(registry.finalize().map((diagnostic) => diagnostic.code)).toEqual(["incompatible-extension"]);
-    registry.register(base);
+    registry.add(consumer);
+    expect(registry.finalize().map((diagnostic) => diagnostic.code)).toEqual(["incompatible-system"]);
+    registry.add(base);
     expect(registry.finalize()).toEqual([]);
   });
 });

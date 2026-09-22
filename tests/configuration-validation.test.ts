@@ -9,7 +9,7 @@ import {
   withTempDirectory,
   writePack,
 } from "./helpers/demo-pack.js";
-import type { DomainExtension } from "../src/config/extension.js";
+import type { SystemSpec } from "../src/config/system-spec.js";
 import { loadPack } from "./helpers/demo-pack.js";
 import { Type } from "typebox";
 import { defineValueContainer } from "../src/config/value-shapes.js";
@@ -18,10 +18,10 @@ const DEMO_MANIFEST = `pack: agentlife.demo
 version: "1.0.0"
 kernel: ">=1.0.0 <2.0.0"
 dependencies: []
-extensions:
-  - agentlife.world/extension@1.0.0
-  - agentlife.body/extension@1.0.0
-  - agentlife.character/extension@1.0.0
+systems:
+  - agentlife.world@1.0.0
+  - agentlife.body@1.0.0
+  - agentlife.character@1.0.0
 sections:
   world: agentlife.world/world
   locations: agentlife.world/location
@@ -37,23 +37,21 @@ interface RefusalCase {
   readonly overrides: Readonly<Record<string, string | null>>;
   readonly code: string;
   readonly message: string;
-  /** Extensions registered on top of the three demo domains. */
-  readonly extensions?: readonly DomainExtension[];
+  /** Extensions registered on top of the three demo systems. */
+  readonly systems?: readonly SystemSpec[];
 }
 
 const restRecovery = (mutate: (source: string) => string): string => mutate(SOURCE_REST_RECOVERY);
 const SOURCE_REST_RECOVERY = `kind: rule
 id: rest-recovery
-domain: agentlife.body/extension
+system: agentlife.body
 triggers:
   - agentlife.body/tick-elapsed
-reads:
-  - alias: stamina
-    view: agentlife.body/values
-    field: stamina
-  - alias: light
-    view: agentlife.world/environment
-    field: light-level
+inputs:
+  - name: stamina
+    state: agentlife.body/values.stamina
+  - name: light
+    state: agentlife.world/environment.light-level
 condition:
   op: all
   operands:
@@ -63,27 +61,27 @@ condition:
     - op: within
       value:
         kind: read
-        alias: stamina
+        name: stamina
       min: 0
       max: 60
       boundary: exclusive
     - op: compare
       left:
         kind: read
-        alias: light
+        name: light
       right:
         kind: literal
         value: 10
         unit: lux
       operator: gt
-effects:
-  - target: agentlife.body/values.stamina
-    composition: add
+changes:
+  - state: agentlife.body/values.stamina
+    combine: add
     value:
       kind: map
       input:
         kind: read
-        alias: stamina
+        name: stamina
       mapping:
         kind: threshold
         inputUnit: points
@@ -103,23 +101,23 @@ effects:
           overflow: saturate
 `;
 
-/** A minimal domain used to exercise one composition method end to end. */
-const FIXTURE_LIMITS: DomainExtension = {
-  name: "extension",
+/** A minimal system used to exercise one combine method end to end. */
+const FIXTURE_LIMITS: SystemSpec = {
+  name: "system",
   namespace: "test.limits",
   version: "1.0.0",
   kernel: ">=1.0.0 <2.0.0",
   requires: [],
-  configTypes: [
+  items: [
     defineValueContainer({
       kind: "signal",
-      family: "signals",
+      valueSet: "signals",
       contract: false,
-      view: { exposedTo: [] },
-      target: { exposedTo: [] },
+      input: { exposedTo: [] },
+      output: { exposedTo: [] },
     }),
   ],
-  views: [
+  inputs: [
     {
       name: "state",
       fields: Type.Object({ value: Type.Number() }),
@@ -128,23 +126,23 @@ const FIXTURE_LIMITS: DomainExtension = {
     },
   ],
   triggers: ["changed"],
-  outputTargets: [],
+  outputs: [],
 };
 
 /**
- * A domain that still declares one process, so the kernel's process checks stay
- * covered while no shipped domain uses them yet.
+ * A system that still declares one process, so the kernel's process checks stay
+ * covered while no shipped system uses them yet.
  */
-const FIXTURE_PROCESS: DomainExtension = {
-  name: "extension",
+const FIXTURE_PROCESS: SystemSpec = {
+  name: "system",
   namespace: "test.process",
   version: "1.0.0",
   kernel: ">=1.0.0 <2.0.0",
   requires: [],
-  configTypes: [],
-  views: [],
+  items: [],
+  inputs: [],
   triggers: [],
-  outputTargets: [],
+  outputs: [],
   processes: [
     {
       name: "recovery",
@@ -213,22 +211,21 @@ fields:
     message: "Template cycle detected",
   },
   {
-    name: "a read of a view no extension exposed",
+    name: "a read of a input no system exposed",
     overrides: {
       "rules/exertion-cost.yaml": `kind: rule
 id: exertion-cost
-domain: agentlife.body/extension
+system: agentlife.body
 triggers:
   - agentlife.body/value-changed
-reads:
-  - alias: tier
-    view: agentlife.character/schedule
-    field: tier
+inputs:
+  - name: tier
+    state: agentlife.character/schedule.tier
 condition:
   op: always
-effects:
-  - target: agentlife.body/values.stamina
-    composition: add
+changes:
+  - state: agentlife.body/values.stamina
+    combine: add
     value:
       kind: literal
       value: 1
@@ -239,22 +236,21 @@ effects:
     message: "agentlife.character/schedule",
   },
   {
-    name: "a write to a target the domain does not own or expose",
+    name: "a write to a target the system does not own or expose",
     overrides: {
       "rules/fog-visibility.yaml": `kind: rule
 id: fog-visibility
-domain: agentlife.world/extension
+system: agentlife.world
 triggers:
   - agentlife.world/environment-changed
-reads:
-  - alias: fog
-    view: agentlife.world/environment
-    field: fog-density
+inputs:
+  - name: fog
+    state: agentlife.world/environment.fog-density
 condition:
   op: always
-effects:
-  - target: agentlife.body/values.wakefulness
-    composition: priority
+changes:
+  - state: agentlife.body/values.wakefulness
+    combine: priority
     priority: 1
     value:
       kind: literal
@@ -262,11 +258,11 @@ effects:
       unit: points
 `,
     },
-    code: "unauthorized-effect",
-    message: "may not write target",
+    code: "unauthorized-change",
+    message: "may not request state",
   },
   {
-    name: "a trigger no extension declares",
+    name: "a trigger no system declares",
     overrides: {
       "rules/rest-recovery.yaml": restRecovery((source) =>
         source.replace("agentlife.body/tick-elapsed", "agentlife.body/never-declared"),
@@ -276,23 +272,19 @@ effects:
     message: "never-declared",
   },
   {
-    name: "two sources writing one target with different composition methods",
+    name: "two sources writing one target with different combine methods",
     overrides: {
-      "rules/rest-recovery.yaml": restRecovery((source) =>
-        source.replace("    composition: add", "    composition: min"),
-      ),
+      "rules/rest-recovery.yaml": restRecovery((source) => source.replace("    combine: add", "    combine: min")),
     },
-    code: "missing-composition",
+    code: "missing-combine",
     message: "agentlife.body/values.stamina",
   },
   {
-    name: "a composition method the target's unit cannot support",
+    name: "a combine method the target's unit cannot support",
     overrides: {
-      "rules/rest-recovery.yaml": restRecovery((source) =>
-        source.replace("    composition: add", "    composition: multiply"),
-      ),
+      "rules/rest-recovery.yaml": restRecovery((source) => source.replace("    combine: add", "    combine: multiply")),
     },
-    code: "composition-not-allowed",
+    code: "combine-not-allowed",
     message: 'is not "ratio"',
   },
   {
@@ -333,29 +325,27 @@ effects:
     overrides: {
       "rules/vision-availability.yaml": `kind: rule
 id: vision-availability
-domain: agentlife.body/extension
+system: agentlife.body
 triggers:
   - agentlife.world/environment-changed
-reads:
-  - alias: light
-    view: agentlife.world/environment
-    field: light-level
-  - alias: fog
-    view: agentlife.world/environment
-    field: fog-density
+inputs:
+  - name: light
+    state: agentlife.world/environment.light-level
+  - name: fog
+    state: agentlife.world/environment.fog-density
 condition:
   op: always
-effects:
-  - target: agentlife.body/values.move-cost-factor
-    composition: multiply
+changes:
+  - state: agentlife.body/values.move-cost-factor
+    combine: multiply
     value:
       kind: combine
       method: min
       operands:
         - kind: read
-          alias: light
+          name: light
         - kind: read
-          alias: fog
+          name: fog
 `,
     },
     code: "unit-mismatch",
@@ -366,24 +356,23 @@ effects:
     overrides: {
       "rules/vision-availability.yaml": `kind: rule
 id: vision-availability
-domain: agentlife.body/extension
+system: agentlife.body
 triggers:
   - agentlife.world/environment-changed
-reads:
-  - alias: fog
-    view: agentlife.world/environment
-    field: fog-density
+inputs:
+  - name: fog
+    state: agentlife.world/environment.fog-density
 condition:
   op: always
-effects:
-  - target: agentlife.body/channels.vision.available
-    composition: priority
+changes:
+  - state: agentlife.body/channels.vision.available
+    combine: priority
     priority: 1
     value:
       kind: select
       left:
         kind: read
-        alias: fog
+        name: fog
       right:
         kind: literal
         value: 0.9
@@ -406,23 +395,22 @@ effects:
     overrides: {
       "rules/terrain-move-cost-factor.yaml": `kind: rule
 id: terrain-move-cost-factor
-domain: agentlife.body/extension
+system: agentlife.body
 triggers:
   - agentlife.body/value-changed
-reads:
-  - alias: slope
-    view: agentlife.world/environment
-    field: slope
+inputs:
+  - name: slope
+    state: agentlife.world/environment.slope
 condition:
   op: always
-effects:
-  - target: agentlife.body/values.move-cost-factor
-    composition: multiply
+changes:
+  - state: agentlife.body/values.move-cost-factor
+    combine: multiply
     value:
       kind: map
       input:
         kind: read
-        alias: slope
+        name: slope
       mapping:
         kind: piecewise-constant
         inputUnit: ratio
@@ -451,7 +439,7 @@ effects:
     message: "increase strictly",
   },
   {
-    name: "a definition whose type does not match its section",
+    name: "a item whose type does not match its section",
     overrides: {
       "locations/orchard.yaml": `id: orchard
 type: agentlife.world/item
@@ -465,44 +453,46 @@ fields:
     message: "must be agentlife.world/location for this section",
   },
   {
-    name: "a read of a field no view declares",
+    name: "a read of a field no input declares",
     overrides: {
-      "rules/rest-recovery.yaml": restRecovery((source) => source.replace("    field: stamina", "    field: vigour")),
+      "rules/rest-recovery.yaml": restRecovery((source) =>
+        source.replace("    state: agentlife.body/values.stamina", "    state: agentlife.body/values.vigour"),
+      ),
     },
     code: "unknown-reference",
     message: "vigour",
   },
   {
-    name: "a rule without any candidate effect",
+    name: "a rule without any state change",
     overrides: {
       "rules/lamp-stimulus.yaml": `kind: rule
 id: lamp-stimulus
-domain: agentlife.body/extension
+system: agentlife.body
 triggers:
   - agentlife.body/tick-elapsed
 condition:
   op: always
-effects: []
+changes: []
 `,
     },
     code: "structure-invalid",
-    message: "declares no candidate effect",
+    message: "declares no state change",
   },
   {
     name: "a kernel version the pack cannot run against",
     overrides: {
       "manifest.yaml": DEMO_MANIFEST.replace('kernel: ">=1.0.0 <2.0.0"', 'kernel: ">=3.0.0"'),
     },
-    code: "incompatible-extension",
+    code: "incompatible-system",
     message: "requires kernel",
   },
   {
-    name: "an extension version the pack pins differently",
+    name: "an system version the pack pins differently",
     overrides: {
-      "manifest.yaml": DEMO_MANIFEST.replace("agentlife.body/extension@1.0.0", "agentlife.body/extension@2.0.0"),
+      "manifest.yaml": DEMO_MANIFEST.replace("agentlife.body@1.0.0", "agentlife.body@2.0.0"),
     },
-    code: "incompatible-extension",
-    message: "agentlife.body/extension",
+    code: "incompatible-system",
+    message: "agentlife.body",
   },
   {
     name: "a degraded entity that claims to be a main entity",
@@ -522,7 +512,7 @@ fields:
   homeLocation: agentlife.demo/kiln
 `,
     },
-    code: "domain-rejected",
+    code: "system-rejected",
     message: "cannot be a main entity",
   },
   {
@@ -544,7 +534,7 @@ fields:
   homeLocation: agentlife.demo/kiln
 `,
     },
-    code: "domain-rejected",
+    code: "system-rejected",
     message: "must not reference cognition",
   },
   {
@@ -568,7 +558,7 @@ fields:
   homeLocation: agentlife.demo/orchard
 `,
     },
-    code: "domain-rejected",
+    code: "system-rejected",
     message: "must not run a behaviour tree",
   },
   {
@@ -591,7 +581,7 @@ fields:
   homeLocation: agentlife.demo/lantern-square
 `,
     },
-    code: "domain-rejected",
+    code: "system-rejected",
     message: "must carry an initial version",
   },
   {
@@ -673,7 +663,7 @@ fields:
     message: "unit is not a unit name",
   },
   {
-    name: "a value id that cannot address a member",
+    name: "a value id that cannot address a field",
     overrides: {
       "values/extra-load.yaml": `id: extraLoad
 type: agentlife.body/value
@@ -685,31 +675,30 @@ fields:
 `,
     },
     code: "structure-invalid",
-    message: "cannot address a value member",
+    message: "cannot address a value field",
   },
   {
-    name: "a second writer for a contract channel member",
+    name: "a second writer for a contract channel field",
     overrides: {
       "rules/vision-availability.yaml": `kind: rule
 id: vision-availability
-domain: agentlife.body/extension
+system: agentlife.body
 triggers:
   - agentlife.world/environment-changed
-reads:
-  - alias: fog
-    view: agentlife.world/environment
-    field: fog-density
+inputs:
+  - name: fog
+    state: agentlife.world/environment.fog-density
 condition:
   op: always
-effects:
-  - target: agentlife.body/channels.vision.available
-    composition: priority
+changes:
+  - state: agentlife.body/channels.vision.available
+    combine: priority
     priority: 1
     value:
       kind: literal
       value: true
-  - target: agentlife.body/channels.vision.efficiency
-    composition: priority
+  - state: agentlife.body/channels.vision.efficiency
+    combine: priority
     priority: 2
     value:
       kind: literal
@@ -733,52 +722,50 @@ fields:
     - container
 `,
     },
-    code: "domain-rejected",
+    code: "system-rejected",
     message: "declares no capacity",
   },
   {
-    name: "a rule depending on a derivation that does not exist",
+    name: "a rule depending on a formula that does not exist",
     overrides: {
       "rules/exhaustion-move-cost-factor.yaml": `kind: rule
 id: exhaustion-move-cost-factor
-domain: agentlife.body/extension
+system: agentlife.body
 triggers:
   - agentlife.body/value-changed
-reads:
-  - alias: stamina
-    view: agentlife.body/values
-    field: stamina
+inputs:
+  - name: stamina
+    state: agentlife.body/values.stamina
 condition:
   op: always
 dependsOn:
-  - agentlife.demo/absent-derivation
-effects:
-  - target: agentlife.body/values.move-cost-factor
-    composition: multiply
+  - agentlife.demo/absent-formula
+changes:
+  - state: agentlife.body/values.move-cost-factor
+    combine: multiply
     value:
-      kind: derived
-      ref: agentlife.demo/absent-derivation
+      kind: formula
+      formulaRef: agentlife.demo/absent-formula
 `,
     },
     code: "unknown-reference",
-    message: "absent-derivation",
+    message: "absent-formula",
   },
   {
-    name: "a derivation whose value unit differs from its declared output unit",
+    name: "a formula whose value unit differs from its declared output unit",
     overrides: {
-      "rules/exhaustion-factor.yaml": `kind: derivation
+      "rules/exhaustion-factor.yaml": `kind: formula
 id: exhaustion-factor
-domain: agentlife.body/extension
-reads:
-  - alias: stamina
-    view: agentlife.body/values
-    field: stamina
+system: agentlife.body
+inputs:
+  - name: stamina
+    state: agentlife.body/values.stamina
 outputUnit: points
 value:
   kind: map
   input:
     kind: read
-    alias: stamina
+    name: stamina
   mapping:
     kind: piecewise-constant
     inputUnit: points
@@ -803,23 +790,22 @@ value:
     message: "declares output unit points",
   },
   {
-    name: "a process operation a foreign domain does not own",
+    name: "a process operation a foreign system does not own",
     overrides: {
       "rules/lamp-stimulus.yaml": `kind: rule
 id: lamp-stimulus
-domain: test.limits/extension
+system: test.limits
 triggers:
   - test.limits/changed
-reads:
-  - alias: value
-    view: test.limits/state
-    field: value
+inputs:
+  - name: value
+    state: test.limits/state.value
 condition:
   op: always
-effects:
-  - process: test.process/recovery
-    operation: establish
-    parameters:
+changes:
+  - processRef: test.process/recovery
+    action: establish
+    params:
       target:
         kind: literal
         value: stamina
@@ -829,24 +815,24 @@ effects:
         unit: points
 `,
     },
-    code: "unauthorized-effect",
+    code: "unauthorized-change",
     message: "may not operate process",
-    extensions: [FIXTURE_LIMITS, FIXTURE_PROCESS],
+    systems: [FIXTURE_LIMITS, FIXTURE_PROCESS],
   },
   {
     name: "a process parameter the declaration does not accept",
     overrides: {
       "rules/lamp-stimulus.yaml": `kind: rule
 id: lamp-stimulus
-domain: test.process/extension
+system: test.process
 triggers:
   - test.limits/changed
 condition:
   op: always
-effects:
-  - process: test.process/recovery
-    operation: establish
-    parameters:
+changes:
+  - processRef: test.process/recovery
+    action: establish
+    params:
       target:
         kind: literal
         value: stamina
@@ -862,25 +848,24 @@ effects:
     },
     code: "structure-invalid",
     message: "unknown parameter duration",
-    extensions: [FIXTURE_LIMITS, FIXTURE_PROCESS],
+    systems: [FIXTURE_LIMITS, FIXTURE_PROCESS],
   },
   {
-    name: "a read that names a value member instead of its view",
+    name: "a read that names a value field instead of its input",
     overrides: {
       "rules/base-move-cost.yaml": `kind: rule
 id: base-move-cost
-domain: agentlife.body/extension
+system: agentlife.body
 triggers:
   - agentlife.body/value-changed
-reads:
-  - alias: stamina
-    view: agentlife.body/values.stamina
-    field: stamina
+inputs:
+  - name: stamina
+    state: agentlife.body/values.stamina.stamina
 condition:
   op: always
-effects:
-  - target: agentlife.body/values.move-cost
-    composition: add
+changes:
+  - state: agentlife.body/values.move-cost
+    combine: add
     value:
       kind: literal
       value: 2
@@ -888,12 +873,12 @@ effects:
 `,
     },
     code: "reference-type-mismatch",
-    message: "which is a value member",
+    message: "which is a value field",
   },
 ];
 describe("configuration validation", () => {
   it.each(CASES.map((scenario) => [scenario.name, scenario] as const))("rejects %s", async (_name, scenario) => {
-    const registry = createRegistry(scenario.extensions ?? []);
+    const registry = createRegistry(scenario.systems ?? []);
     const { result, directory } = await applyDemoPack(registry, scenario.overrides);
     try {
       expect(result.status).toBe("rejected");
@@ -912,7 +897,7 @@ describe("configuration validation", () => {
 version: "1.0.0"
 kernel: ">=1.0.0 <2.0.0"
 dependencies: []
-extensions: []
+systems: []
 sections:
   world: agentlife.world/world
   widgets: test.fixture/widget
@@ -948,7 +933,7 @@ fields:
 version: "1.0.0"
 kernel: ">=1.0.0 <2.0.0"
 dependencies: []
-extensions: []
+systems: []
 sections:
   world: agentlife.world/world
   widgets: test.fixture/widget
@@ -967,14 +952,14 @@ fields:
     });
   });
 
-  it("accepts a definition whose fields come from defaults and a template", async () => {
+  it("accepts a item whose fields come from defaults and a template", async () => {
     await withTempDirectory(async (directory) => {
       writePack(directory, {
         "manifest.yaml": `pack: test.fixture
 version: "1.0.0"
 kernel: ">=1.0.0 <2.0.0"
 dependencies: []
-extensions: []
+systems: []
 sections:
   world: agentlife.world/world
   widgets: test.fixture/widget
@@ -998,31 +983,25 @@ fields:
       });
       const applied = await loadPack(createRegistry([FIXTURE_WIDGET]), directory);
       expect(applied.status, messages(applied.diagnostics)).toBe("valid");
-      const derived = applied.config?.definitions.find((definition) => definition.ref === "test.fixture/derived");
+      const derived = applied.config?.items.find((item) => item.ref === "test.fixture/derived");
       expect(derived?.values).toEqual({ label: "默认", extra: 2, flavour: "a", sealed: "固定" });
-      expect(derived?.fields.label?.contributions.map((contribution) => contribution.layer)).toEqual([
-        "default",
-        "template",
-      ]);
-      expect(derived?.fields.extra?.contributions.map((contribution) => contribution.layer)).toEqual([
-        "template",
-        "override",
-      ]);
+      expect(derived?.fields.label?.ruleValues.map((ruleValue) => ruleValue.layer)).toEqual(["default", "template"]);
+      expect(derived?.fields.extra?.ruleValues.map((ruleValue) => ruleValue.layer)).toEqual(["template", "override"]);
     });
   });
 
   it("composes the largest of several sources for a max target", async () => {
     await withTempDirectory(async (directory) => {
-      const mapped = (id: string, value: string, reads: string): string => `kind: rule
+      const mapped = (id: string, value: string, inputs: string): string => `kind: rule
 id: ${id}
-domain: test.limits/extension
+system: test.limits
 triggers:
   - test.limits/changed
-${reads}condition:
+${inputs}condition:
   op: always
-effects:
-  - target: test.limits/signals.limit
-    composition: max
+changes:
+  - state: test.limits/signals.limit
+    combine: max
     value:
 ${value}
 `;
@@ -1031,7 +1010,7 @@ ${value}
 version: "1.0.0"
 kernel: ">=1.0.0 <2.0.0"
 dependencies: []
-extensions: []
+systems: []
 sections:
   world: agentlife.world/world
   signals: test.limits/signal
@@ -1050,7 +1029,7 @@ fields:
           `      kind: map
       input:
         kind: read
-        alias: value
+        name: value
       mapping:
         kind: threshold
         inputUnit: points
@@ -1068,46 +1047,45 @@ fields:
             max: 100
             boundary: inclusive
           overflow: saturate`,
-          `reads:
-  - alias: value
-    view: test.limits/state
-    field: value
+          `inputs:
+  - name: value
+    state: test.limits/state.value
 `,
         ),
       });
       const registry = createRegistry([FIXTURE_LIMITS]);
       const applied = await loadPack(registry, directory);
       expect(applied.status, messages(applied.diagnostics)).toBe("valid");
-      const evaluated = registry.evaluate({
-        requestId: "limits",
+      const evaluated = registry.runRules({
+        runId: "limits",
         trigger: "test.limits/changed",
-        snapshot: {
+        input: {
           stateVersion: "state-1",
-          simulationTime: { tick: 1, seconds: 10 },
-          views: { "test.limits/state": { value: 80 } },
+          simTime: { tick: 1, seconds: 10 },
+          inputs: { "test.limits/state": { value: 80 } },
         },
       });
-      expect(evaluated.status).toBe("candidates");
-      const composition = evaluated.trace.compositions[0];
-      expect(composition?.composition).toBe("max");
-      expect(composition?.contributions.map((contribution) => contribution.value)).toEqual([40, 70]);
-      expect(composition?.result).toBe(70);
-      expect(evaluated.trace.candidates[0]?.value).toBe(70);
+      expect(evaluated.status).toBe("changes");
+      const combine = evaluated.trace.combines[0];
+      expect(combine?.combine).toBe("max");
+      expect(combine?.ruleValues.map((ruleValue) => ruleValue.value)).toEqual([40, 70]);
+      expect(combine?.result).toBe(70);
+      expect(evaluated.trace.stateChanges[0]?.newValue).toBe(70);
     });
   });
 });
 
 /**
  * A config type whose `extra` field declares no merge strategy: any second
- * contribution to it must be refused rather than resolved by load order.
+ * ruleValue to it must be refused rather than resolved by load order.
  */
-const FIXTURE_WIDGET: DomainExtension = {
-  name: "extension",
+const FIXTURE_WIDGET: SystemSpec = {
+  name: "system",
   namespace: "test.fixture",
   version: "1.0.0",
   kernel: ">=1.0.0 <2.0.0",
   requires: [],
-  configTypes: [
+  items: [
     {
       kind: "widget",
       fields: Type.Object({
@@ -1118,12 +1096,12 @@ const FIXTURE_WIDGET: DomainExtension = {
       }),
       defaults: { label: "默认", sealed: "固定" },
       // `flavour` deliberately declares no merge strategy: a second
-      // contribution to it must be refused instead of resolved by load order.
+      // ruleValue to it must be refused instead of resolved by load order.
       overridable: ["extra", "flavour"],
       merge: { label: "replace", extra: "replace", sealed: "replace" },
     },
   ],
-  views: [],
+  inputs: [],
   triggers: [],
-  outputTargets: [],
+  outputs: [],
 };

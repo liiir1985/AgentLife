@@ -1,33 +1,33 @@
 /**
  * Numeric semantics of the shared kernel.
  *
- * Every numeric value in the kernel passes through a declared `NumericPolicy`
+ * Every numeric value in the kernel passes through a declared `NumberPolicy`
  * (unit, rounding, range boundary, overflow) and every mapped value comes from a
  * declared mapping form (hard threshold, piecewise constant, piecewise linear).
- * Nothing here reads the platform's implicit behaviour: rounding mode, boundary
+ * Nothing here inputs the platform's implicit behaviour: rounding mode, boundary
  * inclusion and out-of-range behaviour are all explicit, and a declaration that
  * omits one of them is invalid rather than silently defaulted.
  */
 
 export type RoundingMode = "none" | "half-away-from-zero" | "floor" | "ceil" | "truncate";
 
-export interface RoundingDeclaration {
+export interface RoundingRule {
   readonly mode: RoundingMode;
   /** Decimal places kept by the rounding mode; must be 0 when mode is `none`. */
   readonly precision: number;
 }
 
-export interface RangeDeclaration {
+export interface NumberRange {
   /** `null` means unbounded; the null must be written out to count as declared. */
   readonly min: number | null;
   readonly max: number | null;
   readonly boundary: "inclusive" | "exclusive";
 }
 
-export interface NumericPolicy {
+export interface NumberPolicy {
   readonly unit: string;
-  readonly rounding: RoundingDeclaration;
-  readonly range: RangeDeclaration;
+  readonly rounding: RoundingRule;
+  readonly range: NumberRange;
   readonly overflow: "saturate" | "reject";
 }
 
@@ -36,7 +36,7 @@ export interface NumericPolicy {
  * mappings. Absent parts carry no constraint: a value that declares nothing is
  * unit-less, unrounded, unbounded and saturating.
  */
-export interface PartialNumericPolicy {
+export interface PartialNumberPolicy {
   readonly unit?: string;
   readonly rounding?: { readonly mode?: RoundingMode; readonly precision?: number };
   readonly range?: {
@@ -48,7 +48,7 @@ export interface PartialNumericPolicy {
 }
 
 /** Merges a declared policy block with the constraints-free defaults. */
-export function resolveNumericPolicy(partial: PartialNumericPolicy | undefined): NumericPolicy | null {
+export function resolveNumberPolicy(partial: PartialNumberPolicy | undefined): NumberPolicy | null {
   if (partial === undefined) return null;
   return {
     unit: partial.unit ?? "",
@@ -62,19 +62,19 @@ export function resolveNumericPolicy(partial: PartialNumericPolicy | undefined):
   };
 }
 
-/** Dimensionless factors, the only unit accepted for `multiply` contributions. */
+/** Dimensionless factors, the only unit accepted for `multiply` ruleValues. */
 export const RATIO_UNIT = "ratio";
 
-/** Composition methods supported by the first stage. */
-export type CompositionKind = "priority" | "min" | "max" | "add" | "multiply";
+/** Ways rule values may be combined. */
+export type CombineMode = "priority" | "min" | "max" | "add" | "multiply";
 
 const ROUNDING_MODES: readonly RoundingMode[] = ["none", "half-away-from-zero", "floor", "ceil", "truncate"];
 
-export function isCompositionKind(value: string): value is CompositionKind {
+export function isCombineMode(value: string): value is CombineMode {
   return value === "priority" || value === "min" || value === "max" || value === "add" || value === "multiply";
 }
 
-export function validateNumericPolicy(policy: NumericPolicy, path: string): string[] {
+export function checkNumberPolicy(policy: NumberPolicy, path: string): string[] {
   const problems: string[] = [];
   if (typeof policy.unit !== "string" || policy.unit !== policy.unit.trim())
     problems.push(`${path}.unit must be a unit name or "" for a dimensionless value`);
@@ -100,7 +100,7 @@ export function validateNumericPolicy(policy: NumericPolicy, path: string): stri
   return problems;
 }
 
-export type NumericResult =
+export type NumberResult =
   | { readonly ok: true; readonly value: number }
   | { readonly ok: false; readonly reason: "out-of-range"; readonly message: string };
 
@@ -108,7 +108,7 @@ function normalize(value: number): number {
   return Object.is(value, -0) ? 0 : value;
 }
 
-export function roundValue(value: number, rounding: RoundingDeclaration): number {
+export function roundValue(value: number, rounding: RoundingRule): number {
   if (rounding.mode === "none") return normalize(value);
   const scale = 10 ** rounding.precision;
   const scaled = value * scale;
@@ -130,7 +130,7 @@ function stepInside(bound: number, direction: 1 | -1): number {
   return normalize(bound + direction * step);
 }
 
-export function isWithinRange(value: number, range: RangeDeclaration): boolean {
+export function isWithinRange(value: number, range: NumberRange): boolean {
   const belowMin = range.min !== null && (range.boundary === "inclusive" ? value < range.min : value <= range.min);
   const aboveMax = range.max !== null && (range.boundary === "inclusive" ? value > range.max : value >= range.max);
   return !belowMin && !aboveMax;
@@ -140,7 +140,7 @@ export function isWithinRange(value: number, range: RangeDeclaration): boolean {
  * Final normalization of a numeric value: rounding, then range, then overflow.
  * `reject` reports an out-of-range result instead of silently clamping it.
  */
-export function applyNumericPolicy(value: number, policy: NumericPolicy): NumericResult {
+export function applyNumberPolicy(value: number, policy: NumberPolicy): NumberResult {
   if (!Number.isFinite(value))
     return {
       ok: false,
@@ -165,7 +165,7 @@ export function applyNumericPolicy(value: number, policy: NumericPolicy): Numeri
 }
 
 /** Out-of-range behaviour of a mapping; `invalid` fails the evaluation loudly. */
-export type OutOfRangeBehaviour =
+export type RangeMode =
   { readonly kind: "clamp" } | { readonly kind: "value"; readonly value: number } | { readonly kind: "invalid" };
 
 export interface ThresholdMapping {
@@ -177,7 +177,7 @@ export interface ThresholdMapping {
   readonly boundary: "lower" | "upper";
   readonly below: number;
   readonly above: number;
-  readonly policy: NumericPolicy;
+  readonly policy: NumberPolicy;
 }
 
 export interface PiecewiseConstantBand {
@@ -190,8 +190,8 @@ export interface PiecewiseConstantMapping {
   readonly kind: "piecewise-constant";
   readonly inputUnit: string;
   readonly bands: readonly PiecewiseConstantBand[];
-  readonly outOfRange: OutOfRangeBehaviour;
-  readonly policy: NumericPolicy;
+  readonly outOfRange: RangeMode;
+  readonly policy: NumberPolicy;
 }
 
 export interface PiecewiseLinearPoint {
@@ -203,17 +203,17 @@ export interface PiecewiseLinearMapping {
   readonly kind: "piecewise-linear";
   readonly inputUnit: string;
   readonly points: readonly PiecewiseLinearPoint[];
-  readonly outOfRange: OutOfRangeBehaviour;
-  readonly policy: NumericPolicy;
+  readonly outOfRange: RangeMode;
+  readonly policy: NumberPolicy;
 }
 
-export type NumericMapping = ThresholdMapping | PiecewiseConstantMapping | PiecewiseLinearMapping;
+export type ValueMap = ThresholdMapping | PiecewiseConstantMapping | PiecewiseLinearMapping;
 
-export function mappingUnit(mapping: NumericMapping): string {
+export function mapUnit(mapping: ValueMap): string {
   return mapping.policy.unit;
 }
 
-export function validateOutOfRange(behaviour: OutOfRangeBehaviour, path: string): string[] {
+export function validateOutOfRange(behaviour: RangeMode, path: string): string[] {
   if (typeof behaviour !== "object" || behaviour === null) return [`${path} must declare an out-of-range behaviour`];
   switch (behaviour.kind) {
     case "clamp":
@@ -231,11 +231,11 @@ export function validateOutOfRange(behaviour: OutOfRangeBehaviour, path: string)
  * increasing (no undeclared overlap) and the out-of-range behaviour must be
  * declared (no undeclared gap).
  */
-export function validateMapping(mapping: NumericMapping, path: string): string[] {
+export function checkMap(mapping: ValueMap, path: string): string[] {
   const problems: string[] = [];
   if (typeof mapping.inputUnit !== "string" || mapping.inputUnit.trim() === "")
     problems.push(`${path}.inputUnit must be a non-empty unit name`);
-  problems.push(...validateNumericPolicy(mapping.policy, `${path}.policy`));
+  problems.push(...checkNumberPolicy(mapping.policy, `${path}.policy`));
   switch (mapping.kind) {
     case "threshold": {
       for (const [label, value] of [
@@ -284,11 +284,11 @@ export function validateMapping(mapping: NumericMapping, path: string): string[]
   return problems;
 }
 
-export type MappingResult =
+export type MapResult =
   | { readonly ok: true; readonly value: number }
   | { readonly ok: false; readonly reason: "not-finite" | "out-of-range"; readonly message: string };
 
-function resolveOutOfRange(behaviour: OutOfRangeBehaviour, clampValue: number, message: string): MappingResult {
+function resolveOutOfRange(behaviour: RangeMode, clampValue: number, message: string): MapResult {
   switch (behaviour.kind) {
     case "clamp":
       return { ok: true, value: clampValue };
@@ -300,7 +300,7 @@ function resolveOutOfRange(behaviour: OutOfRangeBehaviour, clampValue: number, m
 }
 
 /** Evaluates a declared mapping; the result still carries the mapping's policy. */
-export function evaluateMapping(mapping: NumericMapping, input: number): MappingResult {
+export function runMap(mapping: ValueMap, input: number): MapResult {
   if (!Number.isFinite(input))
     return { ok: false, reason: "not-finite", message: `Mapping input ${String(input)} is not a finite number` };
   switch (mapping.kind) {

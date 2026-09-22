@@ -3,9 +3,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ContentPackLoader } from "../../src/content/content-pack-loader.js";
-import { ConfigurationRegistry, contentPackInput, type ApplyResult } from "../../src/config/registry.js";
-import { createDomainExtensions } from "../../src/domains/index.js";
-import type { DomainExtension } from "../../src/config/extension.js";
+import { CoreRuntime, packInput, type PublishResult } from "../../src/config/core-runtime.js";
+import { createSystemSpecs } from "../../src/systems/index.js";
+import type { SystemSpec } from "../../src/config/system-spec.js";
 
 /**
  * Test helpers around the stage 1 demo content.
@@ -32,7 +32,7 @@ export const REFS = {
   visionAvailable: "agentlife.body/channels.vision.available",
 } as const;
 
-/** Default world settings every fixture pack needs to satisfy the world domain. */
+/** Default world settings every fixture pack needs to satisfy the world system. */
 export const FIXTURE_WORLD = `id: settings
 type: agentlife.world/world
 fields:
@@ -40,12 +40,12 @@ fields:
   description: 仅用于验证。
 `;
 
-export function createRegistry(extraExtensions: readonly DomainExtension[] = []): ConfigurationRegistry {
-  const registry = new ConfigurationRegistry();
-  for (const extension of [...createDomainExtensions(), ...extraExtensions]) {
-    const result = registry.registerExtension(extension);
+export function createRegistry(extraExtensions: readonly SystemSpec[] = []): CoreRuntime {
+  const registry = new CoreRuntime();
+  for (const system of [...createSystemSpecs(), ...extraExtensions]) {
+    const result = registry.addSystem(system);
     if (result.status !== "registered")
-      throw new Error(`extension ${extension.namespace} failed to register: ${JSON.stringify(result.diagnostics)}`);
+      throw new Error(`system ${system.namespace} failed to register: ${JSON.stringify(result.diagnostics)}`);
   }
   return registry;
 }
@@ -87,15 +87,15 @@ export function removeDirectory(directory: string): void {
   rmSync(directory, { recursive: true, force: true });
 }
 
-export async function loadPack(registry: ConfigurationRegistry, directory: string): Promise<ApplyResult> {
-  const snapshot = await new ContentPackLoader().load(directory);
-  return registry.apply({ root: contentPackInput(snapshot) });
+export async function loadPack(registry: CoreRuntime, directory: string): Promise<PublishResult> {
+  const input = await new ContentPackLoader().load(directory);
+  return registry.publish({ root: packInput(input) });
 }
 
 export async function applyDemoPack(
-  registry: ConfigurationRegistry,
+  registry: CoreRuntime,
   overrides: Readonly<Record<string, string | null>> = {},
-): Promise<{ readonly result: ApplyResult; readonly directory: string }> {
+): Promise<{ readonly result: PublishResult; readonly directory: string }> {
   const directory = copyDemoPack(overrides);
   try {
     return { result: await loadPack(registry, directory), directory };
@@ -112,11 +112,11 @@ export const DEMO_VIEWS: Readonly<Record<string, unknown>> = {
   [REFS.bodyChannels]: { "vision.available": true, "vision.efficiency": 0.8 },
 };
 
-export function demoRequest(trigger: string, requestId = "request-1") {
+export function demoRequest(trigger: string, runId = "request-1") {
   return {
-    requestId,
+    runId,
     trigger,
-    snapshot: { stateVersion: "state-1", simulationTime: { tick: 3, seconds: 30 }, views: DEMO_VIEWS },
+    input: { stateVersion: "state-1", simTime: { tick: 3, seconds: 30 }, inputs: DEMO_VIEWS },
   };
 }
 

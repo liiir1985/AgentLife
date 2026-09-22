@@ -1,21 +1,21 @@
 import { Type } from "typebox";
 import { error } from "../config/diagnostics.js";
-import type { DomainDefinitionView, DomainExtension } from "../config/extension.js";
+import type { SystemItem, SystemSpec } from "../config/system-spec.js";
 
 /**
- * Character domain extension.
+ * Character system system.
  *
  * Registers the character config type and the creation-time invariants the
  * character system owns: capability tier, control source, subsystem modules and
  * the main-entity flag must agree with each other before a config can load.
  *
  * `identity` is free text: the kernel hashes it into the configuration identity
- * but never interprets it, and the character domain only requires that an
+ * but never interprets it, and the character system only requires that an
  * initial version exists. Structuring a life story, a personality or a set of
  * preferences is a cognition concern, not a configuration-schema concern.
  *
- * The scheduling view it exposes is management information and is granted to no
- * other extension, so no runtime rule can read tier or control routing.
+ * The scheduling input it exposes is management information and is granted to no
+ * other system, so no runtime rule can read tier or control routing.
  */
 
 const CONTROL_SCHEMA = Type.Object(
@@ -68,74 +68,62 @@ function reportInvariant(
   subject: string,
   message: string,
 ): void {
-  report(error("domain", "domain-rejected", message, { subject }));
+  report(error("system", "system-rejected", message, { subject }));
 }
 
-function checkTier(definition: DomainDefinitionView, report: (diagnostic: ReturnType<typeof error>) => void): void {
-  const tier = definition.values.tier;
-  const control = definition.values.control;
-  const modules = Array.isArray(definition.values.modules)
-    ? definition.values.modules.filter((module): module is string => typeof module === "string")
+function checkTier(item: SystemItem, report: (diagnostic: ReturnType<typeof error>) => void): void {
+  const tier = item.values.tier;
+  const control = item.values.control;
+  const modules = Array.isArray(item.values.modules)
+    ? item.values.modules.filter((module): module is string => typeof module === "string")
     : [];
-  const main = definition.values.main === true;
+  const main = item.values.main === true;
   const kind = typeof control === "object" && control !== null ? Reflect.get(control, "kind") : undefined;
 
   if (tier === "dynamic" && kind !== "none")
     reportInvariant(
       report,
-      definition.ref,
-      `${definition.ref} is a dynamic entity and must not declare an autonomous decision entry`,
+      item.ref,
+      `${item.ref} is a dynamic entity and must not declare an autonomous decision entry`,
     );
   if (tier === "degraded" && kind !== "behaviour-tree")
-    reportInvariant(report, definition.ref, `${definition.ref} is a degraded entity and must use a behaviour tree`);
+    reportInvariant(report, item.ref, `${item.ref} is a degraded entity and must use a behaviour tree`);
   if (tier === "normal" && kind !== "cognition" && kind !== "user")
-    reportInvariant(
-      report,
-      definition.ref,
-      `${definition.ref} is a normal entity and must use a cognition or user decision entry`,
-    );
+    reportInvariant(report, item.ref, `${item.ref} is a normal entity and must use a cognition or user decision entry`);
   if (tier !== "normal" && main)
-    reportInvariant(report, definition.ref, `${definition.ref} is not a normal entity and cannot be a main entity`);
+    reportInvariant(report, item.ref, `${item.ref} is not a normal entity and cannot be a main entity`);
   if (tier === "degraded")
     for (const module of modules)
       if (SUBJECTIVE_MODULES.includes(module))
-        reportInvariant(
-          report,
-          definition.ref,
-          `${definition.ref} is a degraded entity and must not reference ${module}`,
-        );
+        reportInvariant(report, item.ref, `${item.ref} is a degraded entity and must not reference ${module}`);
   if (tier === "dynamic" && modules.length > 0)
-    reportInvariant(
-      report,
-      definition.ref,
-      `${definition.ref} is a dynamic entity and must not declare subsystem modules`,
-    );
+    reportInvariant(report, item.ref, `${item.ref} is a dynamic entity and must not declare subsystem modules`);
   if (tier === "normal" && modules.includes("behaviour-tree"))
     reportInvariant(
       report,
-      definition.ref,
-      `${definition.ref} is a normal entity and must not run a behaviour tree next to full cognition`,
+      item.ref,
+      `${item.ref} is a normal entity and must not run a behaviour tree next to full cognition`,
     );
   if (kind === "cognition" && !modules.includes("cognition"))
-    reportInvariant(report, definition.ref, `${definition.ref} uses a cognition entry without a cognition module`);
+    reportInvariant(report, item.ref, `${item.ref} uses a cognition entry without a cognition module`);
   if (kind === "user" && modules.includes("cognition") && !modules.includes("memory"))
-    reportInvariant(report, definition.ref, `${definition.ref} keeps cognition state without subjective memory`);
+    reportInvariant(report, item.ref, `${item.ref} keeps cognition state without subjective memory`);
 }
 
-function checkIdentity(definition: DomainDefinitionView, report: (diagnostic: ReturnType<typeof error>) => void): void {
-  const identity = definition.values.identity;
+function checkIdentity(item: SystemItem, report: (diagnostic: ReturnType<typeof error>) => void): void {
+  const identity = item.values.identity;
   if (typeof identity !== "string" || identity.trim() === "")
-    reportInvariant(report, definition.ref, `${definition.ref}.identity must carry an initial version`);
+    reportInvariant(report, item.ref, `${item.ref}.identity must carry an initial version`);
 }
 
-export function createCharacterExtension(): DomainExtension {
+export function createCharacterSpec(): SystemSpec {
   return {
-    name: "extension",
+    name: "system",
     namespace: "agentlife.character",
     version: "1.0.0",
     kernel: ">=1.0.0 <2.0.0",
     requires: [],
-    configTypes: [
+    items: [
       {
         kind: "character",
         fields: CHARACTER_SCHEMA,
@@ -151,30 +139,30 @@ export function createCharacterExtension(): DomainExtension {
           modules: "append",
           homeLocation: "replace",
         },
-        validate: ({ definitions, report }) => {
-          for (const definition of definitions) {
-            checkTier(definition, report);
-            checkIdentity(definition, report);
+        validate: ({ items, report }) => {
+          for (const item of items) {
+            checkTier(item, report);
+            checkIdentity(item, report);
           }
         },
       },
     ],
-    views: [
+    inputs: [
       {
         name: "schedule",
         fields: SCHEDULE_VIEW,
         // Scheduling classification is management information; the kernel grants
-        // it to no runtime rule domain.
+        // it to no runtime rule system.
         exposedTo: [],
       },
     ],
     triggers: ["identity-changed", "lifecycle-changed"],
-    outputTargets: [],
-    validate: ({ definitions, report }) => {
-      const mainEntities = definitions.filter((definition) => definition.values.main === true);
-      for (const definition of mainEntities)
-        if (definition.values.tier !== "normal")
-          reportInvariant(report, definition.ref, `${definition.ref} is marked main without a normal capability tier`);
+    outputs: [],
+    validate: ({ items, report }) => {
+      const mainEntities = items.filter((item) => item.values.main === true);
+      for (const item of mainEntities)
+        if (item.values.tier !== "normal")
+          reportInvariant(report, item.ref, `${item.ref} is marked main without a normal capability tier`);
     },
   };
 }

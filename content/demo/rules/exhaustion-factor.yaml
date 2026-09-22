@@ -1,16 +1,15 @@
-kind: derivation
+kind: formula
 id: exhaustion-factor
-domain: agentlife.body/extension
-reads:
-  - alias: stamina
-    view: agentlife.body/values
-    field: stamina
+system: agentlife.body
+inputs:
+  - name: stamina
+    state: agentlife.body/values.stamina
 outputUnit: ratio
 value:
   kind: map
   input:
     kind: read
-    alias: stamina
+    name: stamina
   mapping:
     kind: piecewise-constant
     inputUnit: points

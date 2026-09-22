@@ -1,22 +1,21 @@
 kind: rule
 id: terrain-move-cost-factor
-domain: agentlife.body/extension
+system: agentlife.body
 triggers:
   - agentlife.body/value-changed
-reads:
-  - alias: slope
-    view: agentlife.world/environment
-    field: slope
+inputs:
+  - name: slope
+    state: agentlife.world/environment.slope
 condition:
   op: always
-effects:
-  - target: agentlife.body/values.move-cost-factor
-    composition: multiply
+changes:
+  - state: agentlife.body/values.move-cost-factor
+    combine: multiply
     value:
       kind: map
       input:
         kind: read
-        alias: slope
+        name: slope
       mapping:
         kind: piecewise-constant
         inputUnit: ratio

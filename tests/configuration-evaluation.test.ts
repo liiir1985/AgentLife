@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { evaluate } from "../src/config/evaluate.js";
-import type { CompiledRuntimeConfig } from "../src/config/compile.js";
-import type { DomainExtension } from "../src/config/extension.js";
+import { runRules } from "../src/config/rule-engine.js";
+import type { RuntimeConfig } from "../src/config/config-builder.js";
+import type { SystemSpec } from "../src/config/system-spec.js";
 import { Type } from "typebox";
 import {
   applyDemoPack,
@@ -15,17 +15,17 @@ import {
   writePack,
 } from "./helpers/demo-pack.js";
 
-/** A domain that still declares one process, used to exercise the runtime path. */
-const FIXTURE_PROCESS: DomainExtension = {
-  name: "extension",
+/** A system that still declares one process, used to exercise the runtime path. */
+const FIXTURE_PROCESS: SystemSpec = {
+  name: "system",
   namespace: "test.process",
   version: "1.0.0",
   kernel: ">=1.0.0 <2.0.0",
   requires: [],
-  configTypes: [],
-  views: [],
+  items: [],
+  inputs: [],
   triggers: [],
-  outputTargets: [],
+  outputs: [],
   processes: [
     {
       name: "recovery",
@@ -36,22 +36,22 @@ const FIXTURE_PROCESS: DomainExtension = {
 };
 
 describe("deterministic evaluation", () => {
-  it("produces the same candidates and trace for the same config, snapshot and time", async () => {
+  it("produces the same stateChanges and trace for the same config, input and time", async () => {
     const registry = createRegistry();
     const { result, directory } = await applyDemoPack(registry);
     try {
       expect(result.status).toBe("valid");
-      const first = registry.evaluate(demoRequest("agentlife.body/value-changed"));
-      const second = registry.evaluate(demoRequest("agentlife.body/value-changed"));
+      const first = registry.runRules(demoRequest("agentlife.body/value-changed"));
+      const second = registry.runRules(demoRequest("agentlife.body/value-changed"));
       expect(JSON.stringify(first)).toBe(JSON.stringify(second));
-      expect(first.configIdentity).toBe(result.config?.identity);
+      expect(first.configId).toBe(result.config?.configId);
 
-      const values = Object.fromEntries(first.trace.candidates.map((entry) => [entry.target, entry.value]));
+      const values = Object.fromEntries(first.trace.stateChanges.map((entry) => [entry.stateRef, entry.newValue]));
       expect(values["agentlife.body/values.stamina"]).toBe(0);
       expect(values["agentlife.body/values.move-cost"]).toBe(5.7);
       expect(values["agentlife.body/values.move-cost-factor"]).toBe(2.52);
       expect(values["agentlife.body/cognitive-participation"]).toBe("restricted");
-      expect(first.status).toBe("candidates");
+      expect(first.status).toBe("changes");
     } finally {
       removeDirectory(directory);
     }
@@ -63,46 +63,44 @@ describe("deterministic evaluation", () => {
     try {
       expect(result.status).toBe("valid");
 
-      const perTick = registry.evaluate(demoRequest("agentlife.body/tick-elapsed", "tick"));
-      const wakefulness = perTick.trace.compositions.find(
-        (composition) => composition.target === "agentlife.body/values.wakefulness",
+      const perTick = registry.runRules(demoRequest("agentlife.body/tick-elapsed", "tick"));
+      const wakefulness = perTick.trace.combines.find(
+        (combine) => combine.stateRef === "agentlife.body/values.wakefulness",
       );
-      expect(wakefulness?.composition).toBe("priority");
-      expect(wakefulness?.contributions.map((contribution) => contribution.rule)).toEqual([
+      expect(wakefulness?.combine).toBe("priority");
+      expect(wakefulness?.ruleValues.map((ruleValue) => ruleValue.ruleId)).toEqual([
         "agentlife.demo/daylight-wakefulness",
         "agentlife.demo/lamp-stimulus",
       ]);
       expect(wakefulness?.result).toBe(80);
-      const stamina = perTick.trace.compositions.find(
-        (composition) => composition.target === "agentlife.body/values.stamina",
-      );
-      expect(stamina?.composition).toBe("add");
+      const stamina = perTick.trace.combines.find((combine) => combine.stateRef === "agentlife.body/values.stamina");
+      expect(stamina?.combine).toBe("add");
       expect(stamina?.result).toBe(5);
 
-      const environment = registry.evaluate(demoRequest("agentlife.world/environment-changed", "environment"));
-      const visibility = environment.trace.compositions.find(
-        (composition) => composition.target === "agentlife.world/environment.visibility",
+      const environment = registry.runRules(demoRequest("agentlife.world/environment-changed", "environment"));
+      const visibility = environment.trace.combines.find(
+        (combine) => combine.stateRef === "agentlife.world/environment.visibility",
       );
-      expect(visibility?.composition).toBe("min");
+      expect(visibility?.combine).toBe("min");
       expect(visibility?.result).toBe(0.15);
 
-      const cost = registry.evaluate(demoRequest("agentlife.body/value-changed", "cost"));
-      const factor = cost.trace.compositions.find(
-        (composition) => composition.target === "agentlife.body/values.move-cost-factor",
+      const cost = registry.runRules(demoRequest("agentlife.body/value-changed", "cost"));
+      const factor = cost.trace.combines.find(
+        (combine) => combine.stateRef === "agentlife.body/values.move-cost-factor",
       );
-      expect(factor?.composition).toBe("multiply");
-      expect(factor?.contributions.map((contribution) => contribution.value)).toEqual([1.5, 1.2, 1.4]);
+      expect(factor?.combine).toBe("multiply");
+      expect(factor?.ruleValues.map((ruleValue) => ruleValue.value)).toEqual([1.5, 1.2, 1.4]);
       expect(factor?.result).toBe(2.52);
 
-      const participation = registry.evaluate(demoRequest("agentlife.body/value-changed", "participation"));
-      expect(participation.trace.compositions.map((entry) => entry.target)).toContain(
+      const participation = registry.runRules(demoRequest("agentlife.body/value-changed", "participation"));
+      expect(participation.trace.combines.map((entry) => entry.stateRef)).toContain(
         "agentlife.body/cognitive-participation",
       );
-      const permission = participation.trace.candidates.find(
-        (candidate) => candidate.target === "agentlife.body/cognitive-participation",
+      const permission = participation.trace.stateChanges.find(
+        (candidate) => candidate.stateRef === "agentlife.body/cognitive-participation",
       );
-      expect(permission?.value).toBe("restricted");
-      expect(participation.trace.candidates.map((candidate) => candidate.target)).not.toContain(
+      expect(permission?.newValue).toBe("restricted");
+      expect(participation.trace.stateChanges.map((candidate) => candidate.stateRef)).not.toContain(
         "agentlife.world/environment.visibility",
       );
     } finally {
@@ -115,20 +113,20 @@ describe("deterministic evaluation", () => {
     const { result, directory } = await applyDemoPack(registry);
     try {
       expect(result.status).toBe("valid");
-      const result_ = registry.evaluate(demoRequest("agentlife.body/tick-elapsed"));
-      expect(result_.trace.indexed).toEqual([
+      const result_ = registry.runRules(demoRequest("agentlife.body/tick-elapsed"));
+      expect(result_.trace.selectedRules).toEqual([
         "agentlife.demo/daylight-wakefulness",
         "agentlife.demo/lamp-stimulus",
         "agentlife.demo/rest-recovery",
       ]);
-      expect(result_.trace.notIndexed).toContain("agentlife.demo/fog-visibility");
-      expect(result_.trace.rules.map((rule) => rule.rule)).toEqual(result_.trace.indexed);
+      expect(result_.trace.skippedRules).toContain("agentlife.demo/fog-visibility");
+      expect(result_.trace.rules.map((rule) => rule.ruleId)).toEqual(result_.trace.selectedRules);
 
-      const unmatched = registry.evaluate(demoRequest("agentlife.character/lifecycle-changed"));
+      const unmatched = registry.runRules(demoRequest("agentlife.character/lifecycle-changed"));
       expect(unmatched.status).toBe("no-match");
-      expect(unmatched.trace.indexed).toEqual([]);
-      expect(unmatched.trace.candidates).toEqual([]);
-      expect(unmatched.trace.notIndexed).toHaveLength(result.config?.rules.length ?? 0);
+      expect(unmatched.trace.selectedRules).toEqual([]);
+      expect(unmatched.trace.stateChanges).toEqual([]);
+      expect(unmatched.trace.skippedRules).toHaveLength(result.config?.rules.length ?? 0);
     } finally {
       removeDirectory(directory);
     }
@@ -139,32 +137,31 @@ describe("deterministic evaluation", () => {
     const { result, directory } = await applyDemoPack(registry, {
       "rules/lamp-stimulus.yaml": `kind: rule
 id: lamp-stimulus
-domain: agentlife.body/extension
+system: agentlife.body
 triggers:
   - agentlife.body/tick-elapsed
-reads:
-  - alias: lamp
-    view: agentlife.world/environment
-    field: lamp-state
+inputs:
+  - name: lamp
+    state: agentlife.world/environment.lamp-state
 condition:
   op: compare
   left:
     kind: read
-    alias: lamp
+    name: lamp
   right:
     kind: literal
     value: 1
     unit: state
   operator: eq
-effects:
-  - target: agentlife.body/values.wakefulness
-    composition: priority
+changes:
+  - state: agentlife.body/values.wakefulness
+    combine: priority
     priority: 10
     value:
       kind: map
       input:
         kind: read
-        alias: lamp
+        name: lamp
       mapping:
         kind: threshold
         inputUnit: state
@@ -186,14 +183,14 @@ effects:
     });
     try {
       expect(result.status).toBe("valid");
-      const evaluated = registry.evaluate(demoRequest("agentlife.body/tick-elapsed"));
+      const evaluated = registry.runRules(demoRequest("agentlife.body/tick-elapsed"));
       expect(evaluated.status).toBe("conflict");
-      const conflict = evaluated.trace.compositions.find(
-        (composition) => composition.target === "agentlife.body/values.wakefulness",
+      const conflict = evaluated.trace.combines.find(
+        (combine) => combine.stateRef === "agentlife.body/values.wakefulness",
       );
       expect(conflict?.status).toBe("conflict");
       expect(conflict?.conflicting).toEqual(["agentlife.demo/daylight-wakefulness", "agentlife.demo/lamp-stimulus"]);
-      expect(evaluated.trace.candidates.map((candidate) => candidate.target)).toEqual([
+      expect(evaluated.trace.stateChanges.map((candidate) => candidate.stateRef)).toEqual([
         "agentlife.body/values.stamina",
       ]);
     } finally {
@@ -206,18 +203,17 @@ effects:
     const { result, directory } = await applyDemoPack(registry, {
       "rules/base-move-cost.yaml": `kind: rule
 id: base-move-cost
-domain: agentlife.body/extension
+system: agentlife.body
 triggers:
   - agentlife.body/value-changed
-reads:
-  - alias: load
-    view: agentlife.body/values
-    field: load
+inputs:
+  - name: load
+    state: agentlife.body/values.load
 condition:
   op: always
-effects:
-  - target: agentlife.body/values.move-cost
-    composition: add
+changes:
+  - state: agentlife.body/values.move-cost
+    combine: add
     value:
       kind: literal
       value: 500
@@ -226,14 +222,12 @@ effects:
     });
     try {
       expect(result.status).toBe("valid");
-      const evaluated = registry.evaluate(demoRequest("agentlife.body/value-changed"));
+      const evaluated = registry.runRules(demoRequest("agentlife.body/value-changed"));
       expect(evaluated.status).toBe("inexpressible");
-      const composition = evaluated.trace.compositions.find(
-        (trace) => trace.target === "agentlife.body/values.move-cost",
-      );
-      expect(composition?.status).toBe("rejected");
-      expect(composition?.message).toContain("declared range");
-      expect(evaluated.trace.candidates.map((candidate) => candidate.target)).not.toContain(
+      const combine = evaluated.trace.combines.find((trace) => trace.stateRef === "agentlife.body/values.move-cost");
+      expect(combine?.status).toBe("rejected");
+      expect(combine?.message).toContain("declared range");
+      expect(evaluated.trace.stateChanges.map((candidate) => candidate.stateRef)).not.toContain(
         "agentlife.body/values.move-cost",
       );
     } finally {
@@ -246,13 +240,13 @@ effects:
     const { result, directory } = await applyDemoPack(registry);
     try {
       expect(result.status).toBe("valid");
-      const evaluated = registry.evaluate({
-        requestId: "missing-view",
+      const evaluated = registry.runRules({
+        runId: "missing-input",
         trigger: "agentlife.body/value-changed",
-        snapshot: {
+        input: {
           stateVersion: "state-1",
-          simulationTime: { tick: 3, seconds: 30 },
-          views: {
+          simTime: { tick: 3, seconds: 30 },
+          inputs: {
             "agentlife.world/environment": {
               slope: 0.3,
               "light-level": 40,
@@ -264,13 +258,13 @@ effects:
         },
       });
       expect(evaluated.status).toBe("input-invalid");
-      const rule = evaluated.trace.rules.find((trace) => trace.rule === "agentlife.demo/base-move-cost");
-      expect(rule?.outcome).toBe("input-missing");
+      const rule = evaluated.trace.rules.find((trace) => trace.ruleId === "agentlife.demo/base-move-cost");
+      expect(rule?.status).toBe("input-missing");
       expect(rule?.message).toContain("load");
-      // Rules that could be answered still report their candidates; the status
+      // Rules that could be answered still report their stateChanges; the status
       // marks the evaluation as incomplete, so a partial set is never mistaken
       // for a complete one.
-      expect(evaluated.trace.candidates.map((candidate) => candidate.target)).toEqual([
+      expect(evaluated.trace.stateChanges.map((candidate) => candidate.stateRef)).toEqual([
         "agentlife.body/values.move-cost-factor",
       ]);
     } finally {
@@ -278,49 +272,49 @@ effects:
     }
   });
 
-  it("refuses to evaluate a deferred request against a newer state version", async () => {
+  it("refuses to runRules a deferred request against a newer state version", async () => {
     const registry = createRegistry();
     const { result, directory } = await applyDemoPack(registry);
     try {
       expect(result.status).toBe("valid");
-      const evaluated = registry.evaluate({
+      const evaluated = registry.runRules({
         ...demoRequest("agentlife.body/value-changed"),
-        dependsOnStateVersion: "state-0",
+        baseVersion: "state-0",
       });
       expect(evaluated.status).toBe("state-version-stale");
       expect(evaluated.trace.rules).toEqual([]);
-      expect(evaluated.trace.candidates).toEqual([]);
-      expect(evaluated.trace.indexed.length).toBeGreaterThan(0);
+      expect(evaluated.trace.stateChanges).toEqual([]);
+      expect(evaluated.trace.selectedRules.length).toBeGreaterThan(0);
     } finally {
       removeDirectory(directory);
     }
   });
 
-  it("proposes process operations as candidates without advancing time", async () => {
-    // No shipped domain declares a process yet, so the runtime path is exercised
-    // against a synthetic domain that still does.
+  it("returns process changes without advancing time", async () => {
+    // No shipped system declares a process yet, so the runtime path is exercised
+    // against a synthetic system that still does.
     await withTempDirectory(async (directory) => {
       writePack(directory, {
         "manifest.yaml": `pack: test.process
 version: "1.0.0"
 kernel: ">=1.0.0 <2.0.0"
 dependencies: []
-extensions: []
+systems: []
 sections:
   world: agentlife.world/world
 `,
         "world/settings.yaml": FIXTURE_WORLD,
         "rules/recovery.yaml": `kind: rule
 id: recovery
-domain: test.process/extension
+system: test.process
 triggers:
   - agentlife.body/tick-elapsed
 condition:
   op: always
-effects:
-  - process: test.process/recovery
-    operation: establish
-    parameters:
+changes:
+  - processRef: test.process/recovery
+    action: establish
+    params:
       target:
         kind: literal
         value: stamina
@@ -333,28 +327,28 @@ effects:
       const registry = createRegistry([FIXTURE_PROCESS]);
       const applied = await loadPack(registry, directory);
       expect(applied.status, messages(applied.diagnostics)).toBe("valid");
-      const evaluated = registry.evaluate(demoRequest("agentlife.body/tick-elapsed", "process"));
-      expect(evaluated.status).toBe("candidates");
-      expect(evaluated.trace.processOperations).toEqual([
+      const evaluated = registry.runRules(demoRequest("agentlife.body/tick-elapsed", "process"));
+      expect(evaluated.status).toBe("changes");
+      expect(evaluated.trace.processChanges).toEqual([
         {
-          operationId: expect.any(String),
-          process: "test.process/recovery",
-          owner: "test.process/extension",
-          operation: "establish",
-          parameters: { target: "stamina", amount: 5 },
-          rule: "test.process/recovery",
+          changeId: expect.any(String),
+          processRef: "test.process/recovery",
+          system: "test.process",
+          action: "establish",
+          params: { target: "stamina", amount: 5 },
+          sourceRule: "test.process/recovery",
         },
       ]);
-      const again = registry.evaluate(demoRequest("agentlife.body/tick-elapsed", "process"));
-      expect(again.trace.processOperations[0]?.operationId).toBe(evaluated.trace.processOperations[0]?.operationId);
+      const again = registry.runRules(demoRequest("agentlife.body/tick-elapsed", "process"));
+      expect(again.trace.processChanges[0]?.changeId).toBe(evaluated.trace.processChanges[0]?.changeId);
     });
   });
 
   it("answers config-unavailable before any version is published", async () => {
     const registry = createRegistry();
-    const evaluated = registry.evaluate(demoRequest("agentlife.body/tick-elapsed"));
+    const evaluated = registry.runRules(demoRequest("agentlife.body/tick-elapsed"));
     expect(evaluated.status).toBe("config-unavailable");
-    expect(evaluated.trace.candidates).toEqual([]);
+    expect(evaluated.trace.stateChanges).toEqual([]);
   });
 
   it("completes an evaluation against the version it started with", async () => {
@@ -364,18 +358,17 @@ effects:
     const updated = await applyDemoPack(registry, {
       "rules/lamp-stimulus.yaml": `kind: rule
 id: lamp-stimulus
-domain: agentlife.body/extension
+system: agentlife.body
 triggers:
   - agentlife.body/tick-elapsed
-reads:
-  - alias: lamp
-    view: agentlife.world/environment
-    field: lamp-state
+inputs:
+  - name: lamp
+    state: agentlife.world/environment.lamp-state
 condition:
   op: always
-effects:
-  - target: agentlife.body/values.wakefulness
-    composition: priority
+changes:
+  - state: agentlife.body/values.wakefulness
+    combine: priority
     priority: 20
     value:
       kind: literal
@@ -386,34 +379,34 @@ effects:
     try {
       expect(first.result.status).toBe("valid");
       expect(updated.result.status).toBe("valid");
-      expect(updated.result.config?.identity).not.toBe(started?.identity);
+      expect(updated.result.config?.configId).not.toBe(started?.configId);
 
-      const before = evaluate(started as CompiledRuntimeConfig, demoRequest("agentlife.body/tick-elapsed"));
-      expect(before.configIdentity).toBe(started?.identity);
+      const before = runRules(started as RuntimeConfig, demoRequest("agentlife.body/tick-elapsed"));
+      expect(before.configId).toBe(started?.configId);
       expect(
-        before.trace.compositions.find((entry) => entry.target === "agentlife.body/values.wakefulness")?.result,
+        before.trace.combines.find((entry) => entry.stateRef === "agentlife.body/values.wakefulness")?.result,
       ).toBe(80);
 
-      const after = registry.evaluate(demoRequest("agentlife.body/tick-elapsed"));
-      expect(after.configIdentity).toBe(updated.result.config?.identity);
-      expect(
-        after.trace.compositions.find((entry) => entry.target === "agentlife.body/values.wakefulness")?.result,
-      ).toBe(10);
+      const after = registry.runRules(demoRequest("agentlife.body/tick-elapsed"));
+      expect(after.configId).toBe(updated.result.config?.configId);
+      expect(after.trace.combines.find((entry) => entry.stateRef === "agentlife.body/values.wakefulness")?.result).toBe(
+        10,
+      );
     } finally {
       removeDirectory(first.directory);
       removeDirectory(updated.directory);
     }
   });
 
-  it("traces the version, state snapshot and simulated time it used", async () => {
+  it("traces the version, state input and simulated time it used", async () => {
     const registry = createRegistry();
     const { result, directory } = await applyDemoPack(registry);
     try {
-      const evaluated = registry.evaluate(demoRequest("agentlife.body/tick-elapsed", "traced"));
-      expect(evaluated.trace.configIdentity).toBe(result.config?.identity);
+      const evaluated = registry.runRules(demoRequest("agentlife.body/tick-elapsed", "traced"));
+      expect(evaluated.trace.configId).toBe(result.config?.configId);
       expect(evaluated.trace.stateVersion).toBe("state-1");
-      expect(evaluated.trace.simulationTime).toEqual({ tick: 3, seconds: 30 });
-      expect(evaluated.trace.requestId).toBe("traced");
+      expect(evaluated.trace.simTime).toEqual({ tick: 3, seconds: 30 });
+      expect(evaluated.trace.runId).toBe("traced");
       expect(evaluated.trace.trigger).toBe("agentlife.body/tick-elapsed");
     } finally {
       removeDirectory(directory);

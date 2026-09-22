@@ -1,23 +1,22 @@
 kind: rule
 id: vision-availability
-domain: agentlife.body/extension
+system: agentlife.body
 triggers:
   - agentlife.world/environment-changed
-reads:
-  - alias: fog
-    view: agentlife.world/environment
-    field: fog-density
+inputs:
+  - name: fog
+    state: agentlife.world/environment.fog-density
 condition:
   op: always
-effects:
-  - target: agentlife.body/channels.vision.available
-    composition: priority
+changes:
+  - state: agentlife.body/channels.vision.available
+    combine: priority
     priority: 1
     value:
       kind: select
       left:
         kind: read
-        alias: fog
+        name: fog
       right:
         kind: literal
         value: 0.9

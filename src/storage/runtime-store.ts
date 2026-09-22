@@ -18,7 +18,7 @@ import { currentMigrationLevel } from "./migrations.js";
  * refuses to continue a restore whose configuration version is missing.
  */
 
-export const configVersions = sqliteTable("config_versions", {
+export const configs = sqliteTable("config_versions", {
   identity: text("identity").primaryKey(),
   namespace: text("namespace").notNull(),
   packVersion: text("pack_version").notNull(),
@@ -30,7 +30,7 @@ export const currentConfig = sqliteTable("current_config", {
   identity: text("identity").notNull(),
 });
 
-export const evaluationTraces = sqliteTable("evaluation_traces", {
+export const runTraces = sqliteTable("evaluation_traces", {
   id: integer("id").primaryKey(),
   idempotencyKey: text("idempotency_key").notNull(),
   requestId: text("request_id").notNull(),
@@ -38,7 +38,7 @@ export const evaluationTraces = sqliteTable("evaluation_traces", {
   traceJson: text("trace_json").notNull(),
 });
 
-export const consumedEffects = sqliteTable("consumed_effects", {
+export const claimedChanges = sqliteTable("consumed_effects", {
   effectId: text("effect_id").primaryKey(),
   timelineId: text("timeline_id").notNull(),
   configIdentity: text("config_identity").notNull(),
@@ -50,7 +50,7 @@ export const RUNTIME_CONFIG_PAYLOAD_TYPE = "runtime-config";
 /** Envelope schema of a stored runtime config document. */
 export const runtimeConfigPayloadSchema: TSchema = Type.Object({
   kernelVersion: Type.String(),
-  extensions: Type.Array(Type.Object({ ref: Type.String(), version: Type.String(), fingerprint: Type.String() })),
+  systems: Type.Array(Type.Object({ systemId: Type.String(), version: Type.String(), specHash: Type.String() })),
   packs: Type.Array(
     Type.Object({
       namespace: Type.String(),
@@ -59,18 +59,18 @@ export const runtimeConfigPayloadSchema: TSchema = Type.Object({
         version: Type.String(),
         kernel: Type.String(),
         dependencies: Type.Array(Type.String()),
-        extensions: Type.Array(Type.String()),
+        systems: Type.Array(Type.String()),
         sections: Type.Record(Type.String(), Type.String()),
       }),
-      definitions: Type.Array(Type.Unknown()),
+      items: Type.Array(Type.Unknown()),
       rules: Type.Array(Type.Unknown()),
-      derivations: Type.Array(Type.Unknown()),
+      formulas: Type.Array(Type.Unknown()),
     }),
   ),
 });
 
 export interface StoredRuntimeConfig {
-  readonly identity: string;
+  readonly configId: string;
   readonly namespace: string;
   readonly packVersion: string;
   readonly document: unknown;
@@ -79,8 +79,8 @@ export interface StoredRuntimeConfig {
 /** Tables owned by the runtime store itself, as opposed to the stage 0 probe. */
 export type StoreTable = "config_versions" | "current_config" | "evaluation_traces" | "consumed_effects";
 
-export type SaveOutcome = "committed" | "duplicate";
-export type ConsumeOutcome = "consumed" | "duplicate";
+export type SaveResult = "committed" | "duplicate";
+export type ClaimResult = "claimed" | "duplicate";
 
 export type RestoreCheck =
   { readonly ok: true } | { readonly ok: false; readonly reason: "missing-config"; readonly message: string };
@@ -107,15 +107,15 @@ export class RuntimeStore extends RuntimeStoreProbe {
    * transaction: a crash either leaves the previous version current or the
    * complete new one, never a partially applied update.
    */
-  saveRuntimeConfig(
+  saveConfig(
     config: {
-      readonly identity: string;
+      readonly configId: string;
       readonly namespace: string;
       readonly packVersion: string;
       readonly document: unknown;
     },
     failurePoint?: FailurePoint,
-  ): SaveOutcome {
+  ): SaveResult {
     const payload: VersionedPayload = {
       schemaVersion: RUNTIME_CONFIG_PAYLOAD_VERSION,
       type: RUNTIME_CONFIG_PAYLOAD_TYPE,
@@ -127,9 +127,9 @@ export class RuntimeStore extends RuntimeStoreProbe {
     const documentJson = JSON.stringify(payload);
     const outcome = this.db.transaction((tx) => {
       const inserted = tx
-        .insert(configVersions)
+        .insert(configs)
         .values({
-          identity: config.identity,
+          identity: config.configId,
           namespace: config.namespace,
           packVersion: config.packVersion,
           documentJson,
@@ -138,17 +138,17 @@ export class RuntimeStore extends RuntimeStoreProbe {
         .run();
       if (inserted.changes === 0) {
         const existing = tx
-          .select({ documentJson: configVersions.documentJson })
-          .from(configVersions)
-          .where(eq(configVersions.identity, config.identity))
+          .select({ documentJson: configs.documentJson })
+          .from(configs)
+          .where(eq(configs.identity, config.configId))
           .get();
         if (existing !== undefined && existing.documentJson !== documentJson)
-          throw new Error(`Runtime config identity ${config.identity} already exists with different content`);
+          throw new Error(`Runtime config ${config.configId} already exists with different content`);
         if (existing === undefined) return "duplicate" as const;
       }
       tx.insert(currentConfig)
-        .values({ slot: 1, identity: config.identity })
-        .onConflictDoUpdate({ target: currentConfig.slot, set: { identity: config.identity } })
+        .values({ slot: 1, identity: config.configId })
+        .onConflictDoUpdate({ target: currentConfig.slot, set: { identity: config.configId } })
         .run();
       if (failurePoint === "inside-transaction") throw new Error("Injected failure inside transaction");
       return inserted.changes === 0 ? ("duplicate" as const) : ("committed" as const);
@@ -157,22 +157,22 @@ export class RuntimeStore extends RuntimeStoreProbe {
     return outcome;
   }
 
-  currentRuntimeConfig(): StoredRuntimeConfig | undefined {
+  currentConfig(): StoredRuntimeConfig | undefined {
     const row = this.db
       .select({
-        identity: configVersions.identity,
-        namespace: configVersions.namespace,
-        packVersion: configVersions.packVersion,
-        documentJson: configVersions.documentJson,
+        identity: configs.identity,
+        namespace: configs.namespace,
+        packVersion: configs.packVersion,
+        documentJson: configs.documentJson,
       })
       .from(currentConfig)
-      .innerJoin(configVersions, eq(currentConfig.identity, configVersions.identity))
+      .innerJoin(configs, eq(currentConfig.identity, configs.identity))
       .where(eq(currentConfig.slot, 1))
       .get();
     if (row === undefined) return undefined;
     const payload = parseStoredPayload(row.documentJson, this.payloadSchemas());
     return {
-      identity: row.identity,
+      configId: row.identity,
       namespace: row.namespace,
       packVersion: row.packVersion,
       document: payload.data,
@@ -180,61 +180,61 @@ export class RuntimeStore extends RuntimeStoreProbe {
   }
 
   /** Every runtime config version this store has committed, in identity order. */
-  runtimeConfigHistory(): readonly {
-    readonly identity: string;
+  configHistory(): readonly {
+    readonly configId: string;
     readonly namespace: string;
     readonly packVersion: string;
   }[] {
     return this.db
       .select({
-        identity: configVersions.identity,
-        namespace: configVersions.namespace,
-        packVersion: configVersions.packVersion,
+        configId: configs.identity,
+        namespace: configs.namespace,
+        packVersion: configs.packVersion,
       })
-      .from(configVersions)
-      .orderBy(asc(configVersions.identity))
+      .from(configs)
+      .orderBy(asc(configs.identity))
       .all();
   }
 
-  configDocument(identity: string): unknown | undefined {
+  loadConfig(configId: string): unknown | undefined {
     const row = this.db
-      .select({ documentJson: configVersions.documentJson })
-      .from(configVersions)
-      .where(eq(configVersions.identity, identity))
+      .select({ documentJson: configs.documentJson })
+      .from(configs)
+      .where(eq(configs.identity, configId))
       .get();
     if (row === undefined) return undefined;
     return parseStoredPayload(row.documentJson, this.payloadSchemas()).data;
   }
 
   /** Restore preflight: the configuration version a saved state refers to. */
-  checkRestore(identity: string): RestoreCheck {
-    if (this.configDocument(identity) === undefined)
+  checkRestore(configId: string): RestoreCheck {
+    if (this.loadConfig(configId) === undefined)
       return {
         ok: false,
         reason: "missing-config",
-        message: `Runtime config version ${identity} is missing from the store`,
+        message: `Runtime config version ${configId} is missing from the store`,
       };
     return { ok: true };
   }
 
   /** Stores one evaluation trace under an idempotency key. */
-  recordEvaluationTrace(
+  saveRunTrace(
     entry: {
-      readonly requestId: string;
-      readonly configIdentity: string;
+      readonly runId: string;
+      readonly configId: string;
       readonly trace: unknown;
     },
     idempotencyKey: string,
     failurePoint?: FailurePoint,
-  ): SaveOutcome {
+  ): SaveResult {
     if (failurePoint === "before-transaction") throw new Error("Injected failure before transaction");
     const outcome = this.db.transaction((tx) => {
       const inserted = tx
-        .insert(evaluationTraces)
+        .insert(runTraces)
         .values({
           idempotencyKey,
-          requestId: entry.requestId,
-          configIdentity: entry.configIdentity,
+          requestId: entry.runId,
+          configIdentity: entry.configId,
           traceJson: JSON.stringify(entry.trace),
         })
         .onConflictDoNothing()
@@ -246,32 +246,27 @@ export class RuntimeStore extends RuntimeStoreProbe {
     return outcome;
   }
 
-  evaluationTrace(idempotencyKey: string): unknown | undefined {
+  loadRunTrace(idempotencyKey: string): unknown | undefined {
     const row = this.db
-      .select({ traceJson: evaluationTraces.traceJson })
-      .from(evaluationTraces)
-      .where(eq(evaluationTraces.idempotencyKey, idempotencyKey))
+      .select({ traceJson: runTraces.traceJson })
+      .from(runTraces)
+      .where(eq(runTraces.idempotencyKey, idempotencyKey))
       .get();
     if (row === undefined) return undefined;
     return JSON.parse(row.traceJson) as unknown;
   }
 
   /** Claims a candidate effect for a timeline; the second claim is a duplicate. */
-  consumeEffect(
-    effectId: string,
-    timelineId: string,
-    configIdentity: string,
-    failurePoint?: FailurePoint,
-  ): ConsumeOutcome {
+  claimChange(changeId: string, timelineId: string, configId: string, failurePoint?: FailurePoint): ClaimResult {
     if (failurePoint === "before-transaction") throw new Error("Injected failure before transaction");
     const outcome = this.db.transaction((tx) => {
       const inserted = tx
-        .insert(consumedEffects)
-        .values({ effectId, timelineId, configIdentity })
+        .insert(claimedChanges)
+        .values({ effectId: changeId, timelineId, configIdentity: configId })
         .onConflictDoNothing()
         .run();
       if (failurePoint === "inside-transaction") throw new Error("Injected failure inside transaction");
-      return inserted.changes === 0 ? ("duplicate" as const) : ("consumed" as const);
+      return inserted.changes === 0 ? ("duplicate" as const) : ("claimed" as const);
     });
     if (failurePoint === "after-commit") throw new Error("Injected failure after commit");
     return outcome;

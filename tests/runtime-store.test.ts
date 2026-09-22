@@ -6,38 +6,32 @@ import { fileURLToPath } from "node:url";
 import { getTableName } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { MIGRATIONS, STORE_TABLES } from "../src/storage/migrations.js";
-import {
-  configVersions,
-  consumedEffects,
-  currentConfig,
-  evaluationTraces,
-  RuntimeStore,
-} from "../src/storage/runtime-store.js";
+import { configs, claimedChanges, currentConfig, runTraces, RuntimeStore } from "../src/storage/runtime-store.js";
 import type { FailurePoint } from "../src/storage/runtime-store-probe.js";
 
 const CONFIG_CRASH_WORKER = fileURLToPath(new URL("../src/storage/config-crash-worker.ts", import.meta.url));
 const CRASH_POINTS: readonly FailurePoint[] = ["before-transaction", "inside-transaction", "after-commit"];
 
-function configDocument(version: string): unknown {
+function loadConfig(version: string): unknown {
   return {
     kernelVersion: "1.0.0",
-    extensions: [{ ref: "agentlife.world/extension", version, fingerprint: `fingerprint-${version}` }],
+    systems: [{ systemId: "agentlife.world", version, specHash: `spec-${version}` }],
     packs: [
       {
         namespace: "agentlife.demo",
         root: true,
-        identity: `content-${version}`,
+        contentId: `content-${version}`,
         manifest: {
           namespace: "agentlife.demo",
           version: "1.0.0",
           kernel: ">=1.0.0 <2.0.0",
           dependencies: [],
-          extensions: ["agentlife.world/extension@1.0.0"],
+          systems: ["agentlife.world/system@1.0.0"],
           sections: {},
         },
-        definitions: [],
+        items: [],
         rules: [],
-        derivations: [],
+        formulas: [],
       },
     ],
   };
@@ -70,10 +64,10 @@ describe("runtime store", () => {
   it("keeps the Drizzle definitions aligned with the migrated schema", () => {
     withStore((store) => {
       const expected = new Map([
-        [getTableName(configVersions), ["identity", "namespace", "pack_version", "document_json"]],
+        [getTableName(configs), ["identity", "namespace", "pack_version", "document_json"]],
         [getTableName(currentConfig), ["slot", "identity"]],
-        [getTableName(evaluationTraces), ["id", "idempotency_key", "request_id", "config_identity", "trace_json"]],
-        [getTableName(consumedEffects), ["effect_id", "timeline_id", "config_identity"]],
+        [getTableName(runTraces), ["id", "idempotency_key", "request_id", "config_identity", "trace_json"]],
+        [getTableName(claimedChanges), ["effect_id", "timeline_id", "config_identity"]],
       ]);
       for (const [table, columns] of expected) {
         const rows = store.sqlite.prepare("SELECT name FROM pragma_table_info(?)").all(table);
@@ -84,71 +78,71 @@ describe("runtime store", () => {
 
   it("stores one current runtime config version and keeps the history", () => {
     withStore((store) => {
-      expect(store.currentRuntimeConfig()).toBeUndefined();
+      expect(store.currentConfig()).toBeUndefined();
       expect(
-        store.saveRuntimeConfig({
-          identity: "config-a",
+        store.saveConfig({
+          configId: "config-a",
           namespace: "agentlife.demo",
           packVersion: "1.0.0",
-          document: configDocument("1.0.0"),
+          document: loadConfig("1.0.0"),
         }),
       ).toBe("committed");
-      expect(store.currentRuntimeConfig()?.identity).toBe("config-a");
+      expect(store.currentConfig()?.configId).toBe("config-a");
       expect(
-        store.saveRuntimeConfig({
-          identity: "config-b",
+        store.saveConfig({
+          configId: "config-b",
           namespace: "agentlife.demo",
           packVersion: "1.0.1",
-          document: configDocument("1.0.1"),
+          document: loadConfig("1.0.1"),
         }),
       ).toBe("committed");
-      expect(store.currentRuntimeConfig()?.identity).toBe("config-b");
-      expect(store.runtimeConfigHistory().map((entry) => entry.identity)).toEqual(["config-a", "config-b"]);
+      expect(store.currentConfig()?.configId).toBe("config-b");
+      expect(store.configHistory().map((entry) => entry.configId)).toEqual(["config-a", "config-b"]);
       expect(
-        store.saveRuntimeConfig({
-          identity: "config-b",
+        store.saveConfig({
+          configId: "config-b",
           namespace: "agentlife.demo",
           packVersion: "1.0.1",
-          document: configDocument("1.0.1"),
+          document: loadConfig("1.0.1"),
         }),
       ).toBe("duplicate");
-      expect(store.runtimeConfigHistory()).toHaveLength(2);
-      expect(store.configDocument("config-a")).toEqual(configDocument("1.0.0"));
+      expect(store.configHistory()).toHaveLength(2);
+      expect(store.loadConfig("config-a")).toEqual(loadConfig("1.0.0"));
     });
   });
 
   it("refuses two different contents under one version identity", () => {
     withStore((store) => {
-      store.saveRuntimeConfig({
-        identity: "config-a",
+      store.saveConfig({
+        configId: "config-a",
         namespace: "agentlife.demo",
         packVersion: "1.0.0",
-        document: configDocument("1.0.0"),
+        document: loadConfig("1.0.0"),
       });
       expect(() =>
-        store.saveRuntimeConfig({
-          identity: "config-a",
+        store.saveConfig({
+          configId: "config-a",
           namespace: "agentlife.demo",
           packVersion: "2.0.0",
-          document: configDocument("2.0.0"),
+          document: loadConfig("2.0.0"),
         }),
       ).toThrow(/already exists with different content/);
-      expect(store.currentRuntimeConfig()?.identity).toBe("config-a");
-      expect(store.runtimeConfigHistory()).toHaveLength(1);
+      expect(store.currentConfig()?.configId).toBe("config-a");
+      expect(store.configHistory()).toHaveLength(1);
     });
   });
 
   it("refuses a document that does not match the stored payload envelope", () => {
     withStore((store) => {
       expect(() =>
-        store.saveRuntimeConfig({
-          identity: "config-bad",
+        store.saveConfig({
+          configId: "config-bad",
           namespace: "agentlife.demo",
           packVersion: "1.0.0",
           document: { kernelVersion: "1.0.0" },
         }),
       ).toThrow(/envelope/);
-      expect(store.currentRuntimeConfig()).toBeUndefined();
+      expect(store.currentConfig()).toBeUndefined();
     });
   });
 
@@ -159,11 +153,11 @@ describe("runtime store", () => {
         reason: "missing-config",
         message: expect.stringContaining("missing from the store"),
       });
-      store.saveRuntimeConfig({
-        identity: "config-a",
+      store.saveConfig({
+        configId: "config-a",
         namespace: "agentlife.demo",
         packVersion: "1.0.0",
-        document: configDocument("1.0.0"),
+        document: loadConfig("1.0.0"),
       });
       expect(store.checkRestore("config-a")).toEqual({ ok: true });
     });
@@ -171,20 +165,20 @@ describe("runtime store", () => {
 
   it("records one evaluation trace per idempotency key", () => {
     withStore((store) => {
-      const entry = { requestId: "request-1", configIdentity: "config-a", trace: { status: "candidates" } };
-      expect(store.recordEvaluationTrace(entry, "tick-1:request-1")).toBe("committed");
-      expect(store.recordEvaluationTrace(entry, "tick-1:request-1")).toBe("duplicate");
-      expect(store.recordEvaluationTrace(entry, "tick-2:request-1")).toBe("committed");
-      expect(store.evaluationTrace("tick-1:request-1")).toEqual({ status: "candidates" });
-      expect(store.evaluationTrace("tick-9")).toBeUndefined();
+      const entry = { runId: "request-1", configId: "config-a", trace: { status: "changes" } };
+      expect(store.saveRunTrace(entry, "tick-1:request-1")).toBe("committed");
+      expect(store.saveRunTrace(entry, "tick-1:request-1")).toBe("duplicate");
+      expect(store.saveRunTrace(entry, "tick-2:request-1")).toBe("committed");
+      expect(store.loadRunTrace("tick-1:request-1")).toEqual({ status: "changes" });
+      expect(store.loadRunTrace("tick-9")).toBeUndefined();
     });
   });
 
   it("consumes a candidate effect exactly once", () => {
     withStore((store, directory) => {
       store.initializeTimeline("timeline-a");
-      expect(store.consumeEffect("effect-1", "timeline-a", "config-a")).toBe("consumed");
-      expect(store.consumeEffect("effect-1", "timeline-a", "config-a")).toBe("duplicate");
+      expect(store.claimChange("effect-1", "timeline-a", "config-a")).toBe("claimed");
+      expect(store.claimChange("effect-1", "timeline-a", "config-a")).toBe("duplicate");
       expect(store.countStored("consumed_effects")).toBe(1);
       expect(directory).toContain("agent-life-runtime-store-");
     });
@@ -197,11 +191,11 @@ describe("runtime store", () => {
       try {
         const before = new RuntimeStore(filename);
         expect(
-          before.saveRuntimeConfig({
-            identity: "config-a",
+          before.saveConfig({
+            configId: "config-a",
             namespace: "agentlife.demo",
             packVersion: "1.0.0",
-            document: configDocument("1.0.0"),
+            document: loadConfig("1.0.0"),
           }),
         ).toBe("committed");
         before.close();
@@ -215,13 +209,13 @@ describe("runtime store", () => {
 
         const after = new RuntimeStore(filename);
         const committed = point === "after-commit";
-        expect(after.currentRuntimeConfig()?.identity).toBe(committed ? "config-b" : "config-a");
-        expect(after.runtimeConfigHistory().map((entry) => entry.identity)).toEqual(
+        expect(after.currentConfig()?.configId).toBe(committed ? "config-b" : "config-a");
+        expect(after.configHistory().map((entry) => entry.configId)).toEqual(
           committed ? ["config-a", "config-b"] : ["config-a"],
         );
-        expect(after.configDocument("config-a")).toEqual(configDocument("1.0.0"));
+        expect(after.loadConfig("config-a")).toEqual(loadConfig("1.0.0"));
         if (committed) {
-          const stored: unknown = after.configDocument("config-b");
+          const stored: unknown = after.loadConfig("config-b");
           expect(stored).toBeDefined();
           expect(Reflect.get(stored as object, "kernelVersion")).toBe("1.0.0");
         }

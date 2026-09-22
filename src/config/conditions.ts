@@ -2,17 +2,17 @@ import { isWithinRange } from "./numeric.js";
 import {
   COMPARE_OPERATORS,
   compareValues,
-  evaluateValue,
-  valueDerivations,
-  valueReads,
+  runExpr,
+  formulaRefs,
+  inputNames,
   type CompareOperator,
-  type SimulationTime,
+  type SimTime,
   type ValueFailure,
-  type ValueScope,
-  type ValueSource,
-} from "./values.js";
+  type ValueContext,
+  type ValueExpr,
+} from "./value-expr.js";
 
-export type { CompareOperator } from "./values.js";
+export type { CompareOperator } from "./value-expr.js";
 
 /**
  * Restricted condition vocabulary. Conditions compare declared values, check a
@@ -27,13 +27,13 @@ export type Condition =
   | { readonly op: "not"; readonly operand: Condition }
   | {
       readonly op: "compare";
-      readonly left: ValueSource;
-      readonly right: ValueSource;
+      readonly left: ValueExpr;
+      readonly right: ValueExpr;
       readonly operator: CompareOperator;
     }
   | {
       readonly op: "within";
-      readonly value: ValueSource;
+      readonly value: ValueExpr;
       readonly min: number | null;
       readonly max: number | null;
       readonly boundary: "inclusive" | "exclusive";
@@ -44,37 +44,37 @@ export type ConditionResult =
   | { readonly ok: true; readonly value: boolean }
   | { readonly ok: false; readonly reason: ValueFailure; readonly message: string };
 
-export function conditionReads(condition: Condition): readonly string[] {
+export function conditionInputs(condition: Condition): readonly string[] {
   switch (condition.op) {
     case "always":
       return [];
     case "all":
     case "any":
-      return condition.operands.flatMap(conditionReads);
+      return condition.operands.flatMap(conditionInputs);
     case "not":
-      return conditionReads(condition.operand);
+      return conditionInputs(condition.operand);
     case "compare":
-      return [...valueReads(condition.left), ...valueReads(condition.right)];
+      return [...inputNames(condition.left), ...inputNames(condition.right)];
     case "within":
-      return valueReads(condition.value);
+      return inputNames(condition.value);
     default:
       return [];
   }
 }
 
-export function conditionDerivations(condition: Condition): readonly string[] {
+export function conditionFormulas(condition: Condition): readonly string[] {
   switch (condition.op) {
     case "always":
       return [];
     case "all":
     case "any":
-      return condition.operands.flatMap(conditionDerivations);
+      return condition.operands.flatMap(conditionFormulas);
     case "not":
-      return conditionDerivations(condition.operand);
+      return conditionFormulas(condition.operand);
     case "compare":
-      return [...valueDerivations(condition.left), ...valueDerivations(condition.right)];
+      return [...formulaRefs(condition.left), ...formulaRefs(condition.right)];
     case "within":
-      return valueDerivations(condition.value);
+      return formulaRefs(condition.value);
     default:
       return [];
   }
@@ -98,13 +98,13 @@ function failure(reason: ValueFailure, message: string): ConditionResult {
   return { ok: false, reason, message };
 }
 
-export function evaluateCondition(condition: Condition, scope: ValueScope): ConditionResult {
+export function runCondition(condition: Condition, scope: ValueContext): ConditionResult {
   switch (condition.op) {
     case "always":
       return { ok: true, value: true };
     case "all": {
       for (const operand of condition.operands) {
-        const result = evaluateCondition(operand, scope);
+        const result = runCondition(operand, scope);
         if (!result.ok) return result;
         if (!result.value) return { ok: true, value: false };
       }
@@ -113,7 +113,7 @@ export function evaluateCondition(condition: Condition, scope: ValueScope): Cond
     case "any": {
       let failure_: ConditionResult | undefined;
       for (const operand of condition.operands) {
-        const result = evaluateCondition(operand, scope);
+        const result = runCondition(operand, scope);
         if (!result.ok) {
           failure_ = result;
           continue;
@@ -123,21 +123,21 @@ export function evaluateCondition(condition: Condition, scope: ValueScope): Cond
       return failure_ ?? { ok: true, value: false };
     }
     case "not": {
-      const result = evaluateCondition(condition.operand, scope);
+      const result = runCondition(condition.operand, scope);
       if (!result.ok) return result;
       return { ok: true, value: !result.value };
     }
     case "compare": {
-      const left = evaluateValue(condition.left, scope);
+      const left = runExpr(condition.left, scope);
       if (!left.ok) return failure(left.reason, left.message);
-      const right = evaluateValue(condition.right, scope);
+      const right = runExpr(condition.right, scope);
       if (!right.ok) return failure(right.reason, right.message);
       if (!COMPARE_OPERATORS.includes(condition.operator))
         return failure("inexpressible", `Unsupported comparison operator ${String(condition.operator)}`);
       return compareValues(left, right, condition.operator);
     }
     case "within": {
-      const value = evaluateValue(condition.value, scope);
+      const value = runExpr(condition.value, scope);
       if (!value.ok) return failure(value.reason, value.message);
       if (typeof value.value !== "number")
         return failure("input-invalid", "Interval conditions require a numeric value");
@@ -153,16 +153,13 @@ export function evaluateCondition(condition: Condition, scope: ValueScope): Cond
       };
     }
     case "simulation-time":
-      return { ok: true, value: appliesToSimulationTime(condition, scope.simulationTime) };
+      return { ok: true, value: appliesToSimTime(condition, scope.simTime) };
     default:
       return failure("inexpressible", "Unsupported condition");
   }
 }
 
 /** The only time predicate the kernel understands; it never advances the clock. */
-function appliesToSimulationTime(
-  condition: Extract<Condition, { op: "simulation-time" }>,
-  simulationTime: SimulationTime,
-): boolean {
-  return condition.operator === "before" ? simulationTime.tick < condition.tick : simulationTime.tick >= condition.tick;
+function appliesToSimTime(condition: Extract<Condition, { op: "simulation-time" }>, simTime: SimTime): boolean {
+  return condition.operator === "before" ? simTime.tick < condition.tick : simTime.tick >= condition.tick;
 }

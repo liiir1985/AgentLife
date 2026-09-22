@@ -1,24 +1,24 @@
-import { error, type DiagnosticBag } from "./diagnostics.js";
-import type { SourceDefinition, SourceDerivation, SourcePack, SourceRule } from "./source.js";
+import { error, type IssueList } from "./diagnostics.js";
+import type { ParsedItem, ParsedFormula, ParsedPack, ParsedRule } from "./source.js";
 
 /**
  * The set of packs that participate in one runtime config: the root pack plus
  * the packs it explicitly depends on.
  *
- * Visibility is deliberately narrow: a definition is addressable from another
+ * Visibility is deliberately narrow: a item is addressable from another
  * namespace only when the referencing pack declares that namespace as a
- * dependency *and* the target definition is explicitly public.
+ * dependency *and* the target item is explicitly public.
  */
 export class PackSet {
-  private readonly definitionsByRef = new Map<string, SourceDefinition>();
-  private readonly rulesByRef = new Map<string, SourceRule>();
-  private readonly derivationsByRef = new Map<string, SourceDerivation>();
-  private readonly packByNamespace = new Map<string, SourcePack>();
+  private readonly definitionsByRef = new Map<string, ParsedItem>();
+  private readonly rulesByRef = new Map<string, ParsedRule>();
+  private readonly derivationsByRef = new Map<string, ParsedFormula>();
+  private readonly packByNamespace = new Map<string, ParsedPack>();
   private readonly dependentsByNamespace = new Map<string, readonly string[]>();
 
-  private constructor(readonly root: SourcePack) {}
+  private constructor(readonly root: ParsedPack) {}
 
-  static build(root: SourcePack, dependencies: readonly SourcePack[], bag: DiagnosticBag): PackSet {
+  static build(root: ParsedPack, dependencies: readonly ParsedPack[], bag: IssueList): PackSet {
     const set = new PackSet(root);
     const packs = [root, ...dependencies];
     for (const pack of packs) {
@@ -34,9 +34,9 @@ export class PackSet {
       }
       set.packByNamespace.set(namespace, pack);
       set.dependentsByNamespace.set(namespace, pack.manifest.dependencies);
-      for (const definition of pack.definitions) set.indexDefinition(definition, bag);
+      for (const item of pack.items) set.indexDefinition(item, bag);
       for (const rule of pack.rules) set.indexRule(rule, bag);
-      for (const derivation of pack.derivations) set.indexDerivation(derivation, bag);
+      for (const formula of pack.formulas) set.indexFormula(formula, bag);
     }
     for (const dependency of root.manifest.dependencies) {
       if (!set.packByNamespace.has(dependency))
@@ -49,19 +49,19 @@ export class PackSet {
     return set;
   }
 
-  private indexDefinition(definition: SourceDefinition, bag: DiagnosticBag): void {
-    if (this.definitionsByRef.has(definition.ref)) {
+  private indexDefinition(item: ParsedItem, bag: IssueList): void {
+    if (this.definitionsByRef.has(item.ref)) {
       bag.add(
-        error("structure", "identity-conflict", `Identity ${definition.ref} is declared more than once`, {
-          subject: definition.ref,
+        error("structure", "identity-conflict", `Identity ${item.ref} is declared more than once`, {
+          subject: item.ref,
         }),
       );
       return;
     }
-    this.definitionsByRef.set(definition.ref, definition);
+    this.definitionsByRef.set(item.ref, item);
   }
 
-  private indexRule(rule: SourceRule, bag: DiagnosticBag): void {
+  private indexRule(rule: ParsedRule, bag: IssueList): void {
     if (this.definitionsByRef.has(rule.ref) || this.rulesByRef.has(rule.ref) || this.derivationsByRef.has(rule.ref)) {
       bag.add(
         error("structure", "identity-conflict", `Identity ${rule.ref} is declared more than once`, {
@@ -73,47 +73,47 @@ export class PackSet {
     this.rulesByRef.set(rule.ref, rule);
   }
 
-  private indexDerivation(derivation: SourceDerivation, bag: DiagnosticBag): void {
+  private indexFormula(formula: ParsedFormula, bag: IssueList): void {
     if (
-      this.definitionsByRef.has(derivation.ref) ||
-      this.rulesByRef.has(derivation.ref) ||
-      this.derivationsByRef.has(derivation.ref)
+      this.definitionsByRef.has(formula.ref) ||
+      this.rulesByRef.has(formula.ref) ||
+      this.derivationsByRef.has(formula.ref)
     ) {
       bag.add(
-        error("structure", "identity-conflict", `Identity ${derivation.ref} is declared more than once`, {
-          subject: derivation.ref,
+        error("structure", "identity-conflict", `Identity ${formula.ref} is declared more than once`, {
+          subject: formula.ref,
         }),
       );
       return;
     }
-    this.derivationsByRef.set(derivation.ref, derivation);
+    this.derivationsByRef.set(formula.ref, formula);
   }
 
-  definition(ref: string): SourceDefinition | undefined {
+  item(ref: string): ParsedItem | undefined {
     return this.definitionsByRef.get(ref);
   }
 
-  rule(ref: string): SourceRule | undefined {
+  rule(ref: string): ParsedRule | undefined {
     return this.rulesByRef.get(ref);
   }
 
-  derivation(ref: string): SourceDerivation | undefined {
+  formula(ref: string): ParsedFormula | undefined {
     return this.derivationsByRef.get(ref);
   }
 
-  definitions(): readonly SourceDefinition[] {
+  items(): readonly ParsedItem[] {
     return [...this.definitionsByRef.values()].sort((left, right) => (left.ref < right.ref ? -1 : 1));
   }
 
-  rules(): readonly SourceRule[] {
+  rules(): readonly ParsedRule[] {
     return [...this.rulesByRef.values()].sort((left, right) => (left.ref < right.ref ? -1 : 1));
   }
 
-  derivations(): readonly SourceDerivation[] {
+  formulas(): readonly ParsedFormula[] {
     return [...this.derivationsByRef.values()].sort((left, right) => (left.ref < right.ref ? -1 : 1));
   }
 
-  pack(namespace: string): SourcePack | undefined {
+  pack(namespace: string): ParsedPack | undefined {
     return this.packByNamespace.get(namespace);
   }
 
@@ -126,21 +126,21 @@ export class PackSet {
    * missing, not public, or declared by a namespace the reader never depended on.
    */
   checkVisibility(fromNamespace: string, ref: string): boolean {
-    const definition = this.definitionsByRef.get(ref);
+    const item = this.definitionsByRef.get(ref);
     const rule = this.rulesByRef.get(ref);
-    const derivation = this.derivationsByRef.get(ref);
-    if (definition === undefined && rule === undefined && derivation === undefined) return false;
-    const targetNamespace = (definition ?? rule ?? derivation)?.namespace ?? "";
+    const formula = this.derivationsByRef.get(ref);
+    if (item === undefined && rule === undefined && formula === undefined) return false;
+    const targetNamespace = (item ?? rule ?? formula)?.namespace ?? "";
     if (targetNamespace === fromNamespace) return true;
-    if (definition !== undefined && !definition.isPublic) return false;
+    if (item !== undefined && !item.isPublic) return false;
     return (this.dependentsByNamespace.get(fromNamespace) ?? []).includes(targetNamespace);
   }
 
   /** Explains a visibility failure for diagnostics. */
   explainVisibility(fromNamespace: string, ref: string): string {
-    const definition = this.definitionsByRef.get(ref);
-    const targetNamespace = definition?.namespace ?? ref.split("/")[0] ?? "";
-    if (definition !== undefined && !definition.isPublic) return `${ref} is not public in ${targetNamespace}`;
+    const item = this.definitionsByRef.get(ref);
+    const targetNamespace = item?.namespace ?? ref.split("/")[0] ?? "";
+    if (item !== undefined && !item.isPublic) return `${ref} is not public in ${targetNamespace}`;
     return `${fromNamespace} does not declare a dependency on ${targetNamespace}`;
   }
 }

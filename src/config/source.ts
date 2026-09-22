@@ -1,13 +1,6 @@
 import type { Condition, CompareOperator } from "./conditions.js";
-import type {
-  CompositionKind,
-  NumericMapping,
-  NumericPolicy,
-  OutOfRangeBehaviour,
-  PartialNumericPolicy,
-  RoundingMode,
-} from "./numeric.js";
-import type { Scalar, ValueSource } from "./values.js";
+import type { CombineMode, ValueMap, NumberPolicy, RangeMode, PartialNumberPolicy, RoundingMode } from "./numeric.js";
+import type { SimpleValue, ValueExpr } from "./value-expr.js";
 
 /**
  * Source-pack parsing.
@@ -21,40 +14,39 @@ export const RESERVED_SECTIONS = ["behaviors", "prompts", "texts"] as const;
 export const RULES_SECTION = "rules";
 export const MANIFEST_PATH = "manifest.yaml";
 
-export interface SourceManifest {
+export interface PackManifest {
   readonly namespace: string;
   readonly version: string;
   readonly kernel: string;
   /** Namespaces this pack is allowed to reference. */
   readonly dependencies: readonly string[];
-  /** `<extension-ref>@<version>` requirements, checked against the registry. */
-  readonly extensions: readonly string[];
+  /** `<system-ref>@<version>` requirements, checked against the registry. */
+  readonly systems: readonly string[];
   /** Directory name to config type ref. */
   readonly sections: Readonly<Record<string, string>>;
 }
 
-export interface SourceRead {
-  readonly alias: string;
-  readonly view: string;
-  readonly field: string;
+export interface ParsedInput {
+  readonly name: string;
+  readonly stateRef: string;
 }
 
-export type SourceEffect =
+export type RuleChange =
   | {
-      readonly kind: "target";
-      readonly target: string;
-      readonly composition: CompositionKind;
+      readonly kind: "state";
+      readonly stateRef: string;
+      readonly combine: CombineMode;
       readonly priority: number | null;
-      readonly value: ValueSource;
+      readonly value: ValueExpr;
     }
   | {
       readonly kind: "process";
-      readonly process: string;
-      readonly operation: "establish" | "advance" | "pause" | "end" | "cancel";
-      readonly parameters: Readonly<Record<string, ValueSource>>;
+      readonly processRef: string;
+      readonly action: "establish" | "advance" | "pause" | "end" | "cancel";
+      readonly params: Readonly<Record<string, ValueExpr>>;
     };
 
-export interface SourceDefinition {
+export interface ParsedItem {
   readonly ref: string;
   readonly id: string;
   readonly namespace: string;
@@ -65,39 +57,39 @@ export interface SourceDefinition {
   readonly fields: Readonly<Record<string, unknown>>;
 }
 
-export interface SourceRule {
+export interface ParsedRule {
   readonly kind: "rule";
   readonly ref: string;
   readonly id: string;
   readonly namespace: string;
-  readonly domain: string;
+  readonly system: string;
   readonly relativePath: string;
   readonly triggers: readonly string[];
-  readonly reads: readonly SourceRead[];
+  readonly inputs: readonly ParsedInput[];
   readonly condition: Condition;
-  readonly effects: readonly SourceEffect[];
+  readonly changes: readonly RuleChange[];
   readonly dependsOn: readonly string[];
 }
 
-export interface SourceDerivation {
-  readonly kind: "derivation";
+export interface ParsedFormula {
+  readonly kind: "formula";
   readonly ref: string;
   readonly id: string;
   readonly namespace: string;
-  readonly domain: string;
+  readonly system: string;
   readonly relativePath: string;
-  readonly reads: readonly SourceRead[];
+  readonly inputs: readonly ParsedInput[];
   readonly outputUnit: string;
-  readonly value: ValueSource;
+  readonly value: ValueExpr;
 }
 
-export interface SourcePack {
-  readonly manifest: SourceManifest;
-  /** SHA-256 identity of the exact pack bytes this document set came from. */
-  readonly identity: string;
-  readonly definitions: readonly SourceDefinition[];
-  readonly rules: readonly SourceRule[];
-  readonly derivations: readonly SourceDerivation[];
+export interface ParsedPack {
+  readonly manifest: PackManifest;
+  /** SHA-256 id of the exact pack bytes this document set came from. */
+  readonly contentId: string;
+  readonly items: readonly ParsedItem[];
+  readonly rules: readonly ParsedRule[];
+  readonly formulas: readonly ParsedFormula[];
 }
 
 function asObject(value: unknown, path: string): Record<string, unknown> {
@@ -144,7 +136,7 @@ const PROCESS_OPERATIONS = ["establish", "advance", "pause", "end", "cancel"] as
 const COMPARE_OPERATORS = ["eq", "ne", "lt", "lte", "gt", "gte"] as const;
 
 /** A mapping policy states its unit only when the mapped value is not dimensionless. */
-export function parseNumericPolicy(value: unknown, path: string): NumericPolicy {
+export function parseNumberPolicy(value: unknown, path: string): NumberPolicy {
   const object = asObject(value, path);
   expectKnownKeys(object, ["unit", "rounding", "range", "overflow"], path);
   const rounding = asObject(object.rounding, `${path}.rounding`);
@@ -167,7 +159,7 @@ export function parseNumericPolicy(value: unknown, path: string): NumericPolicy 
 }
 
 /** A declared policy block may state any subset of its parts; absent parts carry no constraint. */
-export function parsePartialNumericPolicy(value: unknown, path: string): PartialNumericPolicy {
+export function parsePartialNumberPolicy(value: unknown, path: string): PartialNumberPolicy {
   const object = asObject(value, path);
   expectKnownKeys(object, ["unit", "rounding", "range", "overflow"], path);
   const partial: {
@@ -205,7 +197,7 @@ export function parsePartialNumericPolicy(value: unknown, path: string): Partial
   return partial;
 }
 
-function parseOutOfRange(value: unknown, path: string): OutOfRangeBehaviour {
+function parseOutOfRange(value: unknown, path: string): RangeMode {
   const object = asObject(value, path);
   const kind = enumValue(object.kind, ["clamp", "value", "invalid"] as const, `${path}.kind`);
   if (kind === "value") {
@@ -216,11 +208,11 @@ function parseOutOfRange(value: unknown, path: string): OutOfRangeBehaviour {
   return { kind };
 }
 
-export function parseMapping(value: unknown, path: string): NumericMapping {
+export function parseMapping(value: unknown, path: string): ValueMap {
   const object = asObject(value, path);
   const kind = enumValue(object.kind, ["threshold", "piecewise-constant", "piecewise-linear"] as const, `${path}.kind`);
   const inputUnit = object.inputUnit === undefined ? "" : asString(object.inputUnit, `${path}.inputUnit`);
-  const policy = parseNumericPolicy(object.policy, `${path}.policy`);
+  const policy = parseNumberPolicy(object.policy, `${path}.policy`);
   if (kind === "threshold") {
     expectKnownKeys(object, ["kind", "inputUnit", "at", "boundary", "below", "above", "policy"], path);
     return {
@@ -269,18 +261,18 @@ export function parseMapping(value: unknown, path: string): NumericMapping {
   };
 }
 
-function parseScalar(value: unknown, path: string): Scalar {
+function parseScalar(value: unknown, path: string): SimpleValue {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "boolean") return value;
   if (typeof value === "string") return value;
   throw new Error(`${path} must be a finite number, boolean or string`);
 }
 
-export function parseValueSource(value: unknown, path: string): ValueSource {
+export function parseValueExpr(value: unknown, path: string): ValueExpr {
   const object = asObject(value, path);
   const kind = enumValue(
     object.kind,
-    ["literal", "read", "derived", "map", "combine", "compare", "select"] as const,
+    ["literal", "read", "formula", "map", "combine", "compare", "select"] as const,
     `${path}.kind`,
   );
   switch (kind) {
@@ -294,44 +286,44 @@ export function parseValueSource(value: unknown, path: string): ValueSource {
       return { kind, value: literal, unit: "" };
     }
     case "read":
-      expectKnownKeys(object, ["kind", "alias"], path);
-      return { kind, alias: asString(object.alias, `${path}.alias`) };
-    case "derived":
-      expectKnownKeys(object, ["kind", "ref"], path);
-      return { kind, ref: asString(object.ref, `${path}.ref`) };
+      expectKnownKeys(object, ["kind", "name"], path);
+      return { kind, name: asString(object.name, `${path}.name`) };
+    case "formula":
+      expectKnownKeys(object, ["kind", "formulaRef"], path);
+      return { kind, formulaRef: asString(object.formulaRef, `${path}.formulaRef`) };
     case "combine":
       expectKnownKeys(object, ["kind", "method", "operands"], path);
       return {
         kind,
         method: enumValue(object.method, COMBINE_METHODS, `${path}.method`),
         operands: asArray(object.operands, `${path}.operands`).map((operand, index) =>
-          parseValueSource(operand, `${path}.operands[${index}]`),
+          parseValueExpr(operand, `${path}.operands[${index}]`),
         ),
       };
     case "compare":
       expectKnownKeys(object, ["kind", "left", "right", "operator"], path);
       return {
         kind,
-        left: parseValueSource(object.left, `${path}.left`),
-        right: parseValueSource(object.right, `${path}.right`),
+        left: parseValueExpr(object.left, `${path}.left`),
+        right: parseValueExpr(object.right, `${path}.right`),
         operator: enumValue<CompareOperator>(object.operator, COMPARE_OPERATORS, `${path}.operator`),
       };
     case "select":
       expectKnownKeys(object, ["kind", "left", "right", "operator", "then", "otherwise"], path);
       return {
         kind,
-        left: parseValueSource(object.left, `${path}.left`),
-        right: parseValueSource(object.right, `${path}.right`),
+        left: parseValueExpr(object.left, `${path}.left`),
+        right: parseValueExpr(object.right, `${path}.right`),
         operator: enumValue<CompareOperator>(object.operator, COMPARE_OPERATORS, `${path}.operator`),
-        then: parseValueSource(object.then, `${path}.then`),
-        otherwise: parseValueSource(object.otherwise, `${path}.otherwise`),
+        then: parseValueExpr(object.then, `${path}.then`),
+        otherwise: parseValueExpr(object.otherwise, `${path}.otherwise`),
       };
     default:
       expectKnownKeys(object, ["kind", "mapping", "input"], path);
       return {
         kind,
         mapping: parseMapping(object.mapping, `${path}.mapping`),
-        input: parseValueSource(object.input, `${path}.input`),
+        input: parseValueExpr(object.input, `${path}.input`),
       };
   }
 }
@@ -363,15 +355,15 @@ export function parseCondition(value: unknown, path: string): Condition {
       expectKnownKeys(object, ["op", "left", "right", "operator"], path);
       return {
         op,
-        left: parseValueSource(object.left, `${path}.left`),
-        right: parseValueSource(object.right, `${path}.right`),
+        left: parseValueExpr(object.left, `${path}.left`),
+        right: parseValueExpr(object.right, `${path}.right`),
         operator: enumValue<CompareOperator>(object.operator, COMPARE_OPERATORS, `${path}.operator`),
       };
     case "within":
       expectKnownKeys(object, ["op", "value", "min", "max", "boundary"], path);
       return {
         op,
-        value: parseValueSource(object.value, `${path}.value`),
+        value: parseValueExpr(object.value, `${path}.value`),
         min: object.min === null ? null : asNumber(object.min, `${path}.min`),
         max: object.max === null ? null : asNumber(object.max, `${path}.max`),
         boundary: enumValue(object.boundary, ["inclusive", "exclusive"] as const, `${path}.boundary`),
@@ -386,53 +378,52 @@ export function parseCondition(value: unknown, path: string): Condition {
   }
 }
 
-function parseReads(value: unknown, path: string): SourceRead[] {
+function parseInputs(value: unknown, path: string): ParsedInput[] {
   return asArray(value, path).map((entry, index) => {
     const object = asObject(entry, `${path}[${index}]`);
-    expectKnownKeys(object, ["alias", "view", "field"], `${path}[${index}]`);
+    expectKnownKeys(object, ["name", "state"], `${path}[${index}]`);
     return {
-      alias: asString(object.alias, `${path}[${index}].alias`),
-      view: asString(object.view, `${path}[${index}].view`),
-      field: asString(object.field, `${path}[${index}].field`),
+      name: asString(object.name, `${path}[${index}].name`),
+      stateRef: asString(object.state, `${path}[${index}].state`),
     };
   });
 }
 
-function parseEffects(value: unknown, path: string): SourceEffect[] {
+function parseChanges(value: unknown, path: string): RuleChange[] {
   return asArray(value, path).map((entry, index) => {
     const object = asObject(entry, `${path}[${index}]`);
-    if (object.process !== undefined) {
-      expectKnownKeys(object, ["process", "operation", "parameters"], `${path}[${index}]`);
-      const parameters = asObject(object.parameters, `${path}[${index}].parameters`);
-      const parsed: Record<string, ValueSource> = {};
+    if (object.processRef !== undefined) {
+      expectKnownKeys(object, ["processRef", "action", "params"], `${path}[${index}]`);
+      const parameters = asObject(object.params, `${path}[${index}].params`);
+      const parsed: Record<string, ValueExpr> = {};
       for (const [name, parameter] of Object.entries(parameters))
-        parsed[name] = parseValueSource(parameter, `${path}[${index}].parameters.${name}`);
+        parsed[name] = parseValueExpr(parameter, `${path}[${index}].params.${name}`);
       return {
         kind: "process",
-        process: asString(object.process, `${path}[${index}].process`),
-        operation: enumValue(object.operation, PROCESS_OPERATIONS, `${path}[${index}].operation`),
-        parameters: parsed,
+        processRef: asString(object.processRef, `${path}[${index}].processRef`),
+        action: enumValue(object.action, PROCESS_OPERATIONS, `${path}[${index}].action`),
+        params: parsed,
       };
     }
-    expectKnownKeys(object, ["target", "composition", "priority", "value"], `${path}[${index}]`);
+    expectKnownKeys(object, ["state", "combine", "priority", "value"], `${path}[${index}]`);
     return {
-      kind: "target",
-      target: asString(object.target, `${path}[${index}].target`),
-      composition: enumValue<CompositionKind>(object.composition, COMPOSITIONS, `${path}[${index}].composition`),
+      kind: "state",
+      stateRef: asString(object.state, `${path}[${index}].state`),
+      combine: enumValue<CombineMode>(object.combine, COMPOSITIONS, `${path}[${index}].combine`),
       priority: object.priority === undefined ? null : asNumber(object.priority, `${path}[${index}].priority`),
-      value: parseValueSource(object.value, `${path}[${index}].value`),
+      value: parseValueExpr(object.value, `${path}[${index}].value`),
     };
   });
 }
 
-export function parseManifest(value: unknown, path = MANIFEST_PATH): SourceManifest {
+export function parseManifest(value: unknown, path = MANIFEST_PATH): PackManifest {
   const object = asObject(value, path);
-  expectKnownKeys(object, ["pack", "version", "kernel", "dependencies", "extensions", "sections"], path);
+  expectKnownKeys(object, ["pack", "version", "kernel", "dependencies", "systems", "sections"], path);
   const dependencies = asArray(object.dependencies ?? [], `${path}.dependencies`).map((entry, index) =>
     asString(entry, `${path}.dependencies[${index}]`),
   );
-  const extensions = asArray(object.extensions, `${path}.extensions`).map((entry, index) =>
-    asString(entry, `${path}.extensions[${index}]`),
+  const systems = asArray(object.systems, `${path}.systems`).map((entry, index) =>
+    asString(entry, `${path}.systems[${index}]`),
   );
   const sectionsObject = asObject(object.sections, `${path}.sections`);
   const sections: Record<string, string> = {};
@@ -446,7 +437,7 @@ export function parseManifest(value: unknown, path = MANIFEST_PATH): SourceManif
     version: asString(object.version, `${path}.version`),
     kernel: asString(object.kernel, `${path}.kernel`),
     dependencies,
-    extensions,
+    systems,
     sections,
   };
 }
@@ -469,7 +460,7 @@ function definitionFromDocument(
   namespace: string,
   sectionType: string,
   resolveText: (target: string) => string | undefined,
-): SourceDefinition {
+): ParsedItem {
   const object = asObject(document, relativePath);
   expectKnownKeys(object, ["id", "type", "public", "templates", "fields"], relativePath);
   const id = asString(object.id, `${relativePath}.id`);
@@ -493,28 +484,28 @@ function definitionFromDocument(
   };
 }
 
-function ruleFromDocument(document: unknown, relativePath: string, namespace: string): SourceRule | SourceDerivation {
+function ruleFromDocument(document: unknown, relativePath: string, namespace: string): ParsedRule | ParsedFormula {
   const object = asObject(document, relativePath);
-  const kind = enumValue(object.kind, ["rule", "derivation"] as const, `${relativePath}.kind`);
+  const kind = enumValue(object.kind, ["rule", "formula"] as const, `${relativePath}.kind`);
   const id = asString(object.id, `${relativePath}.id`);
   const ref = `${namespace}/${id}`;
-  if (kind === "derivation") {
-    expectKnownKeys(object, ["kind", "id", "domain", "reads", "outputUnit", "value"], relativePath);
+  if (kind === "formula") {
+    expectKnownKeys(object, ["kind", "id", "system", "inputs", "outputUnit", "value"], relativePath);
     return {
       kind,
       ref,
       id,
       namespace,
-      domain: asString(object.domain, `${relativePath}.domain`),
+      system: asString(object.system, `${relativePath}.system`),
       relativePath,
-      reads: parseReads(object.reads ?? [], `${relativePath}.reads`),
+      inputs: parseInputs(object.inputs ?? [], `${relativePath}.inputs`),
       outputUnit: asString(object.outputUnit, `${relativePath}.outputUnit`),
-      value: parseValueSource(object.value, `${relativePath}.value`),
+      value: parseValueExpr(object.value, `${relativePath}.value`),
     };
   }
   expectKnownKeys(
     object,
-    ["kind", "id", "domain", "triggers", "reads", "condition", "effects", "dependsOn"],
+    ["kind", "id", "system", "triggers", "inputs", "condition", "changes", "dependsOn"],
     relativePath,
   );
   return {
@@ -522,14 +513,14 @@ function ruleFromDocument(document: unknown, relativePath: string, namespace: st
     ref,
     id,
     namespace,
-    domain: asString(object.domain, `${relativePath}.domain`),
+    system: asString(object.system, `${relativePath}.system`),
     relativePath,
     triggers: asArray(object.triggers, `${relativePath}.triggers`).map((entry, index) =>
       asString(entry, `${relativePath}.triggers[${index}]`),
     ),
-    reads: parseReads(object.reads ?? [], `${relativePath}.reads`),
+    inputs: parseInputs(object.inputs ?? [], `${relativePath}.inputs`),
     condition: parseCondition(object.condition, `${relativePath}.condition`),
-    effects: parseEffects(object.effects, `${relativePath}.effects`),
+    changes: parseChanges(object.changes, `${relativePath}.changes`),
     dependsOn: asArray(object.dependsOn ?? [], `${relativePath}.dependsOn`).map((entry, index) =>
       asString(entry, `${relativePath}.dependsOn[${index}]`),
     ),
@@ -537,21 +528,21 @@ function ruleFromDocument(document: unknown, relativePath: string, namespace: st
 }
 
 /**
- * Turns the raw documents of one loaded pack into source definitions.
+ * Turns the raw documents of one loaded pack into source items.
  * Structural failures throw; the caller records them as structure diagnostics
  * so a single malformed document never hides the rest of the pack.
  */
-export function parseSourcePack(
+export function parsePack(
   manifest: unknown,
   documents: readonly { readonly path: string; readonly document: unknown }[],
   report: (relativePath: string, message: string) => void,
-  identity: string,
+  contentId: string,
   resolveText: (target: string) => string | undefined,
-): SourcePack {
+): ParsedPack {
   const parsedManifest = parseManifest(manifest);
-  const definitions: SourceDefinition[] = [];
-  const rules: SourceRule[] = [];
-  const derivations: SourceDerivation[] = [];
+  const items: ParsedItem[] = [];
+  const rules: ParsedRule[] = [];
+  const formulas: ParsedFormula[] = [];
 
   for (const file of documents) {
     if (file.path === MANIFEST_PATH) continue;
@@ -571,7 +562,7 @@ export function parseSourcePack(
       })();
       if (candidate === undefined) continue;
       if (candidate.kind === "rule") rules.push(candidate);
-      else derivations.push(candidate);
+      else formulas.push(candidate);
       continue;
     }
     const sectionType = parsedManifest.sections[directory];
@@ -579,7 +570,7 @@ export function parseSourcePack(
       report(file.path, `${directory}/ is not a declared section of this pack`);
       continue;
     }
-    const definition = (() => {
+    const item = (() => {
       try {
         return definitionFromDocument(file.document, file.path, parsedManifest.namespace, sectionType, resolveText);
       } catch (failure) {
@@ -587,14 +578,14 @@ export function parseSourcePack(
         return undefined;
       }
     })();
-    if (definition !== undefined) definitions.push(definition);
+    if (item !== undefined) items.push(item);
   }
 
   return {
     manifest: parsedManifest,
-    identity,
-    definitions: definitions.sort((left, right) => (left.ref < right.ref ? -1 : 1)),
+    contentId,
+    items: items.sort((left, right) => (left.ref < right.ref ? -1 : 1)),
     rules: rules.sort((left, right) => (left.ref < right.ref ? -1 : 1)),
-    derivations: derivations.sort((left, right) => (left.ref < right.ref ? -1 : 1)),
+    formulas: formulas.sort((left, right) => (left.ref < right.ref ? -1 : 1)),
   };
 }

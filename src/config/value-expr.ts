@@ -1,13 +1,13 @@
-import { applyNumericPolicy, evaluateMapping, RATIO_UNIT, type MappingResult, type NumericMapping } from "./numeric.js";
+import { applyNumberPolicy, runMap, RATIO_UNIT, type MapResult, type ValueMap } from "./numeric.js";
 
-/** Explicit simulated time; the kernel never reads the machine clock. */
-export interface SimulationTime {
+/** Explicit simulated time; the kernel never inputs the machine clock. */
+export interface SimTime {
   readonly tick: number;
   /** Simulated seconds on the shared clock, supplied by the time system. */
   readonly seconds: number;
 }
 
-export type Scalar = number | boolean | string;
+export type SimpleValue = number | boolean | string;
 
 /** How one rule combines several operand values into the single value it writes. */
 export type CombineMethod = "min" | "max" | "add" | "multiply";
@@ -22,91 +22,91 @@ const MULTIPLICATIVE: readonly CombineMethod[] = ["multiply"];
 
 /**
  * Restricted value vocabulary. Every value a rule can compute is either a
- * declared literal, an alias bound to an explicitly declared read, a declared
- * derivation, a declared mapping applied to another value source, a comparison
+ * declared literal, an name bound to an explicitly declared read, a declared
+ * formula, a declared mapping applied to another value source, a comparison
  * of two declared value sources, or a combination of declared value sources
  * under one declared method. There is no expression language and no way to reach
  * state that was not declared.
  */
-export type ValueSource =
-  | { readonly kind: "literal"; readonly value: Scalar; readonly unit: string }
-  | { readonly kind: "read"; readonly alias: string }
-  | { readonly kind: "derived"; readonly ref: string }
-  | { readonly kind: "map"; readonly mapping: NumericMapping; readonly input: ValueSource }
-  | { readonly kind: "combine"; readonly method: CombineMethod; readonly operands: readonly ValueSource[] }
+export type ValueExpr =
+  | { readonly kind: "literal"; readonly value: SimpleValue; readonly unit: string }
+  | { readonly kind: "read"; readonly name: string }
+  | { readonly kind: "formula"; readonly formulaRef: string }
+  | { readonly kind: "map"; readonly mapping: ValueMap; readonly input: ValueExpr }
+  | { readonly kind: "combine"; readonly method: CombineMethod; readonly operands: readonly ValueExpr[] }
   | {
       readonly kind: "compare";
-      readonly left: ValueSource;
-      readonly right: ValueSource;
+      readonly left: ValueExpr;
+      readonly right: ValueExpr;
       readonly operator: CompareOperator;
     }
   | {
       readonly kind: "select";
-      readonly left: ValueSource;
-      readonly right: ValueSource;
+      readonly left: ValueExpr;
+      readonly right: ValueExpr;
       readonly operator: CompareOperator;
-      readonly then: ValueSource;
-      readonly otherwise: ValueSource;
+      readonly then: ValueExpr;
+      readonly otherwise: ValueExpr;
     };
 
 /** Reasons a value cannot be produced; they map to distinct result statuses. */
 export type ValueFailure = "input-missing" | "input-invalid" | "inexpressible";
 
 export type ValueResult =
-  | { readonly ok: true; readonly value: Scalar; readonly unit: string }
+  | { readonly ok: true; readonly value: SimpleValue; readonly unit: string }
   | { readonly ok: false; readonly reason: ValueFailure; readonly message: string };
 
 /**
  * Read-only scope of one evaluation. The kernel only sees values handed in by
- * the caller; there is no back door to a domain object or to the file system.
+ * the caller; there is no back door to a system object or to the file system.
  */
-export interface ValueScope {
-  /** `undefined` means the alias is absent from this input snapshot. */
-  read(alias: string): { readonly found: boolean; readonly value?: unknown };
-  /** Declared unit of an alias, or `null` for non-numeric values. */
-  unitOf(alias: string): string | null;
-  derive(ref: string): ValueResult;
-  readonly simulationTime: SimulationTime;
+export interface ValueContext {
+  /** `undefined` means the name is absent from this input snapshot. */
+  read(name: string): { readonly found: boolean; readonly value?: unknown };
+  /** Declared unit of an name, or `null` for non-numeric values. */
+  unitOf(name: string): string | null;
+  formula(formulaRef: string): ValueResult;
+  readonly simTime: SimTime;
 }
 
-export function valueReads(source: ValueSource): readonly string[] {
+export function inputNames(source: ValueExpr): readonly string[] {
   switch (source.kind) {
     case "read":
-      return [source.alias];
+      return [source.name];
     case "map":
-      return valueReads(source.input);
+      return inputNames(source.input);
     case "combine":
-      return source.operands.flatMap((operand) => valueReads(operand));
+      return source.operands.flatMap((operand) => inputNames(operand));
     case "compare":
-      return [...valueReads(source.left), ...valueReads(source.right)];
+      return [...inputNames(source.left), ...inputNames(source.right)];
     case "select":
       return [
-        ...valueReads(source.left),
-        ...valueReads(source.right),
-        ...valueReads(source.then),
-        ...valueReads(source.otherwise),
+        ...inputNames(source.left),
+        ...inputNames(source.right),
+        ...inputNames(source.then),
+        ...inputNames(source.otherwise),
       ];
     default:
       return [];
   }
 }
 
-export function valueDerivations(source: ValueSource): readonly string[] {
+export function formulaRefs(source: ValueExpr): readonly string[] {
   switch (source.kind) {
-    case "derived":
-      return [source.ref];
+    case "formula":
+      return [source.formulaRef];
     case "map":
-      return valueDerivations(source.input);
+      return formulaRefs(source.input);
     case "combine":
-      return source.operands.flatMap((operand) => valueDerivations(operand));
+      return source.operands.flatMap((operand) => formulaRefs(operand));
     case "compare":
-      return [...valueDerivations(source.left), ...valueDerivations(source.right)];
+      return [...formulaRefs(source.left), ...formulaRefs(source.right)];
     case "select":
       return [
-        ...valueDerivations(source.left),
-        ...valueDerivations(source.right),
-        ...valueDerivations(source.then),
-        ...valueDerivations(source.otherwise),
+        ...formulaRefs(source.left),
+        ...formulaRefs(source.right),
+        ...formulaRefs(source.then),
+        ...formulaRefs(source.otherwise),
       ];
     default:
       return [];
@@ -169,35 +169,35 @@ export function compareValues(
   return { ok: false, reason: "input-invalid", message: "Unsupported comparison operands" };
 }
 
-function mappingFailure(result: Extract<MappingResult, { readonly ok: false }>): ValueResult {
+function mappingFailure(result: Extract<MapResult, { readonly ok: false }>): ValueResult {
   return { ok: false, reason: "input-invalid", message: result.message };
 }
 
-export function evaluateValue(source: ValueSource, scope: ValueScope): ValueResult {
+export function runExpr(source: ValueExpr, scope: ValueContext): ValueResult {
   switch (source.kind) {
     case "literal":
       return { ok: true, value: source.value, unit: source.unit };
     case "read": {
-      const read = scope.read(source.alias);
+      const read = scope.read(source.name);
       if (!read.found)
         return {
           ok: false,
           reason: "input-missing",
-          message: `Declared read ${source.alias} is absent from the input`,
+          message: `Declared read ${source.name} is absent from the input`,
         };
       const value = read.value;
       if (typeof value !== "number" && typeof value !== "boolean" && typeof value !== "string")
         return {
           ok: false,
           reason: "input-invalid",
-          message: `Read ${source.alias} is not a scalar value`,
+          message: `Read ${source.name} is not a scalar value`,
         };
-      return { ok: true, value, unit: scope.unitOf(source.alias) ?? "" };
+      return { ok: true, value, unit: scope.unitOf(source.name) ?? "" };
     }
-    case "derived":
-      return scope.derive(source.ref);
+    case "formula":
+      return scope.formula(source.formulaRef);
     case "map": {
-      const input = evaluateValue(source.input, scope);
+      const input = runExpr(source.input, scope);
       if (!input.ok) return input;
       if (typeof input.value !== "number")
         return {
@@ -211,16 +211,16 @@ export function evaluateValue(source: ValueSource, scope: ValueScope): ValueResu
           reason: "input-invalid",
           message: `Mapping expects unit ${source.mapping.inputUnit} but received ${input.unit}`,
         };
-      const mapped = evaluateMapping(source.mapping, input.value);
+      const mapped = runMap(source.mapping, input.value);
       if (!mapped.ok) return mappingFailure(mapped);
-      const normalized = applyNumericPolicy(mapped.value, source.mapping.policy);
+      const normalized = applyNumberPolicy(mapped.value, source.mapping.policy);
       if (!normalized.ok) return { ok: false, reason: "input-invalid", message: normalized.message };
       return { ok: true, value: normalized.value, unit: source.mapping.policy.unit };
     }
     case "combine": {
       const operands: { readonly value: number; readonly unit: string }[] = [];
       for (const operand of source.operands) {
-        const evaluated = evaluateValue(operand, scope);
+        const evaluated = runExpr(operand, scope);
         if (!evaluated.ok) return evaluated;
         if (typeof evaluated.value !== "number")
           return {
@@ -264,22 +264,22 @@ export function evaluateValue(source: ValueSource, scope: ValueScope): ValueResu
       return { ok: true, value: combined, unit };
     }
     case "compare": {
-      const left = evaluateValue(source.left, scope);
+      const left = runExpr(source.left, scope);
       if (!left.ok) return left;
-      const right = evaluateValue(source.right, scope);
+      const right = runExpr(source.right, scope);
       if (!right.ok) return right;
       const compared = compareValues(left, right, source.operator);
       if (!compared.ok) return { ok: false, reason: compared.reason, message: compared.message };
       return { ok: true, value: compared.value, unit: "" };
     }
     case "select": {
-      const left = evaluateValue(source.left, scope);
+      const left = runExpr(source.left, scope);
       if (!left.ok) return left;
-      const right = evaluateValue(source.right, scope);
+      const right = runExpr(source.right, scope);
       if (!right.ok) return right;
       const compared = compareValues(left, right, source.operator);
       if (!compared.ok) return { ok: false, reason: compared.reason, message: compared.message };
-      return evaluateValue(compared.value ? source.then : source.otherwise, scope);
+      return runExpr(compared.value ? source.then : source.otherwise, scope);
     }
     default:
       return { ok: false, reason: "inexpressible", message: "Unsupported value source" };
