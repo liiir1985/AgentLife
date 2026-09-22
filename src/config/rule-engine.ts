@@ -5,6 +5,7 @@ import { strongestStatus, type ResultStatus } from "./diagnostics.js";
 import type { CombineMode } from "./numeric.js";
 import { applyNumberPolicy } from "./numeric.js";
 import type { CheckedInput } from "./config-checker.js";
+import type { StateScope } from "./system-spec.js";
 import {
   runExpr,
   type SimpleValue,
@@ -14,35 +15,25 @@ import {
   type ValueContext,
 } from "./value-expr.js";
 
-/**
- * Deterministic evaluation.
- *
- * One run fixes the runtime config, the state input and the explicit
- * simulated time, walks only the rules the trigger index selects, and returns
- * state changes plus a trace. It reads nothing else: no clock, no random source,
- * no I/O and no state that was not handed in.
- */
-
+/** A complete, immutable state projection used by one deterministic run. */
 export interface StateInput {
-  /** State version this input was taken from. */
   readonly stateVersion: string;
   readonly simTime: SimTime;
-  /** View identity to the read-only value exposed under that input. */
-  readonly inputs: Readonly<Record<string, unknown>>;
+  readonly shared: Readonly<Record<string, unknown>>;
+  readonly entities: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
 }
 
 export interface RuleRequest {
   readonly runId: string;
   readonly trigger: string;
-  /**
-   * State version a deferred request was created against. When it no longer
-   * matches the input, the request is stale and nothing is evaluated.
-   */
+  /** Explicit evaluation range. The engine de-duplicates and sorts these ids. */
+  readonly entityIds: readonly string[];
   readonly baseVersion?: string;
   readonly input: StateInput;
 }
 
 export interface InputTrace {
+  readonly entityId: string | null;
   readonly name: string;
   readonly stateRef: string;
   readonly field: string;
@@ -53,6 +44,7 @@ export interface InputTrace {
 export type RuleStatus = "evaluated" | "condition-false" | "input-missing" | "input-invalid";
 
 export interface RuleTrace {
+  readonly entityId: string | null;
   readonly ruleId: string;
   readonly status: RuleStatus;
   readonly inputs: readonly InputTrace[];
@@ -60,25 +52,27 @@ export interface RuleTrace {
 }
 
 export interface ValueTrace {
+  readonly entityId: string | null;
   readonly ruleId: string;
   readonly value: SimpleValue;
   readonly priority: number | null;
 }
 
 export interface CombineTrace {
+  readonly scope: StateScope;
+  readonly entityId: string | null;
   readonly stateRef: string;
   readonly combine: CombineMode;
   readonly status: "composed" | "conflict" | "rejected";
   readonly ruleValues: readonly ValueTrace[];
   readonly result: SimpleValue | null;
-  /** Rules that disagreed at the same highest priority. */
   readonly conflicting: readonly string[];
   readonly message?: string;
 }
 
 export interface StateChangeRequest {
-  /** Stable request identity, used for consumption and de-duplication. */
   readonly changeId: string;
+  readonly entityId: string | null;
   readonly stateRef: string;
   readonly system: string;
   readonly newValue: SimpleValue;
@@ -90,11 +84,22 @@ export interface StateChangeRequest {
 
 export interface ProcessChangeRequest {
   readonly changeId: string;
+  readonly entityId: string | null;
   readonly processRef: string;
   readonly system: string;
   readonly action: "establish" | "advance" | "pause" | "end" | "cancel";
   readonly params: Readonly<Record<string, SimpleValue>>;
   readonly sourceRule: string;
+}
+
+export interface ScopeTrace {
+  readonly entityId: string | null;
+  readonly selectedRules: readonly string[];
+  readonly skippedRules: readonly string[];
+  readonly rules: readonly RuleTrace[];
+  readonly combines: readonly CombineTrace[];
+  readonly stateChanges: readonly StateChangeRequest[];
+  readonly processChanges: readonly ProcessChangeRequest[];
 }
 
 export interface RunTrace {
@@ -103,12 +108,8 @@ export interface RunTrace {
   readonly configId: string;
   readonly stateVersion: string;
   readonly simTime: SimTime;
-  /** Rules the trigger index selected, in stable evaluation order. */
-  readonly selectedRules: readonly string[];
-  /** Rules declared by this runtime config that the index did not select. */
-  readonly skippedRules: readonly string[];
-  readonly rules: readonly RuleTrace[];
-  readonly combines: readonly CombineTrace[];
+  readonly shared: ScopeTrace;
+  readonly entities: readonly ScopeTrace[];
   readonly stateChanges: readonly StateChangeRequest[];
   readonly processChanges: readonly ProcessChangeRequest[];
 }
@@ -123,7 +124,6 @@ export interface RuleResult {
 
 interface RuleRun {
   readonly trace: RuleTrace;
-  readonly ruleValues: readonly { readonly stateRef: string; readonly combine: CombineMode }[];
   readonly stateValues: readonly {
     readonly stateRef: string;
     readonly combine: CombineMode;
@@ -133,50 +133,58 @@ interface RuleRun {
   readonly processChanges: readonly ProcessChangeRequest[];
 }
 
+interface ScopeRun {
+  readonly trace: ScopeTrace;
+  readonly outcomes: readonly RuleStatus[];
+}
+
 function failureReason(reason: ValueFailure): RuleStatus {
-  return reason === "input-missing" ? "input-missing" : reason === "input-invalid" ? "input-invalid" : "input-invalid";
+  return reason === "input-missing" ? "input-missing" : "input-invalid";
 }
 
-function staleResult(config: RuntimeConfig, request: RuleRequest, index: readonly string[]): RuleResult {
-  return {
-    status: "state-version-stale",
-    configId: config.configId,
-    stateChanges: [],
-    processChanges: [],
-    trace: {
-      runId: request.runId,
-      trigger: request.trigger,
-      configId: config.configId,
-      stateVersion: request.input.stateVersion,
-      simTime: request.input.simTime,
-      selectedRules: index,
-      skippedRules: skippedRules(config, index),
-      rules: [],
-      combines: [],
-      stateChanges: [],
-      processChanges: [],
-    },
-  };
+function entityIdsOf(request: RuleRequest): readonly string[] {
+  return [...new Set(request.entityIds)].sort();
 }
 
-function skippedRules(config: RuntimeConfig, selectedRules: readonly string[]): readonly string[] {
-  const selected = new Set(selectedRules);
-  return config.rules.map((rule) => rule.ref).filter((ref) => !selected.has(ref));
+function selectedRules(config: RuntimeConfig, trigger: string, scope: StateScope): readonly RuntimeRule[] {
+  const byRef = new Map(config.rules.map((rule) => [rule.ref, rule]));
+  return (config.triggerIndex[trigger] ?? [])
+    .map((ref) => byRef.get(ref))
+    .filter((rule): rule is RuntimeRule => rule !== undefined && rule.evaluationScope === scope);
 }
 
-function inputValue(state: StateInput, stateRef: string, field: string): { present: boolean; value?: unknown } {
-  const container = state.inputs[stateRef];
+function skippedRules(config: RuntimeConfig, selected: readonly RuntimeRule[], scope: StateScope): readonly string[] {
+  const selectedIds = new Set(selected.map((rule) => rule.ref));
+  return config.rules
+    .filter((rule) => rule.evaluationScope === scope && !selectedIds.has(rule.ref))
+    .map((rule) => rule.ref);
+}
+
+function inputValue(
+  state: StateInput,
+  scope: StateScope,
+  entityId: string | null,
+  stateRef: string,
+  field: string,
+): { present: boolean; value?: unknown } {
+  const source = scope === "shared" ? state.shared : entityId === null ? undefined : state.entities[entityId];
+  const container = source?.[stateRef];
   if (typeof container !== "object" || container === null) return { present: false };
   const value: unknown = Reflect.get(container, field);
   return value === undefined ? { present: false } : { present: true, value };
 }
 
-function inputTraces(rule: RuntimeRule | RuntimeFormula, input: StateInput): readonly InputTrace[] {
+function inputTraces(
+  rule: RuntimeRule | RuntimeFormula,
+  input: StateInput,
+  entityId: string | null,
+): readonly InputTrace[] {
   return rule.usedInputs.map((read) => {
-    const found = inputValue(input, read.stateRef, read.field);
+    const found = inputValue(input, read.scope, entityId, read.stateRef, read.field);
     const value = found.value;
     const scalar = typeof value === "number" || typeof value === "boolean" || typeof value === "string" ? value : null;
     return {
+      entityId,
       name: read.name,
       stateRef: read.stateRef,
       field: read.field,
@@ -190,12 +198,12 @@ function buildScope(
   config: RuntimeConfig,
   input: StateInput,
   inputs: readonly CheckedInput[],
-): { scope: ValueContext; formulas: Map<string, ValueResult> } {
+  entityId: string | null,
+): ValueContext {
   const units = new Map(inputs.map((read) => [read.name, read.unit]));
   const memo = new Map<string, ValueResult>();
   const visiting = new Set<string>();
   const formulasById = new Map(config.formulas.map((formula) => [formula.ref, formula]));
-
   const runFormula = (ref: string): ValueResult => {
     const cached = memo.get(ref);
     if (cached !== undefined) return cached;
@@ -203,30 +211,31 @@ function buildScope(
     if (formula === undefined) return { ok: false, reason: "inexpressible", message: `Unknown formula ${ref}` };
     if (visiting.has(ref)) return { ok: false, reason: "inexpressible", message: `Formula cycle at ${ref}` };
     visiting.add(ref);
-    const result = runExpr(formula.value, innerScope);
+    const result = runExpr(formula.value, context);
     visiting.delete(ref);
     memo.set(ref, result);
     return result;
   };
-
-  const innerScope: ValueContext = {
+  const context: ValueContext = {
     read: (name) => {
       const read = inputs.find((candidate) => candidate.name === name);
       if (read === undefined) return { found: false };
-      const found = inputValue(input, read.stateRef, read.field);
+      const found = inputValue(input, read.scope, entityId, read.stateRef, read.field);
       return found.present ? { found: true, value: found.value } : { found: false };
     },
     unitOf: (name) => units.get(name) ?? null,
     formula: runFormula,
     simTime: input.simTime,
   };
-  return { scope: innerScope, formulas: memo };
+  return context;
 }
 
 function runChanges(
   config: RuntimeConfig,
+  request: RuleRequest,
   rule: RuntimeRule,
   scope: ValueContext,
+  entityId: string | null,
 ): {
   changes: RuleRun["stateValues"];
   processChanges: ProcessChangeRequest[];
@@ -255,11 +264,15 @@ function runChanges(
     processChanges.push({
       changeId: hashId({
         configId: config.configId,
+        runId: request.runId,
+        scope: change.scope,
+        entityId,
         rule: rule.ref,
         processRef: change.processRef,
         action: change.action,
         params,
       }),
+      entityId,
       processRef: change.processRef,
       system: change.system,
       action: change.action,
@@ -270,66 +283,79 @@ function runChanges(
   return { changes: stateValues, processChanges };
 }
 
-function runRule(config: RuntimeConfig, rule: RuntimeRule, input: StateInput): RuleRun {
-  const inputs = inputTraces(rule, input);
+function runRule(
+  config: RuntimeConfig,
+  request: RuleRequest,
+  rule: RuntimeRule,
+  entityId: string | null,
+  missingEntity: boolean,
+): RuleRun {
+  const inputs = inputTraces(rule, request.input, entityId);
+  if (missingEntity)
+    return {
+      trace: { entityId, ruleId: rule.ref, status: "input-missing", inputs, message: `Missing entity ${entityId}` },
+      stateValues: [],
+      processChanges: [],
+    };
   const missing = inputs.filter((read) => !read.present);
   if (missing.length > 0)
     return {
       trace: {
+        entityId,
         ruleId: rule.ref,
         status: "input-missing",
         inputs,
         message: `Missing declared inputs: ${missing.map((read) => read.name).join(", ")}`,
       },
-      ruleValues: [],
       stateValues: [],
       processChanges: [],
     };
 
-  const { scope } = buildScope(config, input, rule.usedInputs);
+  const scope = buildScope(config, request.input, rule.usedInputs, entityId);
   const condition = runCondition(rule.condition, scope);
   if (!condition.ok)
     return {
-      trace: { ruleId: rule.ref, status: failureReason(condition.reason), inputs, message: condition.message },
-      ruleValues: [],
+      trace: {
+        entityId,
+        ruleId: rule.ref,
+        status: failureReason(condition.reason),
+        inputs,
+        message: condition.message,
+      },
       stateValues: [],
       processChanges: [],
     };
   if (!condition.value)
     return {
-      trace: { ruleId: rule.ref, status: "condition-false", inputs },
-      ruleValues: [],
+      trace: { entityId, ruleId: rule.ref, status: "condition-false", inputs },
       stateValues: [],
       processChanges: [],
     };
 
-  const evaluated = runChanges(config, rule, scope);
-  const failed = evaluated.failure;
-  if (failed !== undefined)
+  const evaluated = runChanges(config, request, rule, scope, entityId);
+  if (evaluated.failure !== undefined)
     return {
       trace: {
+        entityId,
         ruleId: rule.ref,
-        status: failureReason(failed.reason),
+        status: failureReason(evaluated.failure.reason),
         inputs,
-        message: failed.message,
+        message: evaluated.failure.message,
       },
-      ruleValues: [],
       stateValues: [],
       processChanges: [],
     };
   return {
-    trace: { ruleId: rule.ref, status: "evaluated", inputs },
-    ruleValues: [],
+    trace: { entityId, ruleId: rule.ref, status: "evaluated", inputs },
     stateValues: evaluated.changes,
     processChanges: evaluated.processChanges,
   };
 }
 
-function combineValues(
-  plan: CombinePlan,
-  ruleValues: readonly { readonly ruleId: string; readonly value: SimpleValue; readonly priority: number | null }[],
-): CombineTrace {
+function combineValues(plan: CombinePlan, entityId: string | null, ruleValues: readonly ValueTrace[]): CombineTrace {
   const base: Omit<CombineTrace, "status"> = {
+    scope: plan.scope,
+    entityId,
     stateRef: plan.stateRef,
     combine: plan.combine,
     ruleValues,
@@ -337,10 +363,9 @@ function combineValues(
     conflicting: [],
   };
   if (ruleValues.length === 0) return { ...base, status: "composed" };
-
   if (plan.combine === "priority") {
-    const highest = Math.max(...ruleValues.map((ruleValue) => ruleValue.priority ?? 0));
-    const winners = ruleValues.filter((ruleValue) => (ruleValue.priority ?? 0) === highest);
+    const highest = Math.max(...ruleValues.map((value) => value.priority ?? 0));
+    const winners = ruleValues.filter((value) => (value.priority ?? 0) === highest);
     const distinct = [...new Set(winners.map((winner) => winner.value))];
     if (distinct.length > 1)
       return {
@@ -353,84 +378,48 @@ function combineValues(
       };
     const winner = winners[0]?.value ?? null;
     if (winner !== null && plan.allowedValues !== null && !plan.allowedValues.includes(String(winner)))
-      return {
-        ...base,
-        status: "rejected",
-        message: `${plan.stateRef} does not accept the value ${String(winner)}`,
-      };
+      return { ...base, status: "rejected", message: `${plan.stateRef} does not accept the value ${String(winner)}` };
     return { ...base, status: "composed", result: winner };
   }
 
-  const numbers = ruleValues.map((ruleValue) => ruleValue.value);
-  if (numbers.some((value) => typeof value !== "number"))
-    return {
-      ...base,
-      status: "rejected",
-      message: `${plan.combine} requires numeric ruleValues`,
-    };
-  const numeric = numbers as readonly number[];
-  let combined: number;
-  switch (plan.combine) {
-    case "min":
-      combined = Math.min(...numeric);
-      break;
-    case "max":
-      combined = Math.max(...numeric);
-      break;
-    case "add":
-      combined = numeric.reduce((total, value) => total + value, 0);
-      break;
-    default:
-      combined = numeric.reduce((total, value) => total * value, 1);
-      break;
-  }
+  const values = ruleValues.map((ruleValue) => ruleValue.value);
+  if (values.some((value) => typeof value !== "number"))
+    return { ...base, status: "rejected", message: `${plan.combine} requires numeric ruleValues` };
+  const numbers = values as readonly number[];
+  const combined =
+    plan.combine === "min"
+      ? Math.min(...numbers)
+      : plan.combine === "max"
+        ? Math.max(...numbers)
+        : plan.combine === "add"
+          ? numbers.reduce((total, value) => total + value, 0)
+          : numbers.reduce((total, value) => total * value, 1);
   if (plan.policy === null) return { ...base, status: "composed", result: combined };
   const normalized = applyNumberPolicy(combined, plan.policy);
-  if (!normalized.ok) return { ...base, status: "rejected", message: normalized.message };
-  return { ...base, status: "composed", result: normalized.value };
+  return normalized.ok
+    ? { ...base, status: "composed", result: normalized.value }
+    : { ...base, status: "rejected", message: normalized.message };
 }
 
-export function runRules(config: RuntimeConfig, request: RuleRequest): RuleResult {
-  const selectedRules = config.triggerIndex[request.trigger] ?? [];
-  const byRef = new Map(config.rules.map((rule) => [rule.ref, rule]));
-  const selected = selectedRules.map((ref) => byRef.get(ref)).filter((rule): rule is RuntimeRule => rule !== undefined);
-
-  if (request.baseVersion !== undefined && request.baseVersion !== request.input.stateVersion)
-    return staleResult(config, request, selectedRules);
-
-  if (selected.length === 0) {
-    return {
-      status: "no-match",
-      configId: config.configId,
-      stateChanges: [],
-      processChanges: [],
-      trace: {
-        runId: request.runId,
-        trigger: request.trigger,
-        configId: config.configId,
-        stateVersion: request.input.stateVersion,
-        simTime: request.input.simTime,
-        selectedRules: [],
-        skippedRules: skippedRules(config, []),
-        rules: [],
-        combines: [],
-        stateChanges: [],
-        processChanges: [],
-      },
-    };
-  }
-
+function evaluateScope(
+  config: RuntimeConfig,
+  request: RuleRequest,
+  scope: StateScope,
+  entityId: string | null,
+  selected: readonly RuntimeRule[],
+): ScopeRun {
   const ruleTraces: RuleTrace[] = [];
-  const pending = new Map<string, { ruleId: string; value: SimpleValue; priority: number | null }[]>();
+  const pending = new Map<string, ValueTrace[]>();
   const processChanges: ProcessChangeRequest[] = [];
+  const missingEntity = scope === "entity" && entityId !== null && request.input.entities[entityId] === undefined;
   for (const rule of selected) {
-    const evaluation = runRule(config, rule, request.input);
+    const evaluation = runRule(config, request, rule, entityId, missingEntity);
     ruleTraces.push(evaluation.trace);
-    for (const stateRef of evaluation.stateValues) {
-      const bucket = pending.get(stateRef.stateRef);
-      const ruleValue = { ruleId: rule.ref, value: stateRef.value, priority: stateRef.priority };
-      if (bucket === undefined) pending.set(stateRef.stateRef, [ruleValue]);
-      else bucket.push(ruleValue);
+    for (const change of evaluation.stateValues) {
+      const value: ValueTrace = { entityId, ruleId: rule.ref, value: change.value, priority: change.priority };
+      const bucket = pending.get(change.stateRef);
+      if (bucket === undefined) pending.set(change.stateRef, [value]);
+      else bucket.push(value);
     }
     processChanges.push(...evaluation.processChanges);
   }
@@ -439,60 +428,136 @@ export function runRules(config: RuntimeConfig, request: RuleRequest): RuleResul
   const stateChanges: StateChangeRequest[] = [];
   for (const stateRef of [...pending.keys()].sort()) {
     const plan = config.combinePlans[stateRef];
-    if (plan === undefined) continue;
+    if (plan === undefined || plan.scope !== scope) continue;
     const ruleValues = pending.get(stateRef) ?? [];
-    const combine = combineValues(plan, ruleValues);
+    const combine = combineValues(plan, entityId, ruleValues);
     combines.push(combine);
     if (combine.status !== "composed" || combine.result === null) continue;
     stateChanges.push({
       changeId: hashId({
         configId: config.configId,
         runId: request.runId,
+        scope,
+        entityId,
         stateRef,
         value: combine.result,
       }),
+      entityId,
       stateRef,
       system: plan.system,
       newValue: combine.result,
-      sourceRules: ruleValues.map((ruleValue) => ruleValue.ruleId).sort(),
+      sourceRules: ruleValues.map((value) => value.ruleId).sort(),
       runId: request.runId,
       baseVersion: request.input.stateVersion,
       simTime: request.input.simTime,
     });
   }
 
-  const outcomes = ruleTraces.map((trace) => trace.status);
-  const statuses: ResultStatus[] = [];
-  for (const combine of combines) {
-    if (combine.status === "conflict") statuses.push("conflict");
-    if (combine.status === "rejected") statuses.push("inexpressible");
-  }
-  if (stateChanges.length > 0 || processChanges.length > 0) statuses.push("changes");
-  if (outcomes.includes("input-missing") || outcomes.includes("input-invalid")) statuses.push("input-invalid");
-  const evaluatedOutcomes = outcomes.filter(
-    (outcome) => outcome === "evaluated" || outcome === "input-missing" || outcome === "input-invalid",
-  );
-  if (evaluatedOutcomes.length === 0) statuses.push("condition-false");
-  if (statuses.length === 0) statuses.push("condition-false");
-
   return {
-    status: strongestStatus(statuses),
-    configId: config.configId,
-    stateChanges,
-    processChanges,
+    outcomes: ruleTraces.map((trace) => trace.status),
     trace: {
-      runId: request.runId,
-      trigger: request.trigger,
-      configId: config.configId,
-      stateVersion: request.input.stateVersion,
-      simTime: request.input.simTime,
-      selectedRules,
-      skippedRules: skippedRules(config, selectedRules),
+      entityId,
+      selectedRules: selected.map((rule) => rule.ref),
+      skippedRules: skippedRules(config, selected, scope),
       rules: ruleTraces,
       combines,
       stateChanges,
       processChanges,
     },
+  };
+}
+
+function emptyScopeTrace(
+  config: RuntimeConfig,
+  selected: readonly RuntimeRule[],
+  scope: StateScope,
+  entityId: string | null,
+): ScopeTrace {
+  return {
+    entityId,
+    selectedRules: selected.map((rule) => rule.ref),
+    skippedRules: skippedRules(config, selected, scope),
+    rules: [],
+    combines: [],
+    stateChanges: [],
+    processChanges: [],
+  };
+}
+
+function traceOf(
+  config: RuntimeConfig,
+  request: RuleRequest,
+  shared: ScopeTrace,
+  entities: readonly ScopeTrace[],
+): RunTrace {
+  const stateChanges = [shared, ...entities].flatMap((trace) => trace.stateChanges);
+  const processChanges = [shared, ...entities].flatMap((trace) => trace.processChanges);
+  return {
+    runId: request.runId,
+    trigger: request.trigger,
+    configId: config.configId,
+    stateVersion: request.input.stateVersion,
+    simTime: request.input.simTime,
+    shared,
+    entities,
+    stateChanges,
+    processChanges,
+  };
+}
+
+export function runRules(config: RuntimeConfig, request: RuleRequest): RuleResult {
+  const ids = entityIdsOf(request);
+  const sharedRules = selectedRules(config, request.trigger, "shared");
+  const entityRules = selectedRules(config, request.trigger, "entity");
+
+  if (request.baseVersion !== undefined && request.baseVersion !== request.input.stateVersion) {
+    const trace = traceOf(
+      config,
+      request,
+      emptyScopeTrace(config, sharedRules, "shared", null),
+      ids.map((entityId) => emptyScopeTrace(config, entityRules, "entity", entityId)),
+    );
+    return { status: "state-version-stale", configId: config.configId, stateChanges: [], processChanges: [], trace };
+  }
+
+  if (sharedRules.length === 0 && entityRules.length === 0) {
+    const trace = traceOf(
+      config,
+      request,
+      emptyScopeTrace(config, [], "shared", null),
+      ids.map((entityId) => emptyScopeTrace(config, [], "entity", entityId)),
+    );
+    return { status: "no-match", configId: config.configId, stateChanges: [], processChanges: [], trace };
+  }
+
+  const shared = evaluateScope(config, request, "shared", null, sharedRules);
+  const entities = ids.map((entityId) => evaluateScope(config, request, "entity", entityId, entityRules));
+  const trace = traceOf(
+    config,
+    request,
+    shared.trace,
+    entities.map((run) => run.trace),
+  );
+  const statuses: ResultStatus[] = [];
+  const scopeRuns = [shared, ...entities];
+  const outcomes = scopeRuns.flatMap((run) => run.outcomes);
+  for (const combine of scopeRuns.flatMap((run) => run.trace.combines)) {
+    if (combine.status === "conflict") statuses.push("conflict");
+    if (combine.status === "rejected") statuses.push("inexpressible");
+  }
+  if (trace.stateChanges.length > 0 || trace.processChanges.length > 0) statuses.push("changes");
+  if (outcomes.includes("input-missing") || outcomes.includes("input-invalid")) statuses.push("input-invalid");
+  if (
+    !outcomes.some((outcome) => outcome === "evaluated" || outcome === "input-missing" || outcome === "input-invalid")
+  )
+    statuses.push("condition-false");
+  if (statuses.length === 0) statuses.push("condition-false");
+  return {
+    status: strongestStatus(statuses),
+    configId: config.configId,
+    stateChanges: trace.stateChanges,
+    processChanges: trace.processChanges,
+    trace,
   };
 }
 

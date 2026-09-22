@@ -150,6 +150,7 @@ export function createCharacterSpec(): SystemSpec {
     inputs: [
       {
         name: "schedule",
+        scope: "entity",
         fields: SCHEDULE_VIEW,
         // Scheduling classification is management information; the kernel grants
         // it to no runtime rule system.

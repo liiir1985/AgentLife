@@ -1,7 +1,7 @@
 import { deepFreeze, hashId } from "./canonical.js";
 import { conditionFormulas, conditionInputs, type Condition } from "./conditions.js";
 import type { SystemIndex } from "./system-index.js";
-import type { LoadedSystem } from "./system-spec.js";
+import type { LoadedSystem, StateScope } from "./system-spec.js";
 import { KERNEL_VERSION } from "./identifiers.js";
 import type { CombineMode, NumberPolicy } from "./numeric.js";
 import type { MergedItem } from "./config-merge.js";
@@ -30,6 +30,7 @@ export interface RuntimeRule {
   readonly changes: readonly CheckedChange[];
   readonly dependsOn: readonly string[];
   readonly order: number;
+  readonly evaluationScope: StateScope;
 }
 
 export interface RuntimeFormula {
@@ -40,11 +41,13 @@ export interface RuntimeFormula {
   readonly outputUnit: string;
   readonly value: ValueExpr;
   readonly order: number;
+  readonly evaluationScope: StateScope;
 }
 
 export interface CombinePlan {
   readonly stateRef: string;
   readonly system: string;
+  readonly scope: StateScope;
   readonly combine: CombineMode;
   readonly valueType: "number" | "boolean" | "string";
   readonly policy: NumberPolicy | null;
@@ -142,6 +145,7 @@ export function buildConfig(validation: CheckedConfig): RuntimeConfig {
       changes: rule.changes,
       dependsOn: dependencyRefs(rule),
       order,
+      evaluationScope: rule.evaluationScope,
     };
   });
 
@@ -153,6 +157,7 @@ export function buildConfig(validation: CheckedConfig): RuntimeConfig {
     outputUnit: formula.outputUnit,
     value: formula.value,
     order,
+    evaluationScope: formula.evaluationScope,
   }));
 
   const triggerIndex: Record<string, string[]> = {};
@@ -174,6 +179,7 @@ export function buildConfig(validation: CheckedConfig): RuntimeConfig {
         combinePlans[change.stateRef] = {
           stateRef: change.stateRef,
           system: change.system,
+          scope: change.scope,
           combine: change.combine,
           valueType: stateRef?.valueType ?? "number",
           policy: stateRef?.policy ?? null,

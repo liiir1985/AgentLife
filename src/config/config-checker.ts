@@ -7,6 +7,7 @@ import {
   type SystemRule,
   type SystemCheck,
   type LoadedSystem,
+  type StateScope,
 } from "./system-spec.js";
 import type { SystemIndex } from "./system-index.js";
 import { conditionFormulas, conditionInputs, type Condition } from "./conditions.js";
@@ -37,6 +38,7 @@ export interface CheckedInput {
   readonly field: string;
   readonly unit: string | null;
   readonly valueType: StaticType;
+  readonly scope: StateScope;
 }
 
 export interface CheckedStateChange {
@@ -49,6 +51,7 @@ export interface CheckedStateChange {
   readonly value: ValueExpr;
   readonly unit: string | null;
   readonly valueType: StaticType | null;
+  readonly scope: StateScope;
 }
 
 export interface CheckedProcessChange {
@@ -57,6 +60,7 @@ export interface CheckedProcessChange {
   readonly system: string;
   readonly action: "establish" | "advance" | "pause" | "end" | "cancel";
   readonly params: readonly { readonly name: string; readonly value: ValueExpr }[];
+  readonly scope: StateScope;
 }
 
 export type CheckedChange = CheckedStateChange | CheckedProcessChange;
@@ -71,6 +75,7 @@ export interface CheckedRule {
   readonly condition: Condition;
   readonly changes: readonly CheckedChange[];
   readonly dependsOn: readonly string[];
+  readonly evaluationScope: StateScope;
 }
 
 export interface CheckedFormula {
@@ -81,6 +86,7 @@ export interface CheckedFormula {
   readonly inputs: readonly CheckedInput[];
   readonly outputUnit: string;
   readonly value: ValueExpr;
+  readonly evaluationScope: StateScope;
 }
 
 export interface CheckedConfig {
@@ -211,6 +217,7 @@ function bindInputs(
       field: fieldName,
       unit: field.valueType === "number" ? field.unit : null,
       valueType: field.valueType,
+      scope: input.scope,
     });
   }
   return bound.size === inputs.length ? bound : bound.size === 0 ? undefined : bound;
@@ -487,6 +494,7 @@ function bindChanges(
         system: process.system.systemId,
         action: change.action,
         params: parameters,
+        scope: process.declaration.scope,
       });
       for (const parameter of parameters)
         checkValueUnits(parameter.value, `${rule.ref}.${change.processRef}.${parameter.name}`, inputs, formulas, bag);
@@ -584,6 +592,7 @@ function bindChanges(
       value: change.value,
       unit: staticUnitOf(change.value, inputs, formulas),
       valueType: staticTypeOf(change.value, inputs),
+      scope: target.scope,
     });
   }
   return changes;
@@ -742,6 +751,34 @@ function ruleReads(rule: ParsedRule): readonly string[] {
   ];
 }
 
+function scopeFromInputs(inputs: readonly CheckedInput[], usedAliases: ReadonlySet<string>): StateScope {
+  return inputs.some((input) => usedAliases.has(input.name) && input.scope === "entity") ? "entity" : "shared";
+}
+
+function resolveFormulaScopes(formulas: readonly CheckedFormula[]): CheckedFormula[] {
+  const byRef = new Map(formulas.map((formula) => [formula.ref, formula]));
+  const memo = new Map<string, StateScope>();
+  const visiting = new Set<string>();
+  const resolve = (formula: CheckedFormula): StateScope => {
+    const cached = memo.get(formula.ref);
+    if (cached !== undefined) return cached;
+    if (visiting.has(formula.ref)) return formula.evaluationScope;
+    visiting.add(formula.ref);
+    const scope =
+      formula.evaluationScope === "entity" ||
+      formulaRefs(formula.value).some((ref) => {
+        const dependency = byRef.get(ref);
+        return dependency !== undefined && resolve(dependency) === "entity";
+      })
+        ? "entity"
+        : "shared";
+    visiting.delete(formula.ref);
+    memo.set(formula.ref, scope);
+    return scope;
+  };
+  return formulas.map((formula) => ({ ...formula, evaluationScope: resolve(formula) }));
+}
+
 export function checkConfig(
   packs: PackSet,
   systemIndex: SystemIndex,
@@ -771,7 +808,7 @@ export function checkConfig(
     );
 
   const checkedRules: CheckedRule[] = [];
-  const checkedFormulas: CheckedFormula[] = [];
+  let checkedFormulas: CheckedFormula[] = [];
 
   for (const formula of packs.formulas()) {
     const system = findSystem(formula.system, formula.ref, systemIndex, bag);
@@ -813,8 +850,11 @@ export function checkConfig(
       inputs: [...inputs.values()],
       outputUnit: formula.outputUnit,
       value: formula.value,
+      evaluationScope: scopeFromInputs([...inputs.values()], new Set(inputNames(formula.value))),
     });
   }
+
+  checkedFormulas = resolveFormulaScopes(checkedFormulas);
 
   for (const rule of packs.rules()) {
     const system = findSystem(rule.system, rule.ref, systemIndex, bag);
@@ -843,6 +883,25 @@ export function checkConfig(
     for (const dependency of dependsOn)
       if (!packs.rule(dependency) && !packs.formula(dependency))
         missingReference(bag, rule.ref, `${rule.ref} depends on unknown ${dependency}`);
+    const changeScopes = [...new Set(changes.map((change) => change.scope))];
+    if (changeScopes.length > 1)
+      bag.add(
+        error(
+          "combine",
+          "incompatible-output-type",
+          `${rule.ref} mixes shared and entity changes; one rule must have one evaluation scope`,
+          { subject: rule.ref },
+        ),
+      );
+    const evaluationScope = changeScopes[0] ?? "shared";
+    const readScope = scopeFromInputs([...inputs.values()], usedAliases);
+    const formulaScope = dependsOn.some((ref) => formulas.get(ref)?.evaluationScope === "entity") ? "entity" : "shared";
+    if (evaluationScope === "shared" && (readScope === "entity" || formulaScope === "entity"))
+      bag.add(
+        error("permission", "unauthorized-change", `${rule.ref} cannot use entity state to produce a shared change`, {
+          subject: rule.ref,
+        }),
+      );
     checkedRules.push({
       ref: rule.ref,
       system: system.systemId,
@@ -853,6 +912,7 @@ export function checkConfig(
       condition: rule.condition,
       changes,
       dependsOn,
+      evaluationScope,
     });
   }
 

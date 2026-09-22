@@ -1,4 +1,4 @@
-import { scalarKind, schemaProperties, type OutputSpec, type LoadedSystem } from "./system-spec.js";
+import { scalarKind, schemaProperties, type OutputSpec, type LoadedSystem, type StateScope } from "./system-spec.js";
 import { parsePartialNumberPolicy } from "./source.js";
 import { resolveNumberPolicy, checkNumberPolicy, type NumberPolicy } from "./numeric.js";
 import { isName, parseQualifiedName } from "./identifiers.js";
@@ -19,6 +19,7 @@ export interface ValueMember {
   /** Member key inside its input: `<id>` or `<id>.<memberKey>`. */
   readonly key: string;
   readonly system: string;
+  readonly scope: StateScope;
   readonly input: string;
   readonly stateRef: string;
   readonly valueType: ValueType;
@@ -36,6 +37,7 @@ export interface ValueMember {
 export interface InputInfo {
   readonly ref: string;
   readonly system: string;
+  readonly scope: StateScope;
   readonly exposedTo: readonly string[];
   readonly fields: ReadonlyMap<string, ValueMember>;
   /** Declared schema of a static input; `null` for a value valueSet. */
@@ -49,6 +51,7 @@ interface MutableViewScope extends InputInfo {
 export interface OutputInfo {
   readonly ref: string;
   readonly system: string;
+  readonly scope: StateScope;
   readonly exposedTo: readonly string[];
   readonly valueType: ValueType;
   readonly unit: string;
@@ -134,6 +137,7 @@ export class RuleCatalog {
         fields.set(field, {
           key: field,
           system: registered.systemId,
+          scope: input.scope,
           input: ref,
           stateRef: "",
           valueType,
@@ -147,6 +151,7 @@ export class RuleCatalog {
       this.inputs.set(ref, {
         ref,
         system: registered.systemId,
+        scope: input.scope,
         exposedTo: input.exposedTo,
         fields,
         schema: input.fields,
@@ -170,6 +175,7 @@ export class RuleCatalog {
         this.inputs.set(ref, {
           ref,
           system: registered.systemId,
+          scope: valueSet.input.scope,
           exposedTo: valueSet.input.exposedTo,
           fields: new Map(),
           schema: null,
@@ -183,6 +189,7 @@ export class RuleCatalog {
     return {
       ref: `${namespace}/${target.name}`,
       system: ownerRef,
+      scope: target.scope,
       exposedTo: target.exposedTo,
       valueType: target.valueType,
       unit: policy?.unit ?? "",
@@ -286,6 +293,7 @@ export class RuleCatalog {
       const expanded: ValueMember = {
         key,
         system: registered.systemId,
+        scope: valueSet.input?.scope ?? valueSet.output?.scope ?? "shared",
         input: familyRef,
         stateRef: outputRef,
         valueType,
@@ -303,6 +311,7 @@ export class RuleCatalog {
         this.outputs.set(outputRef, {
           ref: outputRef,
           system: registered.systemId,
+          scope: familyOutput.scope,
           exposedTo: familyOutput.exposedTo,
           valueType,
           unit: expanded.unit,

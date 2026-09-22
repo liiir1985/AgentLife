@@ -105,9 +105,14 @@ export async function applyDemoPack(
   }
 }
 
-/** The read-only inputs the demo rules are written against. */
-export const DEMO_VIEWS: Readonly<Record<string, unknown>> = {
+export const DEMO_ENTITY_IDS = ["agentlife.demo/companion", "agentlife.demo/player"] as const;
+
+/** Shared inputs and per-entity projections used by the demo rules. */
+export const DEMO_SHARED: Readonly<Record<string, unknown>> = {
   [REFS.worldEnvironment]: { "light-level": 40, "fog-density": 0.9, "sun-angle": 130, slope: 0.3, "lamp-state": 1 },
+};
+
+export const DEMO_ENTITY: Readonly<Record<string, unknown>> = {
   [REFS.bodyValues]: { stamina: 25, integrity: 1, wakefulness: 40, load: 12 },
   [REFS.bodyChannels]: { "vision.available": true, "vision.efficiency": 0.8 },
 };
@@ -116,7 +121,13 @@ export function demoRequest(trigger: string, runId = "request-1") {
   return {
     runId,
     trigger,
-    input: { stateVersion: "state-1", simTime: { tick: 3, seconds: 30 }, inputs: DEMO_VIEWS },
+    entityIds: [...DEMO_ENTITY_IDS],
+    input: {
+      stateVersion: "state-1",
+      simTime: { tick: 3, seconds: 30 },
+      shared: DEMO_SHARED,
+      entities: Object.fromEntries(DEMO_ENTITY_IDS.map((entityId) => [entityId, DEMO_ENTITY])),
+    },
   };
 }
 

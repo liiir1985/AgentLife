@@ -21,8 +21,10 @@ const TRIGGERS: readonly string[] = [
   "agentlife.world/environment-changed",
 ];
 
-/** The read-only projections the demo rules are written against. */
-const SNAPSHOT: Readonly<Record<string, unknown>> = {
+const ENTITY_IDS = ["agentlife.demo/companion", "agentlife.demo/player"] as const;
+
+/** The shared and entity projections the demo rules are written against. */
+const SHARED_SNAPSHOT: Readonly<Record<string, unknown>> = {
   "agentlife.world/environment": {
     "light-level": 40,
     "fog-density": 0.9,
@@ -30,6 +32,9 @@ const SNAPSHOT: Readonly<Record<string, unknown>> = {
     slope: 0.3,
     "lamp-state": 1,
   },
+};
+
+const ENTITY_SNAPSHOT: Readonly<Record<string, unknown>> = {
   "agentlife.body/values": { stamina: 25, integrity: 1, wakefulness: 40, load: 12 },
   "agentlife.body/channels": { "vision.available": true, "vision.efficiency": 0.8 },
 };
@@ -81,23 +86,32 @@ async function run(): Promise<Run> {
     const evaluated = registry.runRules({
       runId: `demo-${trigger}`,
       trigger,
-      input: { stateVersion: "state-1", simTime: { tick: 3, seconds: 30 }, inputs: SNAPSHOT },
+      entityIds: [...ENTITY_IDS],
+      input: {
+        stateVersion: "state-1",
+        simTime: { tick: 3, seconds: 30 },
+        shared: SHARED_SNAPSHOT,
+        entities: Object.fromEntries(ENTITY_IDS.map((entityId) => [entityId, ENTITY_SNAPSHOT])),
+      },
     });
     lines.push(`\nevaluate ${trigger}`);
     lines.push(`  status      ${evaluated.status}`);
-    for (const combine of evaluated.trace.combines) {
-      const ruleValues = combine.ruleValues
-        .map((ruleValue) => `${ruleValue.ruleId}=${render(ruleValue.value)}`)
-        .join(", ");
-      lines.push(
-        `  ${combine.combine.padEnd(9)} ${combine.stateRef} = ${render(combine.result)} [${ruleValues}]${combine.status === "composed" ? "" : ` (${combine.status})`}`,
-      );
-    }
-    for (const rule of evaluated.trace.rules)
-      if (rule.status !== "evaluated")
+    for (const scope of [evaluated.trace.shared, ...evaluated.trace.entities]) {
+      const label = scope.entityId ?? "shared";
+      for (const combine of scope.combines) {
+        const ruleValues = combine.ruleValues
+          .map((ruleValue) => `${ruleValue.ruleId}=${render(ruleValue.value)}`)
+          .join(", ");
         lines.push(
-          `  ${rule.status.padEnd(16)} ${rule.ruleId}${rule.message === undefined ? "" : `: ${rule.message}`}`,
+          `  ${label} ${combine.combine.padEnd(9)} ${combine.stateRef} = ${render(combine.result)} [${ruleValues}]${combine.status === "composed" ? "" : ` (${combine.status})`}`,
         );
+      }
+      for (const rule of scope.rules)
+        if (rule.status !== "evaluated")
+          lines.push(
+            `  ${label} ${rule.status.padEnd(16)} ${rule.ruleId}${rule.message === undefined ? "" : `: ${rule.message}`}`,
+          );
+    }
     traces.push(evaluated.trace);
   }
   lines.push("");

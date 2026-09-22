@@ -113,13 +113,14 @@ const FIXTURE_LIMITS: SystemSpec = {
       kind: "signal",
       valueSet: "signals",
       contract: false,
-      input: { exposedTo: [] },
-      output: { exposedTo: [] },
+      input: { scope: "entity", exposedTo: [] },
+      output: { scope: "entity", exposedTo: [] },
     }),
   ],
   inputs: [
     {
       name: "state",
+      scope: "entity",
       fields: Type.Object({ value: Type.Number() }),
       units: { value: "points" },
       exposedTo: [],
@@ -146,6 +147,7 @@ const FIXTURE_PROCESS: SystemSpec = {
   processes: [
     {
       name: "recovery",
+      scope: "entity",
       operations: ["establish", "advance", "pause", "end", "cancel"],
       parameters: Type.Object({ target: Type.String(), amount: Type.Number() }),
     },
@@ -1059,14 +1061,16 @@ fields:
       const evaluated = registry.runRules({
         runId: "limits",
         trigger: "test.limits/changed",
+        entityIds: ["test.entity"],
         input: {
           stateVersion: "state-1",
           simTime: { tick: 1, seconds: 10 },
-          inputs: { "test.limits/state": { value: 80 } },
+          shared: {},
+          entities: { "test.entity": { "test.limits/state": { value: 80 } } },
         },
       });
       expect(evaluated.status).toBe("changes");
-      const combine = evaluated.trace.combines[0];
+      const combine = evaluated.trace.entities[0]?.combines[0];
       expect(combine?.combine).toBe("max");
       expect(combine?.ruleValues.map((ruleValue) => ruleValue.value)).toEqual([40, 70]);
       expect(combine?.result).toBe(70);
@@ -1105,3 +1109,63 @@ const FIXTURE_WIDGET: SystemSpec = {
   triggers: [],
   outputs: [],
 };
+
+const FIXTURE_SCOPE: SystemSpec = {
+  name: "system",
+  namespace: "test.scope",
+  version: "1.0.0",
+  kernel: ">=1.0.0 <2.0.0",
+  requires: [],
+  items: [],
+  inputs: [
+    {
+      name: "entity-state",
+      scope: "entity",
+      fields: Type.Object({ value: Type.Number() }),
+      units: { value: "points" },
+      exposedTo: [],
+    },
+  ],
+  triggers: ["changed"],
+  outputs: [{ name: "shared-result", scope: "shared", valueType: "number", exposedTo: [] }],
+};
+
+describe("configuration evaluation scopes", () => {
+  it("refuses an entity read that produces a shared change", async () => {
+    await withTempDirectory(async (directory) => {
+      writePack(directory, {
+        "manifest.yaml": `pack: test.scope
+version: "1.0.0"
+kernel: ">=1.0.0 <2.0.0"
+dependencies: []
+systems: []
+sections:
+  world: agentlife.world/world
+`,
+        "world/settings.yaml": FIXTURE_WORLD,
+        "rules/invalid-scope.yaml": `kind: rule
+id: invalid-scope
+system: test.scope
+triggers:
+  - test.scope/changed
+inputs:
+  - name: entity-value
+    state: test.scope/entity-state.value
+condition:
+  op: always
+changes:
+  - state: test.scope/shared-result
+    combine: add
+    value:
+      kind: read
+      name: entity-value
+`,
+      });
+      const applied = await loadPack(createRegistry([FIXTURE_SCOPE]), directory);
+      expect(applied.status).toBe("rejected");
+      expect(applied.diagnostics.map((diagnostic) => diagnostic.message).join(" ")).toContain(
+        "cannot use entity state to produce a shared change",
+      );
+    });
+  });
+});

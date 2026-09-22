@@ -40,20 +40,21 @@ export function createBodySpec(): SystemSpec {
         kind: "value",
         valueSet: "values",
         contract: false,
-        input: { exposedTo: BODY_READERS },
-        output: { exposedTo: [] },
+        input: { scope: "entity", exposedTo: BODY_READERS },
+        output: { scope: "entity", exposedTo: [] },
       }),
       defineChannelContainer({
         kind: "channel",
         valueSet: "channels",
         contract: true,
-        input: { exposedTo: BODY_READERS },
-        output: { exposedTo: [] },
+        input: { scope: "entity", exposedTo: BODY_READERS },
+        output: { scope: "entity", exposedTo: [] },
       }),
     ],
     inputs: [
       {
         name: "cognitive-participation",
+        scope: "entity",
         fields: PARTICIPATION_VIEW,
         exposedTo: BODY_READERS,
       },
@@ -62,6 +63,7 @@ export function createBodySpec(): SystemSpec {
     outputs: [
       {
         name: "cognitive-participation",
+        scope: "entity",
         valueType: "string",
         allowedValues: PARTICIPATION_VOCABULARY,
         exposedTo: [],

@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { runRules } from "../src/config/rule-engine.js";
+import { runRules, type RuleResult, type ScopeTrace } from "../src/config/rule-engine.js";
 import type { RuntimeConfig } from "../src/config/config-builder.js";
 import type { SystemSpec } from "../src/config/system-spec.js";
 import { Type } from "typebox";
 import {
   applyDemoPack,
   createRegistry,
+  DEMO_ENTITY,
+  DEMO_SHARED,
   demoRequest,
   FIXTURE_WORLD,
   loadPack,
@@ -14,6 +16,12 @@ import {
   withTempDirectory,
   writePack,
 } from "./helpers/demo-pack.js";
+
+function entityTrace(result: RuleResult, entityId = "agentlife.demo/companion"): ScopeTrace {
+  const trace = result.trace.entities.find((candidate) => candidate.entityId === entityId);
+  if (trace === undefined) throw new Error(`Missing trace for ${entityId}`);
+  return trace;
+}
 
 /** A system that still declares one process, used to exercise the runtime path. */
 const FIXTURE_PROCESS: SystemSpec = {
@@ -29,13 +37,121 @@ const FIXTURE_PROCESS: SystemSpec = {
   processes: [
     {
       name: "recovery",
+      scope: "entity",
       operations: ["establish", "advance", "pause", "end", "cancel"],
       parameters: Type.Object({ target: Type.String(), amount: Type.Number() }),
+    },
+    {
+      name: "global-recovery",
+      scope: "shared",
+      operations: ["establish"],
+      parameters: Type.Object({ amount: Type.Number() }),
     },
   ],
 };
 
 describe("deterministic evaluation", () => {
+  it("evaluates multiple entities independently in canonical entity order", async () => {
+    const registry = createRegistry();
+    const { result, directory } = await applyDemoPack(registry);
+    try {
+      expect(result.status).toBe("valid");
+      const entities = {
+        "entity-z": {
+          ...DEMO_ENTITY,
+          "agentlife.body/values": { stamina: 25, integrity: 1, wakefulness: 40, load: 30 },
+        },
+        "entity-a": {
+          ...DEMO_ENTITY,
+          "agentlife.body/values": { stamina: 25, integrity: 1, wakefulness: 40, load: 0 },
+        },
+      };
+      const request = {
+        runId: "multi-entity",
+        trigger: "agentlife.body/value-changed",
+        entityIds: ["entity-z", "entity-a", "entity-z"],
+        input: {
+          stateVersion: "state-1",
+          simTime: { tick: 3, seconds: 30 },
+          shared: DEMO_SHARED,
+          entities,
+        },
+      };
+      const first = registry.runRules(request);
+      const second = registry.runRules({
+        ...request,
+        entityIds: ["entity-a", "entity-z"],
+        input: { ...request.input, entities: Object.fromEntries(Object.entries(entities).reverse()) },
+      });
+
+      expect(first.trace.entities.map((trace) => trace.entityId)).toEqual(["entity-a", "entity-z"]);
+      expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+      const moveCost = (entityId: string) =>
+        entityTrace(first, entityId).stateChanges.find(
+          (change) => change.stateRef === "agentlife.body/values.move-cost",
+        );
+      expect(moveCost("entity-a")?.newValue).toBe(2);
+      expect(moveCost("entity-z")?.newValue).toBe(12);
+      const sameValueA = entityTrace(first, "entity-a").stateChanges.find(
+        (change) => change.stateRef === "agentlife.body/cognitive-participation",
+      );
+      const sameValueZ = entityTrace(first, "entity-z").stateChanges.find(
+        (change) => change.stateRef === "agentlife.body/cognitive-participation",
+      );
+      expect(sameValueA?.newValue).toBe(sameValueZ?.newValue);
+      expect(sameValueA?.changeId).not.toBe(sameValueZ?.changeId);
+    } finally {
+      removeDirectory(directory);
+    }
+  });
+
+  it("runs shared rules once while entity rules consume the same shared projection", async () => {
+    const registry = createRegistry();
+    const { result, directory } = await applyDemoPack(registry);
+    try {
+      expect(result.status).toBe("valid");
+      const shared = registry.runRules(demoRequest("agentlife.world/environment-changed"));
+      expect(shared.trace.shared.selectedRules).toEqual([
+        "agentlife.demo/darkness-visibility",
+        "agentlife.demo/fog-visibility",
+      ]);
+      expect(shared.trace.shared.stateChanges).toHaveLength(1);
+      expect(shared.trace.shared.rules).toHaveLength(2);
+      expect(shared.trace.entities.every((trace) => trace.entityId !== null)).toBe(true);
+
+      const entities = registry.runRules(demoRequest("agentlife.body/tick-elapsed"));
+      expect(entities.trace.shared.selectedRules).toEqual([]);
+      expect(entities.trace.entities).toHaveLength(2);
+      expect(entities.trace.entities.every((trace) => trace.rules.length === 3)).toBe(true);
+    } finally {
+      removeDirectory(directory);
+    }
+  });
+
+  it("marks only a missing entity projection invalid and preserves other entity results", async () => {
+    const registry = createRegistry();
+    const { result, directory } = await applyDemoPack(registry);
+    try {
+      expect(result.status).toBe("valid");
+      const base = demoRequest("agentlife.body/value-changed", "missing-entity");
+      const evaluated = registry.runRules({
+        ...base,
+        entityIds: ["agentlife.demo/player", "missing-entity"],
+        input: {
+          ...base.input,
+          entities: { "agentlife.demo/player": DEMO_ENTITY },
+        },
+      });
+      expect(evaluated.status).toBe("input-invalid");
+      expect(entityTrace(evaluated, "missing-entity").rules.every((rule) => rule.status === "input-missing")).toBe(
+        true,
+      );
+      expect(entityTrace(evaluated, "agentlife.demo/player").stateChanges.length).toBeGreaterThan(0);
+    } finally {
+      removeDirectory(directory);
+    }
+  });
+
   it("produces the same stateChanges and trace for the same config, input and time", async () => {
     const registry = createRegistry();
     const { result, directory } = await applyDemoPack(registry);
@@ -64,7 +180,7 @@ describe("deterministic evaluation", () => {
       expect(result.status).toBe("valid");
 
       const perTick = registry.runRules(demoRequest("agentlife.body/tick-elapsed", "tick"));
-      const wakefulness = perTick.trace.combines.find(
+      const wakefulness = entityTrace(perTick).combines.find(
         (combine) => combine.stateRef === "agentlife.body/values.wakefulness",
       );
       expect(wakefulness?.combine).toBe("priority");
@@ -73,19 +189,21 @@ describe("deterministic evaluation", () => {
         "agentlife.demo/lamp-stimulus",
       ]);
       expect(wakefulness?.result).toBe(80);
-      const stamina = perTick.trace.combines.find((combine) => combine.stateRef === "agentlife.body/values.stamina");
+      const stamina = entityTrace(perTick).combines.find(
+        (combine) => combine.stateRef === "agentlife.body/values.stamina",
+      );
       expect(stamina?.combine).toBe("add");
       expect(stamina?.result).toBe(5);
 
       const environment = registry.runRules(demoRequest("agentlife.world/environment-changed", "environment"));
-      const visibility = environment.trace.combines.find(
+      const visibility = environment.trace.shared.combines.find(
         (combine) => combine.stateRef === "agentlife.world/environment.visibility",
       );
       expect(visibility?.combine).toBe("min");
       expect(visibility?.result).toBe(0.15);
 
       const cost = registry.runRules(demoRequest("agentlife.body/value-changed", "cost"));
-      const factor = cost.trace.combines.find(
+      const factor = entityTrace(cost).combines.find(
         (combine) => combine.stateRef === "agentlife.body/values.move-cost-factor",
       );
       expect(factor?.combine).toBe("multiply");
@@ -93,7 +211,7 @@ describe("deterministic evaluation", () => {
       expect(factor?.result).toBe(2.52);
 
       const participation = registry.runRules(demoRequest("agentlife.body/value-changed", "participation"));
-      expect(participation.trace.combines.map((entry) => entry.stateRef)).toContain(
+      expect(entityTrace(participation).combines.map((entry) => entry.stateRef)).toContain(
         "agentlife.body/cognitive-participation",
       );
       const permission = participation.trace.stateChanges.find(
@@ -114,19 +232,20 @@ describe("deterministic evaluation", () => {
     try {
       expect(result.status).toBe("valid");
       const result_ = registry.runRules(demoRequest("agentlife.body/tick-elapsed"));
-      expect(result_.trace.selectedRules).toEqual([
+      expect(entityTrace(result_).selectedRules).toEqual([
         "agentlife.demo/daylight-wakefulness",
         "agentlife.demo/lamp-stimulus",
         "agentlife.demo/rest-recovery",
       ]);
-      expect(result_.trace.skippedRules).toContain("agentlife.demo/fog-visibility");
-      expect(result_.trace.rules.map((rule) => rule.ruleId)).toEqual(result_.trace.selectedRules);
+      expect(entityTrace(result_).skippedRules).toContain("agentlife.demo/base-move-cost");
+      expect(entityTrace(result_).rules.map((rule) => rule.ruleId)).toEqual(entityTrace(result_).selectedRules);
 
       const unmatched = registry.runRules(demoRequest("agentlife.character/lifecycle-changed"));
       expect(unmatched.status).toBe("no-match");
-      expect(unmatched.trace.selectedRules).toEqual([]);
+      expect(entityTrace(unmatched).selectedRules).toEqual([]);
       expect(unmatched.trace.stateChanges).toEqual([]);
-      expect(unmatched.trace.skippedRules).toHaveLength(result.config?.rules.length ?? 0);
+      const skipped = unmatched.trace.shared.skippedRules.length + entityTrace(unmatched).skippedRules.length;
+      expect(skipped).toBe(result.config?.rules.length ?? 0);
     } finally {
       removeDirectory(directory);
     }
@@ -185,14 +304,91 @@ changes:
       expect(result.status).toBe("valid");
       const evaluated = registry.runRules(demoRequest("agentlife.body/tick-elapsed"));
       expect(evaluated.status).toBe("conflict");
-      const conflict = evaluated.trace.combines.find(
+      const conflict = entityTrace(evaluated).combines.find(
         (combine) => combine.stateRef === "agentlife.body/values.wakefulness",
       );
       expect(conflict?.status).toBe("conflict");
       expect(conflict?.conflicting).toEqual(["agentlife.demo/daylight-wakefulness", "agentlife.demo/lamp-stimulus"]);
-      expect(evaluated.trace.stateChanges.map((candidate) => candidate.stateRef)).toEqual([
+      expect(entityTrace(evaluated).stateChanges.map((candidate) => candidate.stateRef)).toEqual([
         "agentlife.body/values.stamina",
       ]);
+    } finally {
+      removeDirectory(directory);
+    }
+  });
+
+  it("isolates a priority conflict to the entity whose values disagree", async () => {
+    const registry = createRegistry();
+    const { result, directory } = await applyDemoPack(registry, {
+      "rules/lamp-stimulus.yaml": `kind: rule
+id: lamp-stimulus
+system: agentlife.body
+triggers:
+  - agentlife.body/tick-elapsed
+inputs:
+  - name: stamina
+    state: agentlife.body/values.stamina
+condition:
+  op: always
+changes:
+  - state: agentlife.body/values.wakefulness
+    combine: priority
+    priority: 10
+    value:
+      kind: map
+      input:
+        kind: read
+        name: stamina
+      mapping:
+        kind: threshold
+        inputUnit: points
+        at: 50
+        boundary: lower
+        below: 80
+        above: 60
+        policy:
+          unit: points
+          rounding:
+            mode: half-away-from-zero
+            precision: 0
+          range:
+            min: 0
+            max: 100
+            boundary: inclusive
+          overflow: saturate
+`,
+    });
+    try {
+      expect(result.status).toBe("valid");
+      const base = demoRequest("agentlife.body/tick-elapsed", "isolated-conflict");
+      const evaluated = registry.runRules({
+        ...base,
+        entityIds: ["calm", "tired"],
+        input: {
+          ...base.input,
+          entities: {
+            calm: {
+              ...DEMO_ENTITY,
+              "agentlife.body/values": { stamina: 25, integrity: 1, wakefulness: 40, load: 12 },
+            },
+            tired: {
+              ...DEMO_ENTITY,
+              "agentlife.body/values": { stamina: 75, integrity: 1, wakefulness: 40, load: 12 },
+            },
+          },
+        },
+      });
+      expect(evaluated.status).toBe("conflict");
+      expect(
+        entityTrace(evaluated, "calm").combines.find(
+          (combine) => combine.stateRef === "agentlife.body/values.wakefulness",
+        )?.status,
+      ).toBe("composed");
+      expect(
+        entityTrace(evaluated, "tired").combines.find(
+          (combine) => combine.stateRef === "agentlife.body/values.wakefulness",
+        )?.status,
+      ).toBe("conflict");
     } finally {
       removeDirectory(directory);
     }
@@ -224,7 +420,9 @@ changes:
       expect(result.status).toBe("valid");
       const evaluated = registry.runRules(demoRequest("agentlife.body/value-changed"));
       expect(evaluated.status).toBe("inexpressible");
-      const combine = evaluated.trace.combines.find((trace) => trace.stateRef === "agentlife.body/values.move-cost");
+      const combine = entityTrace(evaluated).combines.find(
+        (trace) => trace.stateRef === "agentlife.body/values.move-cost",
+      );
       expect(combine?.status).toBe("rejected");
       expect(combine?.message).toContain("declared range");
       expect(evaluated.trace.stateChanges.map((candidate) => candidate.stateRef)).not.toContain(
@@ -243,10 +441,11 @@ changes:
       const evaluated = registry.runRules({
         runId: "missing-input",
         trigger: "agentlife.body/value-changed",
+        entityIds: ["test.entity"],
         input: {
           stateVersion: "state-1",
           simTime: { tick: 3, seconds: 30 },
-          inputs: {
+          shared: {
             "agentlife.world/environment": {
               slope: 0.3,
               "light-level": 40,
@@ -255,10 +454,13 @@ changes:
               "lamp-state": 0,
             },
           },
+          entities: { "test.entity": {} },
         },
       });
       expect(evaluated.status).toBe("input-invalid");
-      const rule = evaluated.trace.rules.find((trace) => trace.ruleId === "agentlife.demo/base-move-cost");
+      const rule = entityTrace(evaluated, "test.entity").rules.find(
+        (trace) => trace.ruleId === "agentlife.demo/base-move-cost",
+      );
       expect(rule?.status).toBe("input-missing");
       expect(rule?.message).toContain("load");
       // Rules that could be answered still report their stateChanges; the status
@@ -282,9 +484,9 @@ changes:
         baseVersion: "state-0",
       });
       expect(evaluated.status).toBe("state-version-stale");
-      expect(evaluated.trace.rules).toEqual([]);
+      expect(evaluated.trace.entities.every((trace) => trace.rules.length === 0)).toBe(true);
       expect(evaluated.trace.stateChanges).toEqual([]);
-      expect(evaluated.trace.selectedRules.length).toBeGreaterThan(0);
+      expect(entityTrace(evaluated).selectedRules.length).toBeGreaterThan(0);
     } finally {
       removeDirectory(directory);
     }
@@ -323,15 +525,31 @@ changes:
         value: 5
         unit: points
 `,
+        "rules/global-recovery.yaml": `kind: rule
+id: global-recovery
+system: test.process
+triggers:
+  - agentlife.body/tick-elapsed
+condition:
+  op: always
+changes:
+  - processRef: test.process/global-recovery
+    action: establish
+    params:
+      amount:
+        kind: literal
+        value: 1
+`,
       });
       const registry = createRegistry([FIXTURE_PROCESS]);
       const applied = await loadPack(registry, directory);
       expect(applied.status, messages(applied.diagnostics)).toBe("valid");
       const evaluated = registry.runRules(demoRequest("agentlife.body/tick-elapsed", "process"));
       expect(evaluated.status).toBe("changes");
-      expect(evaluated.trace.processChanges).toEqual([
+      expect(entityTrace(evaluated).processChanges).toEqual([
         {
           changeId: expect.any(String),
+          entityId: "agentlife.demo/companion",
           processRef: "test.process/recovery",
           system: "test.process",
           action: "establish",
@@ -339,8 +557,19 @@ changes:
           sourceRule: "test.process/recovery",
         },
       ]);
+      expect(evaluated.trace.shared.processChanges).toEqual([
+        {
+          changeId: expect.any(String),
+          entityId: null,
+          processRef: "test.process/global-recovery",
+          system: "test.process",
+          action: "establish",
+          params: { amount: 1 },
+          sourceRule: "test.process/global-recovery",
+        },
+      ]);
       const again = registry.runRules(demoRequest("agentlife.body/tick-elapsed", "process"));
-      expect(again.trace.processChanges[0]?.changeId).toBe(evaluated.trace.processChanges[0]?.changeId);
+      expect(entityTrace(again).processChanges[0]?.changeId).toBe(entityTrace(evaluated).processChanges[0]?.changeId);
     });
   });
 
@@ -384,14 +613,14 @@ changes:
       const before = runRules(started as RuntimeConfig, demoRequest("agentlife.body/tick-elapsed"));
       expect(before.configId).toBe(started?.configId);
       expect(
-        before.trace.combines.find((entry) => entry.stateRef === "agentlife.body/values.wakefulness")?.result,
+        entityTrace(before).combines.find((entry) => entry.stateRef === "agentlife.body/values.wakefulness")?.result,
       ).toBe(80);
 
       const after = registry.runRules(demoRequest("agentlife.body/tick-elapsed"));
       expect(after.configId).toBe(updated.result.config?.configId);
-      expect(after.trace.combines.find((entry) => entry.stateRef === "agentlife.body/values.wakefulness")?.result).toBe(
-        10,
-      );
+      expect(
+        entityTrace(after).combines.find((entry) => entry.stateRef === "agentlife.body/values.wakefulness")?.result,
+      ).toBe(10);
     } finally {
       removeDirectory(first.directory);
       removeDirectory(updated.directory);

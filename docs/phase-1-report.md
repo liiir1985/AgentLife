@@ -1,8 +1,8 @@
 # 阶段 1 报告：内容、配置与规则基础
 
-- 日期：2026-09-21
+- 日期：2026-09-22
 - 范围：`docs/implementation-roadmap.md` §8.2（内容包规范与最小演示内容、七阶段验证、编译与触发索引、阈值/分段常量/分段线性映射与五种组合、SQLite 初始迁移与存档接口）
-- 结论摘要：阶段 1 的任务全部实现，退出条件「演示内容能够生成唯一 `configId`；相同 `RuntimeConfig`、`StateInput` 和模拟时间产生相同 `RuleResult` 与 `RunTrace`」由自动测试与 `pnpm config:demo` 逐条证明。`pnpm phase1:verify`（`tsc --noEmit && prettier --check . && vitest run`）全绿：11 个测试文件、**159 passed | 1 skipped**（1 skipped 为阶段 0 遗留的 Windows 符号链接权限用例）。本阶段**未**实现世界/身体/感知/认知/记忆的运行时状态、动作生命周期、过程推进、Tick 阶段与系统提交——这些仍属阶段 2 及以后。
+- 结论摘要：阶段 1 的任务及多实体确定性求值补充已经实现。退出条件扩展为「演示内容能够生成唯一 `configId`；相同 `RuntimeConfig`、共享/多实体状态快照、显式实体集合和模拟时间产生相同且实体隔离的 `RuleResult` 与 `RunTrace`」。多实体与配置专项验证为 **93 passed**，完整套件为 **162 passed | 2 failed | 1 skipped**；两项失败均是既有 SQLite 崩溃子进程在当前宿主调用 `uv_os_get_passwd` 时返回 `ENOMEM`，与本次规则改动无关。本阶段**未**实现世界/身体/感知/认知/记忆的权威运行时状态、动作生命周期、过程推进、Tick 阶段与系统提交——这些仍属阶段 2 及以后。
 - 与设计的关系：产品语义以 `docs/configuration-rule-infrastructure.md` 为准。本阶段对设计做了一处结构性收敛——**系统能力不再由 `SystemSpec` 硬编码为具名输入/输出，而由内容定义展开为值集合成员**——依据与影响见 §15。
 
 ## 1. 交付物
@@ -72,7 +72,7 @@ sections:                       # 目录 → 配置类型；文件内的 type �
 
 ## 3. 系统说明装载（§6、§18.1）
 
-每个 `SystemSpec` 声明：`namespace/name/version/kernel/requires`、配置类型（字段 Schema、默认值、可覆盖字段、字段合并策略、字段引用、**值集合（可选）**）、只读输入（字段 Schema + 每个数值字段的单位 + `exposedTo`）、触发器、状态输出（值类型、可选数值策略、可选字符串词表、`exposedTo`）、过程（允许的动作 + 参数 Schema）和系统检查入口。
+每个 `SystemSpec` 声明：`namespace/name/version/kernel/requires`、配置类型（字段 Schema、默认值、可覆盖字段、字段合并策略、字段引用、**值集合（可选）**）、只读输入（`shared`/`entity` 作用域 + 字段 Schema + 每个数值字段的单位 + `exposedTo`）、触发器、状态输出（作用域、值类型、可选数值策略、可选字符串词表、`exposedTo`）、过程（作用域 + 允许的动作 + 参数 Schema）和系统检查入口。
 
 注册结果区分 `registered` / `identity-conflict` / `semantic-incompatible` / `unsupported-semantics` / `unauthorized-capability`：
 
@@ -140,7 +140,7 @@ kernelVersion + systems[{systemId, version, specHash}] + packs[{namespace, versi
 
 ## 8. 确定性规则运行（§8、§10）
 
-`runRules(config, request)` 的输入只有三样：固定的 `RuntimeConfig`、`StateInput`（`stateVersion` + 只读状态投影）、显式模拟时间（`{tick, seconds}`）。规则引擎不接受任何其他输入：没有机器时钟、随机源、文件/网络/数据库访问，数值只能通过检查期声明过的 `name` 从状态输入取值；公式按依赖顺序运行并做进程内记忆化。
+`runRules(config, request)` 的输入只有固定的 `RuntimeConfig`、显式实体集合、`StateInput`（原子 `stateVersion` + `shared` + `entities[entityId]`）和显式模拟时间。共享规则只执行一次；实体规则按去重、排序后的实体 ID 分别执行，各实体拥有独立输入作用域、公式缓存、组合与追踪。规则引擎不接受机器时钟、随机源、文件/网络/数据库访问，数值只能通过检查期声明过的 `name` 从状态输入取值。
 
 一次求值：
 
@@ -191,10 +191,18 @@ kernelVersion + systems[{systemId, version, specHash}] + packs[{namespace, versi
 `StateInput`（`stateVersion: state-1`，模拟时间 tick 3）：
 
 ```yaml
-agentlife.world/environment: { light-level: 40, fog-density: 0.9, sun-angle: 130, slope: 0.3, lamp-state: 1 }
-agentlife.body/values:       { stamina: 25, integrity: 1, wakefulness: 40, load: 12 }
-agentlife.body/channels:     { vision.available: true, vision.efficiency: 0.8 }
+shared:
+  agentlife.world/environment: { light-level: 40, fog-density: 0.9, sun-angle: 130, slope: 0.3, lamp-state: 1 }
+entities:
+  agentlife.demo/player:
+    agentlife.body/values:   { stamina: 25, integrity: 1, wakefulness: 40, load: 12 }
+    agentlife.body/channels: { vision.available: true, vision.efficiency: 0.8 }
+  agentlife.demo/companion:
+    agentlife.body/values:   { stamina: 25, integrity: 1, wakefulness: 40, load: 12 }
+    agentlife.body/channels: { vision.available: true, vision.efficiency: 0.8 }
 ```
+
+身体结果分别为两个实体生成，环境结果只生成一份共享变化；相同业务值在不同实体上具有不同 `changeId`。
 
 | 触发器 | 选中规则 | 组合 | 状态变化请求 |
 | --- | --- | --- | --- |
@@ -287,14 +295,14 @@ pnpm config:demo         ok（两次运行摘要一致，退出码 0）
 6. **动作/过程参数属于领域状态**：过程建立时计算的参数由领域保存，配置更新不得倒改；下一 Tick 的判断使用当前有效配置。
 7. **身体/世界不变量写在领域 `validate`**：内核不做领域语义判断，只保证引用、依赖、组合、权限、兼容性。
 8. **新增能力必须提升运行配置版本**：`SystemSpec` 变化会改变 `specHash`，继而改变 `configId`；不要在同一版本内改变既有能力语义。
-9. **值族与实体投影**：当前视图按 `viewRef` 单实例投影（一个演示角色一份身体）。阶段 2 引入实体后，视图必须按实体键投影（如在 `views` 中增加实体维度），**不得**通过「一个视图塞多实体」隐式绕过。
+9. **值族与实体投影**：能力声明固定为 `shared` 或 `entity`；共享投影只保存一份，实体投影按 `entityId` 隔离。组合、冲突、变化身份和追踪都包含实体维度，不允许跨实体合并。
 10. **恢复流程**：`restore(identity)` 只做「重建 + 身份比对」，采纳必须走 `apply` 或显式迁移，不得静默替换。
 11. **演示内容不得硬编码进领域模块**：地点、物品、环境事实、值、通道、角色、规则全部来自 `content/demo`；领域模块只注册词汇与不变量。
 
 ## 14. 已知限制与暂缓
 
 - **没有领域状态**：本阶段没有世界/身体实例、动作生命周期、资源占用与并行冲突；候选结果只被计算与追踪，未被任何领域验证/提交（阶段 2）。
-- **一个视图一个实例**：`views[viewRef]` 目前只有一个投影，实体级状态是阶段 2 的工作（见 §13.9）。
+- **不支持实体集合表达式**：当前支持同一规则独立作用于多个实体，但不提供集合聚合、邻近查询或实体关系遍历；这些投影由阶段 2 的世界领域提供。
 - **过程只是候选**：`establish/advance/pause/end/cancel` 由规则提出、内核校验词汇与参数，但推进与到期索引属阶段 2/6；**没有任何已发布领域声明过程**，该路径只由合成扩展 `test.process` 覆盖。
 - **`multiply` 仅限无量纲目标**：目标单位必须为 `ratio`，各来源单位也必须是 `ratio`；带量纲的乘积语义留待真正需要时再定义（避免用名称推断语义）。
 - **派生量只支持返回数值**：需要布尔/字符串中间值时用 `compare`/`select`，不引入未定义的求值语义。

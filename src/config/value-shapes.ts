@@ -1,5 +1,5 @@
 import { Type } from "typebox";
-import type { ItemSpec, SystemCheck, MergeStrategy } from "./system-spec.js";
+import type { ItemSpec, SystemCheck, MergeStrategy, StateScope } from "./system-spec.js";
 
 /**
  * Value and channel shapes shared by every system that stores declared values.
@@ -69,8 +69,8 @@ export interface ValueSetOptions {
   readonly valueSet: string;
   /** Members that are core values: exactly one rule may write them. */
   readonly contract: boolean;
-  readonly input?: { readonly exposedTo: readonly string[] };
-  readonly output?: { readonly exposedTo: readonly string[] };
+  readonly input?: { readonly scope: StateScope; readonly exposedTo: readonly string[] };
+  readonly output?: { readonly scope: StateScope; readonly exposedTo: readonly string[] };
   /** Domain invariants for items of this type. */
   readonly validate?: (input: SystemCheck) => void;
 }

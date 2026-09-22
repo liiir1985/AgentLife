@@ -506,7 +506,13 @@ describe("system registration", () => {
     const wildcard = new SystemCatalog().add({
       ...base,
       inputs: [
-        { name: "state", fields: Type.Object({ value: Type.Number() }), units: { value: "points" }, exposedTo: ["*"] },
+        {
+          name: "state",
+          scope: "shared",
+          fields: Type.Object({ value: Type.Number() }),
+          units: { value: "points" },
+          exposedTo: ["*"],
+        },
       ],
     });
     expect(wildcard.status).toBe("unauthorized-capability");
@@ -549,13 +555,13 @@ describe("system registration", () => {
   it("accepts an unconstrained numeric target and refuses a vocabulary on a non-string target", () => {
     const unconstrained = new SystemCatalog().add({
       ...base,
-      outputs: [{ name: "stamina", valueType: "number", exposedTo: [] }],
+      outputs: [{ name: "stamina", scope: "entity", valueType: "number", exposedTo: [] }],
     });
     expect(unconstrained.status).toBe("registered");
 
     const vocabularied = new SystemCatalog().add({
       ...base,
-      outputs: [{ name: "stamina", valueType: "number", allowedValues: ["low"], exposedTo: [] }],
+      outputs: [{ name: "stamina", scope: "entity", valueType: "number", allowedValues: ["low"], exposedTo: [] }],
     });
     expect(vocabularied.status).toBe("unsupported-semantics");
     expect(vocabularied.diagnostics.map((diagnostic) => diagnostic.message).join(" ")).toContain(
@@ -566,7 +572,13 @@ describe("system registration", () => {
       ...base,
       items: [{ kind: "state", fields: Type.Object({ value: Type.Number() }), overridable: [], merge: {} }],
       inputs: [
-        { name: "state", fields: Type.Object({ value: Type.Number() }), units: { value: "points" }, exposedTo: [] },
+        {
+          name: "state",
+          scope: "shared",
+          fields: Type.Object({ value: Type.Number() }),
+          units: { value: "points" },
+          exposedTo: [],
+        },
       ],
     });
     expect(duplicated.status).toBe("unsupported-semantics");
@@ -625,6 +637,7 @@ describe("system registration", () => {
       inputs: [
         {
           name: "state",
+          scope: "shared",
           fields: Type.Object({ value: Type.Number() }),
           units: { value: "points" },
           exposedTo: ["test.future"],

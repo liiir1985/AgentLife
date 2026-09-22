@@ -20,6 +20,8 @@ export type MergeStrategy = "replace" | "append" | "merge" | "reject";
 /** Simple value types a value-set field may hold. */
 export const VALUE_TYPES: readonly ValueType[] = ["number", "boolean", "string"];
 export type ValueType = "number" | "boolean" | "string";
+/** Whether a runtime capability exists once per snapshot or once per entity. */
+export type StateScope = "shared" | "entity";
 
 const MERGE_STRATEGIES: readonly MergeStrategy[] = ["replace", "append", "merge", "reject"];
 
@@ -84,8 +86,8 @@ export interface ValueField {
 export interface ValueSet {
   readonly name: string;
   readonly fields: readonly ValueField[];
-  readonly input?: { readonly exposedTo: readonly string[] };
-  readonly output?: { readonly exposedTo: readonly string[] };
+  readonly input?: { readonly scope: StateScope; readonly exposedTo: readonly string[] };
+  readonly output?: { readonly scope: StateScope; readonly exposedTo: readonly string[] };
 }
 
 export interface ItemSpec {
@@ -110,6 +112,7 @@ export interface ItemSpec {
 
 export interface InputSpec {
   readonly name: string;
+  readonly scope: StateScope;
   /** Object schema of the input value exposed to rules. */
   readonly fields: TSchema;
   /** Unit per numeric field path; required for every field a rule compares. */
@@ -120,6 +123,7 @@ export interface InputSpec {
 
 export interface OutputSpec {
   readonly name: string;
+  readonly scope: StateScope;
   readonly valueType: "number" | "boolean" | "string";
   /** Optional numeric policy; without one the target accepts any finite number unnormalized. */
   readonly policy?: NumberPolicy;
@@ -130,6 +134,7 @@ export interface OutputSpec {
 
 export interface ProcessSpec {
   readonly name: string;
+  readonly scope: StateScope;
   readonly operations: readonly ("establish" | "advance" | "pause" | "end" | "cancel")[];
   readonly parameters: TSchema;
 }
@@ -262,6 +267,12 @@ function familyProblems(
   if (!isName(valueSet.name)) problems.push(`Family name is invalid: ${valueSet.name}`);
   if (valueSet.fields.length === 0) problems.push(`${where} declares no field`);
   const memberKeys = new Set<string>();
+  if (valueSet.input !== undefined && valueSet.input.scope !== "shared" && valueSet.input.scope !== "entity")
+    problems.push(`${where} input declares invalid scope ${String(valueSet.input.scope)}`);
+  if (valueSet.output !== undefined && valueSet.output.scope !== "shared" && valueSet.output.scope !== "entity")
+    problems.push(`${where} output declares invalid scope ${String(valueSet.output.scope)}`);
+  if (valueSet.input !== undefined && valueSet.output !== undefined && valueSet.input.scope !== valueSet.output.scope)
+    problems.push(`${where} input and output must use the same scope`);
   for (const field of valueSet.fields) {
     const label = `${where} field ${field.key === "" ? "<id>" : field.key}`;
     if (field.key !== "" && !isName(field.key)) problems.push(`Family field key is invalid: ${field.key}`);
@@ -455,6 +466,8 @@ function loadIssues(system: SystemSpec): {
 
   for (const input of system.inputs) {
     if (!isName(input.name)) problems.push(`View name is invalid: ${input.name}`);
+    if (input.scope !== "shared" && input.scope !== "entity")
+      problems.push(`Input ${input.name} declares invalid scope ${String(input.scope)}`);
     assertSupportedSchema(input.fields, `input ${input.name}.fields`, semantics);
     for (const field of Object.keys(input.units ?? {}))
       if (!(field in schemaProperties(input.fields)))
@@ -468,6 +481,8 @@ function loadIssues(system: SystemSpec): {
 
   for (const target of system.outputs) {
     if (!isName(target.name)) problems.push(`Output target name is invalid: ${target.name}`);
+    if (target.scope !== "shared" && target.scope !== "entity")
+      problems.push(`Output target ${target.name} declares invalid scope ${String(target.scope)}`);
     if (!VALUE_TYPES.includes(target.valueType))
       systemIndex.push(`Output target ${target.name} requests unsupported value type ${String(target.valueType)}`);
     if (target.policy !== undefined) {
@@ -495,6 +510,8 @@ function loadIssues(system: SystemSpec): {
 
   for (const process of system.processes ?? []) {
     if (!isName(process.name)) problems.push(`Process name is invalid: ${process.name}`);
+    if (process.scope !== "shared" && process.scope !== "entity")
+      problems.push(`Process ${process.name} declares invalid scope ${String(process.scope)}`);
     if (process.operations.length === 0) problems.push(`Process ${process.name} declares no operation`);
     if (schemaKind(process.parameters) !== "Object")
       semantics.push(`Process ${process.name}.parameters must be an object schema`);
