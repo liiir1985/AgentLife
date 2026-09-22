@@ -58,6 +58,10 @@ const INFLUENCE_SCHEMA = Type.Object(
   {
     name: Type.String(),
     description: Type.String(),
+    /** The world relation this influence changes, when it changes one. */
+    relation: Type.Optional(
+      Type.Union([Type.Literal("located-at"), Type.Literal("held-by"), Type.Literal("placed-on")]),
+    ),
   },
   { additionalProperties: false },
 );
@@ -138,8 +142,8 @@ export function createWorldSpec(): SystemSpec {
       {
         kind: "influence-kind",
         fields: INFLUENCE_SCHEMA,
-        overridable: ["name", "description"],
-        merge: { name: "replace", description: "replace" },
+        overridable: ["name", "description", "relation"],
+        merge: { name: "replace", description: "replace", relation: "replace" },
       },
       {
         kind: "local-view",

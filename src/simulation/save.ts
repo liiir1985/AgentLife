@@ -211,7 +211,6 @@ export const saveStateSchema: TSchema = Type.Object(
     failure: Type.Unknown(),
     /** A tick summary is a display record; a save stores the boundary state only. */
     summary: Type.Union([Type.Null(), Type.Unknown()]),
-    claimedChangeIds: Type.Array(Type.String()),
   },
   { additionalProperties: false },
 );

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { BehaviorTraceEntry } from "../src/behavior/behavior-tree-adapter.js";
 import { ContentPackLoader } from "../src/content/content-pack-loader.js";
 import { CoreRuntime, packInput } from "../src/config/core-runtime.js";
-import type { SimulationOrchestrator } from "../src/simulation/orchestrator.js";
+import type { SimulationRunner } from "../src/simulation/runner.js";
 import { createSystemSpecs } from "../src/systems/index.js";
 import { copyDemoPack } from "./helpers/demo-pack.js";
 import {
@@ -74,12 +74,12 @@ interface Decision {
 }
 
 /** Drives ticks until the warden's tree has resolved `wanted` decisions. */
-function driveDecisions(orchestrator: SimulationOrchestrator, wanted: number): readonly Decision[] {
+function driveDecisions(runner: SimulationRunner, wanted: number): readonly Decision[] {
   const decisions: Decision[] = [];
   let applied = 0;
   for (let tick = 1; tick <= 12 && decisions.length < wanted; tick += 1) {
-    orchestrator.runTick();
-    const behaviour = orchestrator.state().behaviours[DEMO_WARDEN];
+    runner.runTick();
+    const behaviour = runner.state().behaviours[DEMO_WARDEN];
     expect(behaviour).toBeDefined();
     if ((behaviour?.appliedKeys.length ?? 0) > applied) {
       applied = behaviour?.appliedKeys.length ?? 0;
@@ -114,7 +114,7 @@ async function publishProblems(overrides: Readonly<Record<string, string | null>
 describe("phase 2 behaviour tree adapter", () => {
   it("resolves the gate-warden tree in the declared node order and records the plan it hands over", async () => {
     const simulation = await createSimulation({ timelineId: "timeline-behaviour" });
-    const decisions = driveDecisions(simulation.orchestrator, 2);
+    const decisions = driveDecisions(simulation.runner, 2);
     const walked = decisions.map((decision) => decision.trace.map((entry) => [entry.path, entry.state] as const));
 
     expect(decisions.map((decision) => decision.tick)).toEqual([1, 5]);
@@ -127,12 +127,12 @@ describe("phase 2 behaviour tree adapter", () => {
     expect(decisions[0]?.plan).toEqual([WALK_TO_KILN]);
     expect(decisions[1]?.plan).toEqual([WAVE]);
 
-    const behaviour = simulation.orchestrator.state().behaviours[DEMO_WARDEN];
+    const behaviour = simulation.runner.state().behaviours[DEMO_WARDEN];
     expect(behaviour?.blackboard).toEqual({});
     expect(behaviour?.activePlanId).toBe(`${DEMO_WARDEN}/tick-5`);
     expect(behaviour?.cooldownUntilTick).toBe(6);
     // The recorded plan is a real plan: the warden actually walked to the kiln.
-    expect(positionOf(simulation.orchestrator, DEMO_WARDEN)).toBe(DEMO_KILN);
+    expect(positionOf(simulation.runner, DEMO_WARDEN)).toBe(DEMO_KILN);
   });
 
   it("rejects a local view that names a view no system is granted", async () => {
@@ -186,15 +186,15 @@ fields:
     const say = testPlan("player-say", DEMO_PLAYER, "parallel", [{ action: "agentlife.demo/say" }]);
     const wave = testPlan("companion-wave", DEMO_COMPANION, "parallel", [{ action: "agentlife.demo/wave" }]);
 
-    const forward = first.orchestrator.runTick({ plans: [say, wave] });
-    const reversed = second.orchestrator.runTick({ plans: [wave, say] });
+    const forward = first.runner.runTick({ plans: [say, wave] });
+    const reversed = second.runner.runTick({ plans: [wave, say] });
 
-    expect(second.orchestrator.state().world).toEqual(first.orchestrator.state().world);
-    expect(second.orchestrator.state().body).toEqual(first.orchestrator.state().body);
-    expect(second.orchestrator.state().characters).toEqual(first.orchestrator.state().characters);
-    expect(second.orchestrator.state().actions).toEqual(first.orchestrator.state().actions);
-    expect(second.orchestrator.state().behaviours).toEqual(first.orchestrator.state().behaviours);
-    expect(second.orchestrator.state().activity).toEqual(first.orchestrator.state().activity);
+    expect(second.runner.state().world).toEqual(first.runner.state().world);
+    expect(second.runner.state().body).toEqual(first.runner.state().body);
+    expect(second.runner.state().characters).toEqual(first.runner.state().characters);
+    expect(second.runner.state().actions).toEqual(first.runner.state().actions);
+    expect(second.runner.state().behaviours).toEqual(first.runner.state().behaviours);
+    expect(second.runner.state().activity).toEqual(first.runner.state().activity);
 
     const observable = (result: typeof forward) => ({
       stages: result.summary.stages.map((stage) => `${stage.stage}:${stage.status}`),
@@ -209,14 +209,14 @@ fields:
     // Only the order the plans were supplied in differs, and it is visible there alone.
     expect(forward.summary.actionOutcomes[0]).toContain("player-say");
     expect(reversed.summary.actionOutcomes[0]).toContain("companion-wave");
-    expect(positionOf(second.orchestrator, DEMO_PLAYER)).toBe(DEMO_SQUARE);
+    expect(positionOf(second.runner, DEMO_PLAYER)).toBe(DEMO_SQUARE);
   });
 
   it("accepts a behaviour tree plan for the next tick without progressing it in the submitting tick", async () => {
     const simulation = await createSimulation({ timelineId: "timeline-lazy" });
-    const submitting = simulation.orchestrator.runTick();
+    const submitting = simulation.runner.runTick();
 
-    const planned = simulation.orchestrator.state().actions.find((action) => action.plan.source === "behaviour-tree");
+    const planned = simulation.runner.state().actions.find((action) => action.plan.source === "behaviour-tree");
     expect(planned?.status).toBe("running");
     expect(planned?.acceptedTick).toBe(1);
     expect(planned?.eligibleTick).toBe(2);
@@ -224,10 +224,10 @@ fields:
     expect(planned?.stageTicks).toBe(0);
     // Nothing the plan asks for happened in the tick that accepted it.
     expect(submitting.summary.eventCount).toBe(0);
-    expect(positionOf(simulation.orchestrator, DEMO_WARDEN)).toBe(DEMO_SQUARE);
+    expect(positionOf(simulation.runner, DEMO_WARDEN)).toBe(DEMO_SQUARE);
 
-    simulation.orchestrator.runTick();
-    const progressed = simulation.orchestrator.state().actions.find((action) => action.actionId === planned?.actionId);
+    simulation.runner.runTick();
+    const progressed = simulation.runner.state().actions.find((action) => action.actionId === planned?.actionId);
     expect(progressed?.stageTicks).toBe(1);
     expect(progressed?.stepIndex).toBe(0);
   });

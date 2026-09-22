@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { digestOf } from "../src/simulation/demo.js";
-import { SimulationOrchestrator } from "../src/simulation/orchestrator.js";
+import { SimulationRunner } from "../src/simulation/runner.js";
 import { checkSnapshot, decodeSnapshot, encodeSnapshot, snapshotOf } from "../src/simulation/save.js";
 import type { ActionPlan } from "../src/simulation/types.js";
 import { RuntimeStore, SIMULATION_SAVE_TYPE, SIMULATION_SAVE_VERSION } from "../src/storage/runtime-store.js";
@@ -36,9 +36,9 @@ const SCRIPT: Readonly<Record<number, readonly ActionPlan[]>> = Object.freeze({
   12: [testPlan("player-grasp", DEMO_PLAYER, "parallel", [{ action: "agentlife.demo/grasp", target: DEMO_ROPE }])],
 });
 
-function runTicks(orchestrator: SimulationOrchestrator, from: number, count: number): void {
+function runTicks(runner: SimulationRunner, from: number, count: number): void {
   for (let tick = from; tick < from + count; tick += 1)
-    expect(orchestrator.runTick({ plans: SCRIPT[tick] ?? [] }).status).toBe("completed");
+    expect(runner.runTick({ plans: SCRIPT[tick] ?? [] }).status).toBe("completed");
 }
 
 /** Opens one store over a temporary database; the host may still hold the file briefly. */
@@ -60,8 +60,8 @@ function withStore<T>(run: (store: RuntimeStore) => T): T {
 describe("phase 2 save and load", () => {
   it("stores one snapshot and restores exactly the saved world, bodies, characters, plans and processes", async () => {
     const simulation = await createSimulation({ timelineId: "timeline-save" });
-    runTicks(simulation.orchestrator, 1, 13);
-    const state = simulation.orchestrator.state();
+    runTicks(simulation.runner, 1, 13);
+    const state = simulation.runner.state();
     expect(state.world.processes.map((process) => process.processRef)).toEqual(["agentlife.world/lamp-glow"]);
     expect(state.body.bodies[DEMO_PLAYER]?.values["wakefulness"]).toBe(40);
     expect(state.actions.length).toBeGreaterThan(0);
@@ -102,7 +102,7 @@ describe("phase 2 save and load", () => {
       const snapshot = decoded.snapshot;
       expect(checkSnapshot(snapshot, simulation.config)).toEqual({ ok: true });
 
-      const restored = SimulationOrchestrator.create(simulation.core, { timelineId: "timeline-restored" });
+      const restored = SimulationRunner.create(simulation.core, { timelineId: "timeline-restored" });
       restored.load({ ...snapshot.state, timelineId: "timeline-restored" });
       const before = snapshot.state;
       const after = restored.state();
@@ -125,7 +125,6 @@ describe("phase 2 save and load", () => {
       expect(after.activity).toEqual(before.activity);
       expect(after.actions).toEqual(before.actions);
       expect(after.actions.map((action) => action.plan)).toEqual(before.actions.map((action) => action.plan));
-      expect(after.claimedChangeIds).toEqual(before.claimedChangeIds);
       expect(after.barrier).toBeNull();
       expect(after.failure).toBeNull();
     });
@@ -137,23 +136,23 @@ describe("phase 2 save and load", () => {
     // so a save that dropped the restored behaviour record would diverge.
     for (const boundary of [4, 7]) {
       const original = await createSimulation({ timelineId: `timeline-continue-${boundary}` });
-      runTicks(original.orchestrator, 1, boundary);
-      const saved = snapshotOf(original.orchestrator.state(), `save-continue-${boundary}`, original.config);
+      runTicks(original.runner, 1, boundary);
+      const saved = snapshotOf(original.runner.state(), `save-continue-${boundary}`, original.config);
 
       const loaded = await createSimulation({ timelineId: `timeline-loaded-${boundary}` });
-      loaded.orchestrator.load({ ...saved.state, timelineId: `timeline-loaded-${boundary}` });
+      loaded.runner.load({ ...saved.state, timelineId: `timeline-loaded-${boundary}` });
       const loadedAgain = await createSimulation({ timelineId: `timeline-loaded-again-${boundary}` });
-      loadedAgain.orchestrator.load({ ...saved.state, timelineId: `timeline-loaded-again-${boundary}` });
+      loadedAgain.runner.load({ ...saved.state, timelineId: `timeline-loaded-again-${boundary}` });
 
       const remaining = 12 - boundary;
-      runTicks(original.orchestrator, boundary + 1, remaining);
-      runTicks(loaded.orchestrator, boundary + 1, remaining);
-      runTicks(loadedAgain.orchestrator, boundary + 1, remaining);
+      runTicks(original.runner, boundary + 1, remaining);
+      runTicks(loaded.runner, boundary + 1, remaining);
+      runTicks(loadedAgain.runner, boundary + 1, remaining);
 
-      const continued = digestOf(original.orchestrator.state());
-      expect(loaded.orchestrator.state().tick, `boundary ${boundary}`).toBe(12);
-      expect(digestOf(loaded.orchestrator.state()), `boundary ${boundary}`).toBe(continued);
-      expect(digestOf(loadedAgain.orchestrator.state()), `boundary ${boundary}`).toBe(continued);
+      const continued = digestOf(original.runner.state());
+      expect(loaded.runner.state().tick, `boundary ${boundary}`).toBe(12);
+      expect(digestOf(loaded.runner.state()), `boundary ${boundary}`).toBe(continued);
+      expect(digestOf(loadedAgain.runner.state()), `boundary ${boundary}`).toBe(continued);
       // The continuation really moved on from the saved boundary.
       expect(continued, `boundary ${boundary}`).not.toBe(digestOf(saved.state));
     }
@@ -161,8 +160,8 @@ describe("phase 2 save and load", () => {
 
   it("refuses a save made against another config or other system versions and keeps the running state", async () => {
     const simulation = await createSimulation({ timelineId: "timeline-save" });
-    runTicks(simulation.orchestrator, 1, 7);
-    const saved = snapshotOf(simulation.orchestrator.state(), "save-checked", simulation.config);
+    runTicks(simulation.runner, 1, 7);
+    const saved = snapshotOf(simulation.runner.state(), "save-checked", simulation.config);
     const other = await publishDemoWith({ "rules/daylight-wakefulness.yaml": null });
     expect(other.config.configId).not.toBe(simulation.config.configId);
 
@@ -183,11 +182,11 @@ describe("phase 2 save and load", () => {
     ).toBe(false);
 
     // The same save only loads while the timeline still runs the config it was made with.
-    const kept = simulation.orchestrator.state();
+    const kept = simulation.runner.state();
     const keptDigest = digestOf(kept);
-    expect(() => simulation.orchestrator.load({ ...saved.state, configId: other.config.configId })).toThrow();
-    expect(digestOf(simulation.orchestrator.state())).toBe(keptDigest);
-    expect(simulation.orchestrator.state().tick).toBe(kept.tick);
+    expect(() => simulation.runner.load({ ...saved.state, configId: other.config.configId })).toThrow();
+    expect(digestOf(simulation.runner.state())).toBe(keptDigest);
+    expect(simulation.runner.state().tick).toBe(kept.tick);
 
     // An unreadable or incomplete payload is refused rather than half loaded.
     const encoded = encodeSnapshot(saved);

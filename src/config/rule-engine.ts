@@ -1,4 +1,3 @@
-import { hashId } from "./canonical.js";
 import { runCondition, conditionUsesSimulationTime } from "./conditions.js";
 import type { RuntimeFormula, RuntimeRule, RuntimeConfig, CombinePlan } from "./config-builder.js";
 import { strongestStatus, type ResultStatus } from "./diagnostics.js";
@@ -71,7 +70,6 @@ export interface CombineTrace {
 }
 
 export interface StateChangeRequest {
-  readonly changeId: string;
   readonly entityId: string | null;
   readonly stateRef: string;
   readonly system: string;
@@ -83,7 +81,6 @@ export interface StateChangeRequest {
 }
 
 export interface ProcessChangeRequest {
-  readonly changeId: string;
   readonly entityId: string | null;
   readonly processRef: string;
   readonly system: string;
@@ -231,8 +228,6 @@ function buildScope(
 }
 
 function runChanges(
-  config: RuntimeConfig,
-  request: RuleRequest,
   rule: RuntimeRule,
   scope: ValueContext,
   entityId: string | null,
@@ -262,16 +257,6 @@ function runChanges(
       params[parameter.name] = value.value;
     }
     processChanges.push({
-      changeId: hashId({
-        configId: config.configId,
-        runId: request.runId,
-        scope: change.scope,
-        entityId,
-        rule: rule.ref,
-        processRef: change.processRef,
-        action: change.action,
-        params,
-      }),
       entityId,
       processRef: change.processRef,
       system: change.system,
@@ -332,7 +317,7 @@ function runRule(
       processChanges: [],
     };
 
-  const evaluated = runChanges(config, request, rule, scope, entityId);
+  const evaluated = runChanges(rule, scope, entityId);
   if (evaluated.failure !== undefined)
     return {
       trace: {
@@ -434,14 +419,6 @@ function evaluateScope(
     combines.push(combine);
     if (combine.status !== "composed" || combine.result === null) continue;
     stateChanges.push({
-      changeId: hashId({
-        configId: config.configId,
-        runId: request.runId,
-        scope,
-        entityId,
-        stateRef,
-        value: combine.result,
-      }),
       entityId,
       stateRef,
       system: plan.system,

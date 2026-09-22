@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { TICK_STAGES } from "../src/simulation/orchestrator.js";
+import { TICK_STAGES } from "../src/simulation/runner.js";
 import type { StageRecord } from "../src/simulation/types.js";
 import {
   DEMO_KILN,
@@ -41,12 +41,12 @@ function recordedPhases(stages: readonly StageRecord[]): readonly string[] {
   return phases;
 }
 
-describe("phase 2 simulation orchestrator", () => {
+describe("phase 2 simulation runner", () => {
   it("records the fixed twelve phases in order and keeps the phase-2 stages as explicit no-ops", async () => {
     expect(TICK_STAGES).toEqual(TWELVE_PHASES);
 
     const simulation = await createSimulation({ timelineId: "timeline-phases" });
-    const result = simulation.orchestrator.runTick();
+    const result = simulation.runner.runTick();
     const stages = result.summary.stages;
 
     expect(result.status).toBe("completed");
@@ -80,7 +80,7 @@ describe("phase 2 simulation orchestrator", () => {
     };
 
     // Tick 1 wakes the standing tick rules, whose body value changes are re-evaluated in the same tick.
-    const first = simulation.orchestrator.runTick();
+    const first = simulation.runner.runTick();
     requested.push(current);
     current = [];
     expect(requested[0]).toContain("agentlife.body/value-changed");
@@ -90,7 +90,7 @@ describe("phase 2 simulation orchestrator", () => {
       "agentlife.body/value-changed",
     );
 
-    simulation.orchestrator.runTick();
+    simulation.runner.runTick();
     requested.push(current);
     current = [];
     expect(requested[1]).not.toContain("agentlife.world/environment-changed");
@@ -98,16 +98,16 @@ describe("phase 2 simulation orchestrator", () => {
     // Operating the lamp changes an environment value; the same tick re-evaluates that trigger.
     let environmentTick = 0;
     for (let tick = 3; tick <= 8 && environmentTick === 0; tick += 1) {
-      simulation.orchestrator.runTick({ plans: tick === 3 ? [OPERATE_LAMP] : [] });
+      simulation.runner.runTick({ plans: tick === 3 ? [OPERATE_LAMP] : [] });
       requested.push(current);
       current = [];
       if (requested.at(-1)?.includes("agentlife.world/environment-changed")) environmentTick = tick;
     }
     expect(environmentTick).toBeGreaterThan(0);
-    expect(simulation.orchestrator.state().world.environment["lamp-state"]).toBe(1);
+    expect(simulation.runner.state().world.environment["lamp-state"]).toBe(1);
     expect(requested.at(-2)).not.toContain("agentlife.world/environment-changed");
     expect(
-      simulation.orchestrator
+      simulation.runner
         .state()
         .summary?.actionOutcomes.some((outcome) => outcome.startsWith("agentlife.world/environment-changed")),
     ).toBe(true);
@@ -115,25 +115,25 @@ describe("phase 2 simulation orchestrator", () => {
 
   it("fails the tick when propagation exceeds the configured round limit and publishes no stable tick", async () => {
     const limited = await createSimulation({ timelineId: "timeline-limited", settings: { maxPropagationRounds: 1 } });
-    const failed = limited.orchestrator.runTick();
+    const failed = limited.runner.runTick();
 
     expect(failed.status).toBe("failed");
     expect(failed.summary.tick).toBe(0);
     expect(failed.summary.stages.find((stage) => stage.stage === "stability")?.status).toBe("failed");
-    expect(limited.orchestrator.state().failure).toEqual({
+    expect(limited.runner.state().failure).toEqual({
       stage: "stability",
       code: "propagation-limit",
       detail: expect.any(String),
     });
-    expect(limited.orchestrator.state().tick).toBe(0);
-    expect(limited.orchestrator.state().runMode).toBe("failed");
-    expect(limited.orchestrator.state().summary?.tick).toBe(0);
+    expect(limited.runner.state().tick).toBe(0);
+    expect(limited.runner.state().runMode).toBe("failed");
+    expect(limited.runner.state().summary?.tick).toBe(0);
 
     // The same first tick settles when the tick is allowed enough rounds.
     const settled = await createSimulation({ timelineId: "timeline-limited" });
-    expect(settled.orchestrator.runTick().status).toBe("completed");
-    expect(settled.orchestrator.state().tick).toBe(1);
-    expect(settled.orchestrator.state().failure).toBeNull();
+    expect(settled.runner.runTick().status).toBe("completed");
+    expect(settled.runner.state().tick).toBe(1);
+    expect(settled.runner.state().failure).toBeNull();
   });
 
   it("records a barrier for an unindexed trigger without asking for anything outside the declared vocabulary", async () => {
@@ -156,8 +156,8 @@ describe("phase 2 simulation orchestrator", () => {
       requested.push(request.trigger);
       return call(request);
     };
-    const result = simulation.orchestrator.runTick();
-    const state = simulation.orchestrator.state();
+    const result = simulation.runner.runTick();
+    const state = simulation.runner.state();
 
     expect(result.status).toBe("barrier");
     expect(state.failure).toBeNull();
@@ -183,11 +183,11 @@ describe("phase 2 simulation orchestrator", () => {
     const move = testPlan("player-move-out", DEMO_PLAYER, "parallel", [
       { action: "agentlife.demo/walk", destination: DEMO_KILN },
     ]);
-    simulation.orchestrator.runTick({ plans: [move] });
-    for (let tick = 2; tick <= 4; tick += 1) simulation.orchestrator.runTick();
+    simulation.runner.runTick({ plans: [move] });
+    for (let tick = 2; tick <= 4; tick += 1) simulation.runner.runTick();
 
-    const result = simulation.orchestrator.state().summary;
-    const state = simulation.orchestrator.state();
+    const result = simulation.runner.state().summary;
+    const state = simulation.runner.state();
     expect(result?.tick).toBe(4);
     expect(recordedPhases(result?.stages ?? [])).toEqual(TWELVE_PHASES);
     expect(result?.stages.find((stage) => stage.stage === "adjudicate")?.status).toBe("done");

@@ -165,6 +165,17 @@ export function actionSpec(config: RuntimeConfig, ref: string): ActionSpec | und
   };
 }
 
+/**
+ * The world relation one declared influence kind changes, when it changes one.
+ * Content declares it, so the world never has to know a content action by name.
+ */
+export function influenceRelation(config: RuntimeConfig, influenceRef: string | null): string | null {
+  if (influenceRef === null) return null;
+  const item = itemOf(config, influenceRef);
+  if (item === undefined || item.typeRef !== "agentlife.world/influence-kind") return null;
+  return asString(item.values["relation"]) ?? null;
+}
+
 export interface ResourceSpec {
   readonly ref: string;
   readonly exclusive: boolean;

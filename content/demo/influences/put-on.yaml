@@ -4,3 +4,4 @@ public: true
 fields:
   name: 放置
   description: 当事人把一个物品放到另一个实体上
+  relation: placed-on

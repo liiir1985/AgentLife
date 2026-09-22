@@ -18,6 +18,7 @@ import { NO_INFLUENCE, entitySlice, sharedSlice, type InfluenceView, type Projec
 import type {
   EntityKind,
   InfluenceOutcome,
+  RejectedChange,
   SimulationSettings,
   WorldCommit,
   WorldEntity,
@@ -44,11 +45,6 @@ export interface ServiceRuntime {
   readonly config: RuntimeConfig;
   readonly systemIndex: SystemIndex;
   runRules(request: RuleRequest): RuleResult;
-}
-
-/** Change de-duplication: one change identity is applied at most once per timeline. */
-export interface ChangeClaims {
-  claim(changeId: string): "claimed" | "duplicate";
 }
 
 /** The state patch an accepted change applies, or why it cannot be applied. */
@@ -84,6 +80,30 @@ export function runIdOf(context: TickContext): string {
   return `${context.timelineId}/tick-${context.tick}/${context.command}`;
 }
 
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/** Stable, readable batch order: system, then entity, then the state the change names. */
+export function changesInOrder(changes: readonly StateChangeRequest[]): readonly StateChangeRequest[] {
+  return [...changes].sort(
+    (left, right) =>
+      compareText(left.system, right.system) ||
+      compareText(left.entityId ?? "", right.entityId ?? "") ||
+      compareText(left.stateRef, right.stateRef),
+  );
+}
+
+/** The same order for process requests, which name a process instead of a state. */
+export function processRequestsInOrder(requests: readonly ProcessChangeRequest[]): readonly ProcessChangeRequest[] {
+  return [...requests].sort(
+    (left, right) =>
+      compareText(left.system, right.system) ||
+      compareText(left.entityId ?? "", right.entityId ?? "") ||
+      compareText(left.processRef, right.processRef),
+  );
+}
+
 export function entityKindOf(typeRef: string): EntityKind | undefined {
   if (typeRef === "agentlife.world/location") return "location";
   if (typeRef === "agentlife.world/item") return "item";
@@ -99,7 +119,6 @@ export class WorldService {
   constructor(
     private readonly runtime: ServiceRuntime,
     private readonly settings: SimulationSettings,
-    private readonly claims: ChangeClaims,
   ) {}
 
   private get config(): RuntimeConfig {
@@ -304,7 +323,7 @@ export class WorldService {
     const state = sources.world;
     const advanced: string[] = [];
     const appliedChanges: StateChangeRequest[] = [];
-    const rejected: { changeId: string; reason: string }[] = [];
+    const rejected: RejectedChange[] = [];
     const events: WorldEvent[] = [];
     const processRequests: ProcessChangeRequest[] = [];
     let current = state;
@@ -359,37 +378,48 @@ export class WorldService {
       readonly subject: string | null;
     },
   ): WorldCommit {
-    const rejected: { changeId: string; reason: string }[] = [];
+    const rejected: RejectedChange[] = [];
     const baseline = context.baseVersion ?? state.version;
     const accepted: { readonly change: StateChangeRequest; readonly effect: ChangeEffect }[] = [];
-    for (const change of [...changes].sort((left, right) => (left.changeId < right.changeId ? -1 : 1))) {
+    for (const change of changesInOrder(changes)) {
       if (change.system !== "agentlife.world") {
-        rejected.push({ changeId: change.changeId, reason: `${change.stateRef} is not owned by the world system` });
+        rejected.push({
+          ref: change.stateRef,
+          entityId: change.entityId,
+          reason: `${change.stateRef} is not owned by the world system`,
+        });
         continue;
       }
       if (change.baseVersion !== baseline) {
-        rejected.push({ changeId: change.changeId, reason: `change was formed against ${change.baseVersion}` });
+        rejected.push({
+          ref: change.stateRef,
+          entityId: change.entityId,
+          reason: `change was formed against ${change.baseVersion}`,
+        });
         continue;
       }
       const shape = checkValue(this.config, change.stateRef, change.newValue);
       if (!shape.ok) {
-        rejected.push({ changeId: change.changeId, reason: shape.reason });
+        rejected.push({ ref: change.stateRef, entityId: change.entityId, reason: shape.reason });
         continue;
       }
       const effect = this.changeEffect(state, change);
       if (effect.kind === "unknown") {
-        rejected.push({ changeId: change.changeId, reason: `${change.stateRef} names no world state` });
+        rejected.push({
+          ref: change.stateRef,
+          entityId: change.entityId,
+          reason: `${change.stateRef} names no world state`,
+        });
         continue;
       }
       const precondition = this.relationPrecondition(state, change);
       if (precondition !== undefined) {
-        rejected.push({ changeId: change.changeId, reason: precondition });
+        rejected.push({ ref: change.stateRef, entityId: change.entityId, reason: precondition });
         continue;
       }
       // A change that leaves the objective state identical is not a change: it is
-      // neither claimed nor recorded, so propagation can reach a fixpoint.
+      // not recorded, so propagation can reach a fixpoint.
       if (effect.kind === "unchanged") continue;
-      if (this.claims.claim(change.changeId) === "duplicate") continue;
       accepted.push({ change, effect });
     }
     // A batch is committed as a whole: a refused change is never part-written, and
@@ -409,7 +439,8 @@ export class WorldService {
         rejected: [
           ...rejected,
           ...accepted.map(({ change }) => ({
-            changeId: change.changeId,
+            ref: change.stateRef,
+            entityId: change.entityId,
             reason: problems[0] ?? "invariant violated",
           })),
         ],
@@ -428,9 +459,9 @@ export class WorldService {
       events: state.events,
     };
     const events: WorldEvent[] = [];
-    for (const { change } of accepted)
+    for (const [index, { change }] of accepted.entries())
       events.push({
-        eventId: change.changeId,
+        eventId: `${context.timelineId}/${context.tick}/change-${index + 1}`,
         tick: context.tick,
         kind: change.stateRef.startsWith("agentlife.world/environment") ? "environment-changed" : "relation-changed",
         actor: origin.actor,
@@ -443,7 +474,11 @@ export class WorldService {
       events.push(...this.processEvents(state, processes, processChanges, context, origin));
     for (const processChange of processChanges)
       if (processChange.system !== "agentlife.world")
-        rejected.push({ changeId: processChange.changeId, reason: "process is not owned by the world system" });
+        rejected.push({
+          ref: processChange.processRef,
+          entityId: processChange.entityId,
+          reason: "process is not owned by the world system",
+        });
     if (events.length > 0) next = { ...next, events: capEvents([...state.events, ...events], this.settings.maxEvents) };
     return { state: next, applied: accepted.map(({ change }) => change), rejected, events };
   }
@@ -490,20 +525,25 @@ export class WorldService {
     processes: readonly WorldProcess[],
     requests: readonly ProcessChangeRequest[],
     context: TickContext,
-    rejected: { changeId: string; reason: string }[],
+    rejected: RejectedChange[],
   ): readonly WorldProcess[] {
     let current = [...processes];
     let mutated = false;
-    for (const request of [...requests].sort((left, right) => (left.changeId < right.changeId ? -1 : 1))) {
+    for (const request of processRequestsInOrder(requests)) {
       if (request.system !== "agentlife.world") continue;
       const spec = processSpec(this.runtime.systemIndex, request.processRef);
       if (spec === undefined) {
-        rejected.push({ changeId: request.changeId, reason: `unknown world process ${request.processRef}` });
+        rejected.push({
+          ref: request.processRef,
+          entityId: request.entityId,
+          reason: `unknown world process ${request.processRef}`,
+        });
         continue;
       }
       if (!spec.operations.includes(request.action)) {
         rejected.push({
-          changeId: request.changeId,
+          ref: request.processRef,
+          entityId: request.entityId,
           reason: `process ${request.processRef} does not allow ${request.action}`,
         });
         continue;
@@ -514,19 +554,21 @@ export class WorldService {
       );
       if (request.action === "establish") {
         if (existing !== undefined) continue;
-        if (this.claims.claim(request.changeId) === "duplicate") continue;
-        const params = this.checkProcessParams(spec, request.params, rejected, request.changeId);
+        const params = this.checkProcessParams(spec, request.params, rejected, request.processRef, request.entityId);
         if (params === undefined) continue;
         current = [...current, { processRef: request.processRef, ownerId, establishedTick: context.tick, params }];
         mutated = true;
         continue;
       }
       if (existing === undefined) {
-        rejected.push({ changeId: request.changeId, reason: `process ${request.processRef} is not established` });
+        rejected.push({
+          ref: request.processRef,
+          entityId: request.entityId,
+          reason: `process ${request.processRef} is not established`,
+        });
         continue;
       }
       if (request.action === "advance" || request.action === "pause") continue;
-      if (this.claims.claim(request.changeId) === "duplicate") continue;
       current = current.filter((process) => process !== existing);
       mutated = true;
     }
@@ -538,15 +580,17 @@ export class WorldService {
   private checkProcessParams(
     spec: { readonly parameters: readonly { readonly name: string; readonly valueType: string }[] },
     params: Readonly<Record<string, SimpleValue>>,
-    rejected: { changeId: string; reason: string }[],
-    changeId: string,
+    rejected: RejectedChange[],
+    processRef: string,
+    entityId: string | null,
   ): Readonly<Record<string, SimpleValue>> | undefined {
     const checked: Record<string, SimpleValue> = {};
     for (const parameter of spec.parameters) {
       const value = params[parameter.name];
       if (value === undefined || typeof value !== parameter.valueType) {
         rejected.push({
-          changeId,
+          ref: processRef,
+          entityId,
           reason: `parameter ${parameter.name} must be a ${parameter.valueType}`,
         });
         return undefined;
@@ -591,6 +635,37 @@ export class WorldService {
       return { kind: "entity", entity: { ...entity, locatedAt: null, heldBy: null, placedOn: support } };
     }
     return { kind: "unknown" };
+  }
+
+  /**
+   * Whether the world still lets this action start, judged only from the generic
+   * relations the world owns. `relation` is the world relation the action's
+   * declared influence changes, so the world never has to know a content action
+   * by name.
+   */
+  actionPremises(
+    state: WorldState,
+    action: { readonly entityId: string; readonly target: string | null; readonly destination: string | null },
+    influence: { readonly changesWorld: boolean; readonly relation: string | null },
+  ): { readonly ok: true } | { readonly ok: false; readonly reason: string } {
+    const actor = state.entities[action.entityId];
+    if (actor === undefined) return { ok: false, reason: `${action.entityId} is not in the world` };
+    if (influence.relation === "located-at") {
+      const destination = action.destination;
+      if (destination === null) return { ok: false, reason: "the move names no destination" };
+      if (state.entities[destination]?.kind !== "location")
+        return { ok: false, reason: `${destination} is not a place` };
+      const from = actor.locatedAt;
+      if (from !== null && from !== destination && !this.locationExits(from).includes(destination))
+        return { ok: false, reason: `${destination} is not an exit of ${from}` };
+      return { ok: true };
+    }
+    if (influence.changesWorld && action.target !== null) {
+      const target = state.entities[action.target];
+      if (target === undefined) return { ok: false, reason: `${action.target} is not in the world` };
+      if (target.kind !== "item") return { ok: false, reason: `${action.target} is not an item` };
+    }
+    return { ok: true };
   }
 
   /**

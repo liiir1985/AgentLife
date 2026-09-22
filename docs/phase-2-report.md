@@ -1,8 +1,8 @@
 # 阶段 2 报告：确定性模拟内核
 
 - 日期：2026-09-22
-- 范围：`docs/phase-2-execution-plan.md` 的 P2.0–P2.7（配置模型、WorldService、CharacterService、BodyService、确定性行为树、SimulationOrchestrator、显式保存与加载、演示内容与运行器）
-- 结论摘要：阶段 2 的执行计划已经实现。`StateChangeRequest` / `ProcessChangeRequest` 现在由拥有权威运行状态的 Service 验证并提交，十二阶段 Tick 形成可保存、可恢复、可追踪的确定性闭环。完整套件 **213 passed | 1 skipped**（18 个文件，其中阶段 2 新增 7 个文件 49 项）；`pnpm phase1:verify` 与 `pnpm phase2:verify` 通过；`pnpm phase2:demo` 连续两次输出的最终摘要哈希相同（`5ec5abcd55189f17`），且「继续原时间线」与「加载存档后继续」的摘要哈希也相同（`72cd092710fe7fb5`）。全部 Tick 路径中没有 LLM 调用、随机源或机器时间。验收过程中发现并修复了六处实现缺陷（§11），其中三处会让内容静默失效或让加载后的时间线分叉。
+- 范围：`docs/phase-2-execution-plan.md` 的 P2.0–P2.7（配置模型、WorldService、CharacterService、BodyService、确定性行为树、SimulationRunner、显式保存与加载、演示内容与运行器）
+- 结论摘要：阶段 2 的执行计划已经实现。`StateChangeRequest` / `ProcessChangeRequest` 现在由拥有权威运行状态的 Service 验证并提交，十二阶段 Tick 形成可保存、可恢复、可追踪的确定性闭环。完整套件 **211 passed | 1 skipped**（18 个文件，其中阶段 2 新增 7 个文件 49 项）；`pnpm phase1:verify` 与 `pnpm phase2:verify` 通过；`pnpm phase2:demo` 连续两次输出的最终摘要哈希相同（`5ec5abcd55189f17`），且「继续原时间线」与「加载存档后继续」的摘要哈希也相同（`72cd092710fe7fb5`）。全部 Tick 路径中没有 LLM 调用、随机源或机器时间。验收过程中发现并修复了六处实现缺陷（§11），其中三处会让内容静默失效或让加载后的时间线分叉。
 - 与设计的关系：实现严格按 `docs/phase-2-execution-plan.md` §2.1 的依据优先级取材，没有重新引入 `DomainExtension`、`CandidateEffect`、`Target`、`EvaluationResult`、`consumeEffect` 等旧公共名称。与计划的实际偏差见 §13。
 
 ## 1. 交付物
@@ -80,12 +80,12 @@
 - 存档保存黑板、等待与冷却目标 Tick、最近输入版本、活动计划关联与已提交决定身份；加载后不重复选择或提交同一计划。
 - 越权读取（访问未授权的视图成员、完整状态、其他角色私有状态、控制来源或主要标记）在发布期被拒绝。
 
-## 7. P2.5：SimulationOrchestrator
+## 7. P2.5：SimulationRunner
 
 - **十二阶段**（`TICK_STAGES`）：固定 → 时钟 → 推进 → 决策 → 世界裁定 → 传播 → 稳定检查 → 感知 → 认知需求 → 认知屏障 → 记忆 → 发布。第 8–11 阶段在阶段 2 记录为显式 no-op（`NO_OP_STAGES`），但仍逐项出现在 Tick 追踪中。
-- **确定性传播**：只通过 `triggerIndex` 选择规则；每一轮基于上一轮已提交状态构造最小 `StateInput`；变化按 System、实体 ID、StateRef、`changeId` 稳定排序；同一 `changeId` 在同一时间线只应用一次；超过配置化传播上限即进入 `failed` 且不发布半稳定 Tick；触发到没有规则的目标时建立内存中的规则屏障，不调用 LLM。
+- **确定性传播**：只通过 `triggerIndex` 选择规则；每一轮基于上一轮已提交状态构造最小 `StateInput`；变化按 System、实体 ID、StateRef 稳定排序（过程请求按 System、实体 ID、ProcessRef 稳定排序）；目标值已相同即不产生变化，重复请求自然被吸收；超过配置化传播上限即进入 `failed` 且不发布半稳定 Tick；触发到没有规则的目标时建立内存中的规则屏障，不调用 LLM。
 - **失败语义**：阶段失败不发布稳定 Tick，调度器记录失败阶段与原因；Service 已合法提交的独立结果保留。
-- **入口**：`SimulationOrchestrator.create(core, options)`、`runTick(input)`、`state()`、`load(state)`；`TickResult` 区分 `completed` / `barrier` / `failed` 并携带 `TickSummary`。
+- **入口**：`SimulationRunner.create(core, options)`、`runTick(input)`、`state()`、`load(state)`；`TickResult` 区分 `completed` / `barrier` / `failed` 并携带 `TickSummary`。
 
 ## 8. P2.6：显式保存与加载
 
@@ -173,6 +173,9 @@
 | `ActionPlan.formedVersion` 不做版本等式校验 | 外部（诊断入口）提交的计划是在 Tick 之前形成的，与当 Tick 帧版本相等不成立；计划的有效性由接纳与启动时的前提重新校验保证 | §9.2 的「版本仍有效」改为按前提成立与否判断，字段保留用于追踪 |
 | 实体属性值由实体自己声明，独立配置类型 `agentlife.world/attribute-assignment` 删除 | 原设计把「某实体拥有某属性值」拆成另一个配置项，读物品时要再看一个文件才知道它能被拿/被放/被操作；属性定义的共享价值不变 | 内核新增 `memberReferences`：成员键按引用解析（存在、可见、引用类型），成员值按该定义声明的值类型、范围与取值校验；新增支持 `Record` 字段形状。语义与原来等价（`pnpm phase2:demo` 摘要不变） |
 | 崩溃注入器载荷更新为阶段 1 收敛后的运行配置信封 | 注入器仍写 `extensions`/`definitions` 旧结构，`after-commit` 分支实际从未提交成功，导致阶段 1 回归用例假失败 | 阶段 1 回归恢复通过；不新增崩溃注入测试（计划 §4 要求既有验证保持原状） |
+| `SimulationOrchestrator` 改名为 `SimulationRunner`（`orchestrator.ts` → `runner.ts`，`OrchestratorOptions` → `RunnerOptions`） | 十二个阶段与顺序是常量，调用方只有 `runTick()`，没有任何可编排点；「编排」一词会让读者以为需要人工配置流程 | 纯改名：删除 `prerequisiteFor` 闭包后运行器只负责固定 Tick、唤醒 Service 与发布状态；`pnpm phase2:demo` 摘要不变 |
+| 删除身份／幂等／重入层：内核不再为每笔变化计算 `changeId`；`ChangeClaims`／`TimelineClaims`／`claimedChangeIds` 与四处 `claim()` 删除；存储层 `claimChange`／`consumed_effects`、`saveRunTrace`／`loadRunTrace`／`evaluation_traces` 删除 | 前提是「无并发、无重放，只需要最新 head 与显式存档」；重复请求已被「值未变不提交」「过程已建立不重建／不存在不结束」在更前面吸收，存储层那套幂等身份在生产代码里零调用 | 事件身份改为 Tick 内序号 `<timeline>/<tick>/change-N`（与既有过程事件同形）；拒绝汇报改为 `{ref, entityId, reason}`；实测摘要哈希完全不变（`5ec5abcd55189f17` / `72cd092710fe7fb5`），证明该层不承担行为；`phase-1-report` 记录的幂等表同步标注为已删除 |
+| 世界前提判断回到 `WorldService.actionPremises`；`influence-kind` 新增可选 `relation` 字段声明该影响改变的世界关系 | 原实现把「移动目的地必须是出口」写在内核闭包 `PrerequisiteCheck` 里，并且必须认识演示 ref `agentlife.demo/relocate`；抽象没有换来隔离，反而把内容知识吸进了内核 | `BodyService` 直接调用世界服务，世界只按自身关系词汇（`located-at`／`held-by`／`placed-on`）判断前提；内核不再出现任何演示 ref；摘要不变。`relation` 是内容可选字段，属同一系统版本内的词汇扩展（与属性改造同例） |
 
 ## 14. 阶段 3 输入
 

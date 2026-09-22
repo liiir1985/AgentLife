@@ -64,19 +64,6 @@ export const MIGRATIONS: readonly Migration[] = [
         slot INTEGER PRIMARY KEY CHECK(slot = 1),
         identity TEXT NOT NULL REFERENCES config_versions(identity)
       ) STRICT;
-      CREATE TABLE IF NOT EXISTS evaluation_traces (
-        id INTEGER PRIMARY KEY,
-        idempotency_key TEXT NOT NULL UNIQUE,
-        request_id TEXT NOT NULL,
-        config_identity TEXT NOT NULL,
-        trace_json TEXT NOT NULL CHECK(json_valid(trace_json))
-      ) STRICT;
-      CREATE TABLE IF NOT EXISTS consumed_effects (
-        effect_id TEXT PRIMARY KEY,
-        timeline_id TEXT NOT NULL REFERENCES timelines(timeline_id),
-        config_identity TEXT NOT NULL
-      ) STRICT;
-      CREATE INDEX IF NOT EXISTS evaluation_traces_request ON evaluation_traces(request_id);
     `,
   },
   {
@@ -131,7 +118,5 @@ export const STORE_TABLES: readonly string[] = [
   "phase_records",
   "config_versions",
   "current_config",
-  "evaluation_traces",
-  "consumed_effects",
   "simulation_saves",
 ];

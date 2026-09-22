@@ -9,6 +9,7 @@ import {
   actionSpec,
   bodyConfigSpec,
   checkValue,
+  influenceRelation,
   initialValues,
   modeAbilities,
   processSpec,
@@ -24,7 +25,7 @@ import {
   type ProjectionSources,
 } from "./projection.js";
 import type { ServiceRuntime, TickContext } from "./world-service.js";
-import { runIdOf } from "./world-service.js";
+import { WorldService, changesInOrder, processRequestsInOrder, runIdOf } from "./world-service.js";
 import type {
   ActionInstance,
   ActionPlan,
@@ -34,7 +35,9 @@ import type {
   BodyState,
   CharacterState,
   InfluenceOutcome,
+  RejectedChange,
   WorldInfluenceRequest,
+  WorldState,
 } from "./types.js";
 
 /**
@@ -68,7 +71,7 @@ export interface PlanAcceptance {
 export interface BodyCommit {
   readonly runtime: BodyRuntime;
   readonly applied: readonly StateChangeRequest[];
-  readonly rejected: readonly { readonly changeId: string; readonly reason: string }[];
+  readonly rejected: readonly RejectedChange[];
   readonly notes: readonly string[];
 }
 
@@ -77,15 +80,10 @@ export interface AdvanceResult extends BodyCommit {
   readonly processChanges: readonly ProcessChangeRequest[];
 }
 
-/** Body and world prerequisites an action must still satisfy before it starts. */
-export type PrerequisiteCheck = (
-  action: ActionInstance,
-) => { readonly ok: true } | { readonly ok: false; readonly reason: string };
-
 export class BodyService {
   constructor(
     private readonly runtime: ServiceRuntime,
-    private readonly claims: { claim(changeId: string): "claimed" | "duplicate" },
+    private readonly world: WorldService,
   ) {}
 
   /** One body instance per character that declares a body configuration. */
@@ -115,6 +113,24 @@ export class BodyService {
 
   actionSpecOf(actionRef: string): ActionSpec | undefined {
     return actionSpec(this.runtime.config, actionRef);
+  }
+
+  /**
+   * The world's answer for one action. An action whose declared influence changes
+   * a world relation needs that relation's premises; one that only names an entity
+   * to act on needs that entity to be an item. The world decides and the body
+   * simply passes the declared influence along.
+   */
+  private worldPremises(
+    state: WorldState,
+    action: ActionInstance,
+  ): { readonly ok: true } | { readonly ok: false; readonly reason: string } {
+    const spec = actionSpec(this.runtime.config, action.action);
+    if (spec === undefined) return { ok: false, reason: `unknown action ${action.action}` };
+    return this.world.actionPremises(state, action, {
+      changesWorld: spec.worldInfluence !== null,
+      relation: influenceRelation(this.runtime.config, spec.worldInfluence),
+    });
   }
 
   private actionOf(actions: readonly ActionInstance[], actionId: string): ActionInstance | undefined {
@@ -185,8 +201,8 @@ export class BodyService {
     runtime: BodyRuntime,
     characters: CharacterState,
     plan: ActionPlan,
+    world: WorldState,
     context: TickContext,
-    prerequisite: PrerequisiteCheck,
   ): PlanAcceptance {
     const fail = (reason: string): PlanAcceptance => ({
       runtime,
@@ -272,9 +288,9 @@ export class BodyService {
     const spec = actionSpec(this.runtime.config, first.action);
     if (spec === undefined) return fail(`unknown action ${first.action}`);
     const created = this.instanceOf(plan, first.action, context, reserved, first, "running");
-    if (!prerequisite(created).ok && plan.conflict !== "queue") {
-      const check = prerequisite(created);
-      if (!check.ok) return fail(check.reason);
+    if (plan.conflict !== "queue") {
+      const premises = this.worldPremises(world, created);
+      if (!premises.ok) return fail(premises.reason);
     }
     return {
       runtime: { body: runtime.body, actions: freeze([...actions, created]) },
@@ -321,12 +337,11 @@ export class BodyService {
     sources: ProjectionSources,
     characters: CharacterState,
     context: TickContext,
-    prerequisite: PrerequisiteCheck,
   ): AdvanceResult {
     let body = runtime.body;
     let actions = [...runtime.actions];
     const applied: StateChangeRequest[] = [];
-    const rejected: { changeId: string; reason: string }[] = [];
+    const rejected: RejectedChange[] = [];
     const notes: string[] = [];
     const processChanges: ProcessChangeRequest[] = [];
 
@@ -377,7 +392,7 @@ export class BodyService {
           action.resources,
           this.holding(action.entityId, actions).filter((other) => other.actionId !== action.actionId),
         );
-        const ready = prerequisite(action);
+        const ready = this.worldPremises(sources.world, action);
         if (conflicts.length > 0) continue;
         if (!ready.ok) {
           notes.push(`queued ${action.actionId} still blocked: ${ready.reason}`);
@@ -556,31 +571,42 @@ export class BodyService {
   ): BodyCommit {
     const bodies: Record<string, BodyRecord> = { ...runtime.body.bodies };
     const applied: StateChangeRequest[] = [];
-    const rejected: { changeId: string; reason: string }[] = [];
+    const rejected: RejectedChange[] = [];
     const notes: string[] = [];
-    for (const change of [...changes].sort((left, right) => (left.changeId < right.changeId ? -1 : 1))) {
+    for (const change of changesInOrder(changes)) {
       if (change.system !== "agentlife.body") {
-        rejected.push({ changeId: change.changeId, reason: `${change.stateRef} is not owned by the body system` });
+        rejected.push({
+          ref: change.stateRef,
+          entityId: change.entityId,
+          reason: `${change.stateRef} is not owned by the body system`,
+        });
         continue;
       }
       if (change.entityId === null || bodies[change.entityId] === undefined) {
-        rejected.push({ changeId: change.changeId, reason: `${String(change.entityId)} has no body instance` });
+        rejected.push({
+          ref: change.stateRef,
+          entityId: change.entityId,
+          reason: `${String(change.entityId)} has no body instance`,
+        });
         continue;
       }
       const shape = checkValue(this.runtime.config, change.stateRef, change.newValue);
       if (!shape.ok) {
-        rejected.push({ changeId: change.changeId, reason: shape.reason });
+        rejected.push({ ref: change.stateRef, entityId: change.entityId, reason: shape.reason });
         continue;
       }
       const staged = stageBodyChange(this.runtime.config, bodies, change);
       if (staged === undefined) {
-        rejected.push({ changeId: change.changeId, reason: `${change.stateRef} names no body state` });
+        rejected.push({
+          ref: change.stateRef,
+          entityId: change.entityId,
+          reason: `${change.stateRef} names no body state`,
+        });
         continue;
       }
-      // An identical value is not a change: it is neither claimed nor reported, so
-      // deterministic propagation can reach a fixpoint.
+      // An identical value is not a change: it is not reported, so deterministic
+      // propagation can reach a fixpoint.
       if (staged === bodies[change.entityId]) continue;
-      if (this.claims.claim(change.changeId) === "duplicate") continue;
       bodies[change.entityId] = staged;
       applied.push(change);
     }
@@ -601,21 +627,26 @@ export class BodyService {
     bodies: Readonly<Record<string, BodyRecord>>,
     requests: readonly ProcessChangeRequest[],
     context: TickContext,
-    rejected: { changeId: string; reason: string }[],
+    rejected: RejectedChange[],
     notes: string[],
   ): Readonly<Record<string, BodyRecord>> {
     let next: Record<string, BodyRecord> | undefined;
     const mutable = (): Record<string, BodyRecord> => (next ??= { ...bodies });
-    for (const request of [...requests].sort((left, right) => (left.changeId < right.changeId ? -1 : 1))) {
+    for (const request of processRequestsInOrder(requests)) {
       if (request.system !== "agentlife.body") continue;
       const spec = processSpec(this.runtime.systemIndex, request.processRef);
       if (spec === undefined) {
-        rejected.push({ changeId: request.changeId, reason: `unknown body process ${request.processRef}` });
+        rejected.push({
+          ref: request.processRef,
+          entityId: request.entityId,
+          reason: `unknown body process ${request.processRef}`,
+        });
         continue;
       }
       if (!spec.operations.includes(request.action)) {
         rejected.push({
-          changeId: request.changeId,
+          ref: request.processRef,
+          entityId: request.entityId,
           reason: `process ${request.processRef} does not allow ${request.action}`,
         });
         continue;
@@ -623,20 +654,24 @@ export class BodyService {
       const owner = request.entityId;
       const record = owner === null ? undefined : mutable()[owner];
       if (record === undefined) {
-        rejected.push({ changeId: request.changeId, reason: `${String(owner)} has no body instance` });
+        rejected.push({
+          ref: request.processRef,
+          entityId: request.entityId,
+          reason: `${String(owner)} has no body instance`,
+        });
         continue;
       }
       const existing = record.processes.find((process) => process.processRef === request.processRef);
       if (request.action === "establish") {
         if (existing !== undefined) continue;
-        if (this.claims.claim(request.changeId) === "duplicate") continue;
         const params: Record<string, SimpleValue> = {};
         let valid = true;
         for (const parameter of spec.parameters) {
           const value = request.params[parameter.name];
           if (value === undefined || typeof value !== parameter.valueType) {
             rejected.push({
-              changeId: request.changeId,
+              ref: request.processRef,
+              entityId: request.entityId,
               reason: `parameter ${parameter.name} must be a ${parameter.valueType}`,
             });
             valid = false;
@@ -656,11 +691,14 @@ export class BodyService {
         continue;
       }
       if (existing === undefined) {
-        rejected.push({ changeId: request.changeId, reason: `process ${request.processRef} is not established` });
+        rejected.push({
+          ref: request.processRef,
+          entityId: request.entityId,
+          reason: `process ${request.processRef} is not established`,
+        });
         continue;
       }
       if (request.action === "advance" || request.action === "pause") continue;
-      if (this.claims.claim(request.changeId) === "duplicate") continue;
       mutable()[owner as string] = {
         ...record,
         processes: Object.freeze(record.processes.filter((process) => process !== existing)),

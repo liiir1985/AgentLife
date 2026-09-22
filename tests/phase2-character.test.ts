@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { applyDemoPack, causeCodes, createRegistry } from "./helpers/demo-pack.js";
 import { localViewMembers } from "../src/simulation/config-view.js";
-import type { SimulationOrchestrator, TickResult } from "../src/simulation/orchestrator.js";
+import type { SimulationRunner, TickResult } from "../src/simulation/runner.js";
 import type { ActionPlan } from "../src/simulation/types.js";
 import {
   DEMO_COMPANION,
@@ -101,8 +101,8 @@ const RUNTIME_VIEW_KEYS = [
   "agentlife.world/placed-on",
 ];
 
-function run(orchestrator: SimulationOrchestrator, plans: readonly ActionPlan[] = []): TickResult {
-  const result = orchestrator.runTick({ plans });
+function run(runner: SimulationRunner, plans: readonly ActionPlan[] = []): TickResult {
+  const result = runner.runTick({ plans });
   expect(result.status).toBe("completed");
   return result;
 }
@@ -117,8 +117,8 @@ describe("CharacterService", () => {
   it("reads the capability tier, control source and main flag of every character from content", async () => {
     const sim = await createSimulationWith({ "characters/drifting-leaf.yaml": DYNAMIC_CHARACTER_SOURCE });
     try {
-      const state = sim.orchestrator.state();
-      const characters = sim.orchestrator.characters;
+      const state = sim.runner.state();
+      const characters = sim.runner.characters;
       const view = characters.managementView(state.characters);
 
       expect(view).toContainEqual(
@@ -148,8 +148,8 @@ describe("CharacterService", () => {
 
   it("creates every character running and pauses and resumes one through the service", async () => {
     const sim = await createSimulation();
-    const state = sim.orchestrator.state();
-    const characters = sim.orchestrator.characters;
+    const state = sim.runner.state();
+    const characters = sim.runner.characters;
 
     expect(characters.sorted(state.characters).map((record) => record.entityId)).toEqual([
       DEMO_COMPANION,
@@ -212,50 +212,50 @@ describe("CharacterService", () => {
 
   it("stops new plans when paused while the running action, the world process and other entities go on", async () => {
     const sim = await createSimulation();
-    const orchestrator = sim.orchestrator;
-    run(orchestrator, [testPlan("use-lamp", DEMO_PLAYER, "parallel", [{ action: USE, target: DEMO_LAMP }])]);
+    const runner = sim.runner;
+    run(runner, [testPlan("use-lamp", DEMO_PLAYER, "parallel", [{ action: USE, target: DEMO_LAMP }])]);
 
-    const paused = orchestrator.characters.pause(orchestrator.state().characters, DEMO_PLAYER);
-    expect(orchestrator.characters.acceptsNewPlans(paused, DEMO_PLAYER)).toBe(false);
+    const paused = runner.characters.pause(runner.state().characters, DEMO_PLAYER);
+    expect(runner.characters.acceptsNewPlans(paused, DEMO_PLAYER)).toBe(false);
     // Phase 2 has no management command, so the paused character state is handed
     // to the running simulation through the documented restore entry point.
-    orchestrator.load({ ...orchestrator.state(), characters: paused });
+    runner.load({ ...runner.state(), characters: paused });
 
     // Tick 2: the paused character may not start anything new, but the action it
     // already ran keeps advancing.
-    run(orchestrator, [testPlan("paused-say", DEMO_PLAYER, "parallel", [{ action: SAY }])]);
-    expect(lastAction(orchestrator, "paused-say")).toBeUndefined();
-    expect(lastAction(orchestrator, "use-lamp")?.stageTicks).toBe(1);
+    run(runner, [testPlan("paused-say", DEMO_PLAYER, "parallel", [{ action: SAY }])]);
+    expect(lastAction(runner, "paused-say")).toBeUndefined();
+    expect(lastAction(runner, "use-lamp")?.stageTicks).toBe(1);
 
     // Tick 3: the running action reaches its world impact and the world accepts it.
-    run(orchestrator);
-    expect(lastAction(orchestrator, "use-lamp")?.status).toBe("completed");
-    expect(worldOf(orchestrator).environment["lamp-state"]).toBe(1);
+    run(runner);
+    expect(lastAction(runner, "use-lamp")?.status).toBe("completed");
+    expect(worldOf(runner).environment["lamp-state"]).toBe(1);
 
     // Tick 4: the lamp glow process advances and the warden moves, both outside
     // the paused character.
-    run(orchestrator);
-    expect(worldOf(orchestrator).environment["light-level"]).toBe(520);
-    expect(positionOf(orchestrator, DEMO_WARDEN)).toBe(DEMO_KILN);
+    run(runner);
+    expect(worldOf(runner).environment["light-level"]).toBe(520);
+    expect(positionOf(runner, DEMO_WARDEN)).toBe(DEMO_KILN);
   });
 
   it("keeps the capability tier, control source and main flag out of the runtime views", async () => {
     const sim = await createSimulation();
-    const state = sim.orchestrator.state();
+    const state = sim.runner.state();
     const sources = { config: sim.config, world: state.world, characters: state.characters, body: state.body };
 
-    const projection = sim.orchestrator.world.projection(
+    const projection = sim.runner.world.projection(
       sources,
       [DEMO_PLAYER, DEMO_WARDEN, DEMO_ROPE],
       { kind: "agentlife.demo/hold", actor: DEMO_PLAYER, subject: DEMO_ROPE, destination: "", accepted: false },
       { [DEMO_PLAYER]: "actor", [DEMO_ROPE]: "subject" },
     );
-    const bodyProjection = sim.orchestrator.body.projection(sources, state.body, [DEMO_PLAYER], {
+    const bodyProjection = sim.runner.body.projection(sources, state.body, [DEMO_PLAYER], {
       entityId: DEMO_PLAYER,
     });
 
     // The classification is readable through the management view and nowhere else.
-    const management = sim.orchestrator.characters.managementView(state.characters);
+    const management = sim.runner.characters.managementView(state.characters);
     expect(management.map((entry) => entry.entityId)).toContain(DEMO_WARDEN);
     expect(fieldNames(management)).toContain("tier");
     expect(fieldNames(management)).toContain("main");

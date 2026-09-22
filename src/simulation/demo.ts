@@ -8,7 +8,7 @@ import { CoreRuntime, packInput, type PublishResult } from "../config/core-runti
 import type { RuntimeConfig } from "../config/config-builder.js";
 import { RuntimeStore } from "../storage/runtime-store.js";
 import { createSystemSpecs } from "../systems/index.js";
-import { SimulationOrchestrator } from "./orchestrator.js";
+import { SimulationRunner } from "./runner.js";
 import { checkSnapshot, decodeSnapshot, encodeSnapshot, snapshotOf, type SaveSnapshot } from "./save.js";
 import type { ActionPlan, ActionPolicy, ActionStep, SimulationState } from "./types.js";
 
@@ -146,11 +146,11 @@ export function digestOf(state: SimulationState): string {
   return hashId(semanticView(state)).slice(0, 16);
 }
 
-function runTicks(orchestrator: SimulationOrchestrator, from: number, count: number, lines: string[]): void {
+function runTicks(runner: SimulationRunner, from: number, count: number, lines: string[]): void {
   const scripted = script();
   for (let tick = from; tick < from + count; tick += 1) {
     const plans = scripted[tick] ?? [];
-    const result = orchestrator.runTick({ plans });
+    const result = runner.runTick({ plans });
     lines.push(`  continued tick ${tick} -> ${result.status}`);
     if (result.status !== "completed") break;
   }
@@ -220,12 +220,12 @@ export async function runDemoScenario(options: DemoOptions = {}): Promise<DemoRe
     `content         ${config.items.length} items, ${config.rules.length} rules, ${config.formulas.length} formulas`,
   );
 
-  const orchestrator = SimulationOrchestrator.create(core, { timelineId: "timeline-demo" });
+  const runner = SimulationRunner.create(core, { timelineId: "timeline-demo" });
   const scripted = script();
-  let savedState: SimulationState = orchestrator.state();
+  let savedState: SimulationState = runner.state();
   for (let tick = 1; tick <= ticks; tick += 1) {
     const plans = scripted[tick] ?? [];
-    const result = orchestrator.runTick({ plans });
+    const result = runner.runTick({ plans });
     if (plans.length > 0) lines.push(`tick ${tick}: ${plans.map((entry) => entry.planId).join(", ")}`);
     for (const outcome of result.summary.actionOutcomes) lines.push(`  ${outcome}`);
     for (const outcome of result.summary.influenceOutcomes)
@@ -234,19 +234,19 @@ export async function runDemoScenario(options: DemoOptions = {}): Promise<DemoRe
       lines.push(`tick ${tick} ended ${result.status}: ${result.summary.stages.at(-1)?.detail ?? ""}`);
       break;
     }
-    if (tick === saveAt) savedState = orchestrator.state();
+    if (tick === saveAt) savedState = runner.state();
   }
-  const stages = orchestrator.state().summary?.stages ?? [];
+  const stages = runner.state().summary?.stages ?? [];
   lines.push("");
   lines.push(`last tick stages: ${stages.map((stage) => `${stage.stage}=${stage.status}`).join(" ")}`);
   for (const stage of stages) lines.push(`  ${stage.stage.padEnd(18)} ${stage.status.padEnd(6)} ${stage.detail}`);
 
-  describe(lines, orchestrator.state());
-  const digest = digestOf(orchestrator.state());
+  describe(lines, runner.state());
+  const digest = digestOf(runner.state());
 
   // Continue the original timeline for a fixed number of ticks.
-  runTicks(orchestrator, ticks + 1, continueTicks, lines);
-  const continuedDigest = digestOf(orchestrator.state());
+  runTicks(runner, ticks + 1, continueTicks, lines);
+  const continuedDigest = digestOf(runner.state());
 
   // Save explicitly, then load that save into a fresh timeline and continue.
   const directory = mkdtempSync(join(tmpdir(), "agent-life-phase2-"));
@@ -280,7 +280,7 @@ export async function runDemoScenario(options: DemoOptions = {}): Promise<DemoRe
     saved = decoded.snapshot;
     const check = checkSnapshot(saved, config);
     if (!check.ok) throw new Error(`Save is not compatible with the current config: ${check.reason}`);
-    const restored = SimulationOrchestrator.create(core, { timelineId: "timeline-demo-restored" });
+    const restored = SimulationRunner.create(core, { timelineId: "timeline-demo-restored" });
     restored.load({ ...saved.state, timelineId: "timeline-demo-restored" });
     lines.push(`loaded save     tick ${saved.state.tick}, ${store.listSaves().length} save(s) in the store`);
     runTicks(restored, ticks + 1, continueTicks, lines);
@@ -307,7 +307,7 @@ export async function runDemoScenario(options: DemoOptions = {}): Promise<DemoRe
     digest,
     continuedDigest,
     loadedDigest,
-    state: orchestrator.state(),
+    state: runner.state(),
     saved,
     configId: config.configId,
   };

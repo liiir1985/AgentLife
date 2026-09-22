@@ -34,10 +34,9 @@
 - `StateInput`、`StateRef`
 - `RuntimeConfig`、`RuleRequest`、`RuleResult`、`RunTrace`
 - `StateChangeRequest`、`ProcessChangeRequest`
-- `changeId`、`configId`、`runId`、`stateVersion`
+- `configId`、`runId`、`stateVersion`
 - `WorldService`、`CharacterService`、`BodyService`
-- `SimulationOrchestrator`
-- `RuntimeStore.claimChange()`
+- `SimulationRunner`
 
 不得重新引入 `DomainExtension`、`CandidateEffect`、`Target`、`EvaluationResult`、`consumeEffect` 等旧公共名称。
 
@@ -447,7 +446,7 @@ BodyService 不根据属性名称增加隐藏默认规律。
 
 加载后不得重复选择或重复提交同一计划。
 
-## 11. P2.5：SimulationOrchestrator
+## 11. P2.5：SimulationRunner
 
 ### 11.1 十二阶段顺序
 
@@ -470,8 +469,8 @@ BodyService 不根据属性名称增加隐藏默认规律。
 
 - 只通过 `triggerIndex` 选择规则，禁止遍历所有规则。
 - 每一轮传播基于上一轮已提交状态构造新的最小 `StateInput`。
-- 变化按 System、实体 ID、StateRef、changeId 稳定排序。
-- 同一 changeId 在同一时间线只应用一次。
+- 变化按 System、实体 ID、StateRef 稳定排序；过程请求按 System、实体 ID、ProcessRef 稳定排序。
+- 目标值已经相同就不产生变化；过程已建立不重建、不存在不结束。重复请求因此自然被吸收，不需要额外身份。
 - 达到配置化传播上限仍未稳定时进入 `failed`，不发布半稳定 Tick。
 - 规则缺失时建立内存中的规则屏障，阶段 2 不调用规则生成 LLM。
 
@@ -564,7 +563,7 @@ listSaves()
 3. P2.2 CharacterService。
 4. P2.3 BodyService。
 5. P2.4 行为树生产适配。
-6. P2.5 SimulationOrchestrator。
+6. P2.5 SimulationRunner。
 7. P2.6 显式保存与加载。
 8. P2.7 演示内容、演示运行器和阶段报告。
 

@@ -238,11 +238,20 @@ export interface InfluenceOutcome {
   readonly changes: number;
 }
 
+/** One refused request, reported in readable terms instead of an opaque identity. */
+export interface RejectedChange {
+  /** The state a change targeted, or the process a process request named. */
+  readonly ref: string;
+  /** The entity the request belonged to; `null` for world-level state. */
+  readonly entityId: string | null;
+  readonly reason: string;
+}
+
 /** The result of one atomic world commit attempt. */
 export interface WorldCommit {
   readonly state: WorldState;
   readonly applied: readonly StateChangeRequest[];
-  readonly rejected: readonly { readonly changeId: string; readonly reason: string }[];
+  readonly rejected: readonly RejectedChange[];
   readonly events: readonly WorldEvent[];
 }
 
@@ -260,7 +269,7 @@ export interface TickFailure {
   readonly detail: string;
 }
 
-/** One entry the orchestrator must wake. */
+/** One entry the runner must wake. */
 export interface ActivityEntry {
   readonly entryId: string;
   readonly category: "entity" | "world-process" | "body-process";
@@ -301,8 +310,6 @@ export interface SimulationState {
   readonly actions: readonly ActionInstance[];
   readonly barrier: RuleBarrier | null;
   readonly failure: TickFailure | null;
-  /** Change identities already applied on this timeline. */
-  readonly claimedChangeIds: readonly string[];
   readonly summary: TickSummary | null;
 }
 

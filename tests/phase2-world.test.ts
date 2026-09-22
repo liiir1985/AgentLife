@@ -29,7 +29,7 @@ const MISSING_ENTITY = "agentlife.demo/nobody";
 const DEMO_ORCHARD = "agentlife.demo/orchard";
 
 function sourcesOf(sim: DemoSimulation, world: WorldState): ProjectionSources {
-  const state = sim.orchestrator.state();
+  const state = sim.runner.state();
   return { config: sim.config, world, characters: state.characters, body: state.body };
 }
 
@@ -57,19 +57,18 @@ function influenceAgainst(
 /** One hand-built world state change, as a rule result would carry it. */
 function worldChange(
   baseVersion: string,
-  changeId: string,
+  label: string,
   entityId: string | null,
   stateRef: string,
   newValue: SimpleValue,
 ): StateChangeRequest {
   return {
-    changeId,
     entityId,
     stateRef,
     system: "agentlife.world",
     newValue,
     sourceRules: ["test/rule"],
-    runId: `test/${changeId}`,
+    runId: `test/${label}`,
     baseVersion,
     simTime: { tick: 1, seconds: 0 },
   };
@@ -83,8 +82,8 @@ function commitRequest(world: WorldService, state: WorldState, changes: readonly
 describe("WorldService", () => {
   it("takes an item its content marks portable and refuses one it does not", async () => {
     const sim = await createSimulation();
-    const world = sim.orchestrator.world;
-    const initial = sim.orchestrator.state().world;
+    const world = sim.runner.world;
+    const initial = sim.runner.state().world;
 
     const taken = world.adjudicate(
       sourcesOf(sim, initial),
@@ -109,8 +108,8 @@ describe("WorldService", () => {
 
   it("places an item on a target its content marks as support and refuses one it does not", async () => {
     const sim = await createSimulation();
-    const world = sim.orchestrator.world;
-    const initial = sim.orchestrator.state().world;
+    const world = sim.runner.world;
+    const initial = sim.runner.state().world;
     const held = world.adjudicate(
       sourcesOf(sim, initial),
       influenceAgainst(initial, "take-rope", HOLD, DEMO_PLAYER, DEMO_ROPE),
@@ -140,8 +139,8 @@ describe("WorldService", () => {
 
   it("operates an item its content marks operable and refuses one it does not", async () => {
     const sim = await createSimulation();
-    const world = sim.orchestrator.world;
-    const initial = sim.orchestrator.state().world;
+    const world = sim.runner.world;
+    const initial = sim.runner.state().world;
 
     const onRope = world.adjudicate(
       sourcesOf(sim, initial),
@@ -165,8 +164,8 @@ describe("WorldService", () => {
 
   it("never lets one item be taken a second time while someone carries it", async () => {
     const sim = await createSimulation();
-    const world = sim.orchestrator.world;
-    const initial = sim.orchestrator.state().world;
+    const world = sim.runner.world;
+    const initial = sim.runner.state().world;
     const held = world.adjudicate(
       sourcesOf(sim, initial),
       influenceAgainst(initial, "take-rope", HOLD, DEMO_PLAYER, DEMO_ROPE),
@@ -190,8 +189,8 @@ describe("WorldService", () => {
 
   it("refuses to put an item on a support when nobody carries it", async () => {
     const sim = await createSimulation();
-    const world = sim.orchestrator.world;
-    const initial = sim.orchestrator.state().world;
+    const world = sim.runner.world;
+    const initial = sim.runner.state().world;
     expect(initial.entities[DEMO_ROPE]?.heldBy).toBeNull();
 
     const placed = world.adjudicate(
@@ -208,8 +207,8 @@ describe("WorldService", () => {
 
   it("commits no part of a batch whose change breaks a relation invariant", async () => {
     const sim = await createSimulation();
-    const world = sim.orchestrator.world;
-    const initial = sim.orchestrator.state().world;
+    const world = sim.runner.world;
+    const initial = sim.runner.state().world;
 
     const result = commitRequest(world, initial, [
       worldChange(initial.version, "change-lamp", DEMO_LAMP, HELD_BY, DEMO_PLAYER),
@@ -226,8 +225,8 @@ describe("WorldService", () => {
 
   it("commits no part of a batch whose change references an entity the world does not know", async () => {
     const sim = await createSimulation();
-    const world = sim.orchestrator.world;
-    const initial = sim.orchestrator.state().world;
+    const world = sim.runner.world;
+    const initial = sim.runner.state().world;
 
     const result = commitRequest(world, initial, [
       worldChange(initial.version, "change-lamp", DEMO_LAMP, HELD_BY, DEMO_PLAYER),
@@ -242,8 +241,8 @@ describe("WorldService", () => {
 
   it("commits no part of a batch in which an item would hold itself", async () => {
     const sim = await createSimulation();
-    const world = sim.orchestrator.world;
-    const initial = sim.orchestrator.state().world;
+    const world = sim.runner.world;
+    const initial = sim.runner.state().world;
 
     const result = commitRequest(world, initial, [
       worldChange(initial.version, "change-lamp", DEMO_LAMP, HELD_BY, DEMO_PLAYER),
@@ -258,8 +257,8 @@ describe("WorldService", () => {
 
   it("commits no part of a batch in which an item would be placed on itself", async () => {
     const sim = await createSimulation();
-    const world = sim.orchestrator.world;
-    const initial = sim.orchestrator.state().world;
+    const world = sim.runner.world;
+    const initial = sim.runner.state().world;
 
     // Nobody carries the rope, so it cannot support itself: the batch is refused
     // and the unrelated change of the lamp must stay out of the world as well.
@@ -279,8 +278,8 @@ describe("WorldService", () => {
     // replaces the others, so these two cases are asserted on the state the guard
     // must refuse rather than on a request that could build it.
     const sim = await createSimulation();
-    const world = sim.orchestrator.world;
-    const initial = sim.orchestrator.state().world;
+    const world = sim.runner.world;
+    const initial = sim.runner.state().world;
     const rope = initial.entities[DEMO_ROPE];
     const bench = initial.entities[DEMO_BENCH];
     const lamp = initial.entities[DEMO_LAMP];
@@ -309,8 +308,8 @@ describe("WorldService", () => {
 
   it("moves a character to a declared exit and records the world event", async () => {
     const sim = await createSimulation();
-    const world = sim.orchestrator.world;
-    const initial = sim.orchestrator.state().world;
+    const world = sim.runner.world;
+    const initial = sim.runner.state().world;
 
     const moved = world.adjudicate(
       sourcesOf(sim, initial),
@@ -328,8 +327,8 @@ describe("WorldService", () => {
 
   it("refuses a move whose destination is not an exit of the place the actor is in", async () => {
     const sim = await createSimulation();
-    const world = sim.orchestrator.world;
-    const initial = sim.orchestrator.state().world;
+    const world = sim.runner.world;
+    const initial = sim.runner.state().world;
     const moved = world.adjudicate(
       sourcesOf(sim, initial),
       influenceAgainst(initial, "move-out", RELOCATE, DEMO_PLAYER, DEMO_PLAYER, DEMO_KILN),
@@ -352,8 +351,8 @@ describe("WorldService", () => {
 
   it("refuses a request formed against an earlier world version without touching the state", async () => {
     const sim = await createSimulation();
-    const world = sim.orchestrator.world;
-    const initial = sim.orchestrator.state().world;
+    const world = sim.runner.world;
+    const initial = sim.runner.state().world;
     const held = world.adjudicate(
       sourcesOf(sim, initial),
       influenceAgainst(initial, "take-rope", HOLD, DEMO_PLAYER, DEMO_ROPE),

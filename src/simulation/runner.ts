@@ -5,7 +5,7 @@ import type { CoreRuntime } from "../config/core-runtime.js";
 import type { ProcessChangeRequest, RuleResult, StateChangeRequest } from "../config/rule-engine.js";
 import type { SystemIndex } from "../config/system-index.js";
 import type { SimpleValue } from "../config/value-expr.js";
-import { BodyService, type BodyRuntime, type PrerequisiteCheck } from "./body-service.js";
+import { BodyService, type BodyRuntime } from "./body-service.js";
 import { CharacterService } from "./character-service.js";
 import {
   BODY_ACTIVITY,
@@ -23,7 +23,6 @@ import {
   TICK_STAGES,
   NO_OP_STAGES,
   stateVersionOf,
-  type ActionInstance,
   type ActionPlan,
   type ActivityState,
   type InfluenceOutcome,
@@ -36,10 +35,10 @@ import {
   type TickSummary,
   type WorldState,
 } from "./types.js";
-import { WorldService, type ChangeClaims, type ServiceRuntime, type TickContext } from "./world-service.js";
+import { WorldService, type ServiceRuntime, type TickContext } from "./world-service.js";
 
 /**
- * The simulation orchestrator: the only owner of the clock, the tick and the
+ * The simulation runner: the only owner of the clock, the tick and the
  * barriers.
  *
  * One tick executes twelve fixed stages in order. The first eleven stages either
@@ -59,10 +58,9 @@ export interface TickResult {
   readonly summary: TickSummary;
 }
 
-export interface OrchestratorOptions {
+export interface RunnerOptions {
   readonly timelineId: string;
   readonly settings?: Partial<SimulationSettings>;
-  readonly claims?: ChangeClaims;
 }
 
 const DEFAULT_SETTINGS: SimulationSettings = Object.freeze({
@@ -71,29 +69,9 @@ const DEFAULT_SETTINGS: SimulationSettings = Object.freeze({
   maxEvents: 256,
 });
 
-/** Change identities applied on this timeline, restored with a loaded save. */
-class TimelineClaims implements ChangeClaims {
-  private readonly claimed = new Set<string>();
-
-  constructor(seeded: readonly string[] = []) {
-    for (const changeId of seeded) this.claimed.add(changeId);
-  }
-
-  claim(changeId: string): "claimed" | "duplicate" {
-    if (this.claimed.has(changeId)) return "duplicate";
-    this.claimed.add(changeId);
-    return "claimed";
-  }
-
-  ids(): readonly string[] {
-    return [...this.claimed].sort();
-  }
-}
-
-export class SimulationOrchestrator {
+export class SimulationRunner {
   private readonly runtime: ServiceRuntime;
   private readonly settings: SimulationSettings;
-  private claims: TimelineClaims;
   private readonly adapters = new Map<string, BehaviorTreeAdapter>();
   private current: SimulationState;
 
@@ -102,7 +80,7 @@ export class SimulationOrchestrator {
     readonly characters: CharacterService,
     readonly world: WorldService,
     readonly body: BodyService,
-    options: OrchestratorOptions,
+    options: RunnerOptions,
     private readonly systemIndex: SystemIndex,
   ) {
     const config = this.requireConfig();
@@ -112,7 +90,6 @@ export class SimulationOrchestrator {
       systemIndex,
       runRules: (request) => this.core.runRules(request),
     };
-    this.claims = (options.claims as TimelineClaims | undefined) ?? new TimelineClaims();
     const characterState = characters.initialize();
     const worldState = world.initialize(
       characters.sorted(characterState).map((character) => ({
@@ -137,25 +114,19 @@ export class SimulationOrchestrator {
       actions: Object.freeze([]),
       barrier: null,
       failure: null,
-      claimedChangeIds: Object.freeze([]),
       summary: null,
     });
   }
 
-  static create(core: CoreRuntime, options: OrchestratorOptions): SimulationOrchestrator {
+  static create(core: CoreRuntime, options: RunnerOptions): SimulationRunner {
     const config = core.current();
     if (config === undefined) throw new Error("No runtime config is published");
     const systemIndex = core.systemIndex();
     const settings = Object.freeze({ ...DEFAULT_SETTINGS, ...(options.settings ?? {}) });
-    const claims = (options.claims as TimelineClaims | undefined) ?? new TimelineClaims();
     const characters = new CharacterService(config);
-    const world = new WorldService(
-      { config, systemIndex, runRules: (request) => core.runRules(request) },
-      settings,
-      claims,
-    );
-    const body = new BodyService({ config, systemIndex, runRules: (request) => core.runRules(request) }, claims);
-    return new SimulationOrchestrator(core, characters, world, body, { ...options, claims }, systemIndex);
+    const world = new WorldService({ config, systemIndex, runRules: (request) => core.runRules(request) }, settings);
+    const body = new BodyService({ config, systemIndex, runRules: (request) => core.runRules(request) }, world);
+    return new SimulationRunner(core, characters, world, body, options, systemIndex);
   }
 
   private requireConfig(): RuntimeConfig {
@@ -198,13 +169,7 @@ export class SimulationOrchestrator {
     // 1. Fix the tick identity and the plan inputs of this tick.
     const fixedPlans = [...(input.plans ?? [])];
     for (const plan of fixedPlans) {
-      const attempt = this.body.acceptPlan(
-        bodyRuntime,
-        this.current.characters,
-        plan,
-        context,
-        this.prerequisiteFor(world, bodyRuntime),
-      );
+      const attempt = this.body.acceptPlan(bodyRuntime, this.current.characters, plan, world, context);
       bodyRuntime = attempt.runtime;
       actionOutcomes.push(`${attempt.outcome.status} ${plan.planId}: ${attempt.outcome.reason}`);
     }
@@ -235,13 +200,7 @@ export class SimulationOrchestrator {
     });
     const worldProcesses = this.world.advanceProcesses(sourcesFor(), context);
     world = worldProcesses.state;
-    const advanced = this.body.advance(
-      bodyRuntime,
-      sourcesFor(),
-      this.current.characters,
-      context,
-      this.prerequisiteFor(world, bodyRuntime),
-    );
+    const advanced = this.body.advance(bodyRuntime, sourcesFor(), this.current.characters, context);
     bodyRuntime = advanced.runtime;
     actionOutcomes.push(...advanced.notes);
     let changedRefs = [...worldProcesses.applied, ...advanced.applied].map((change) => change.stateRef);
@@ -371,7 +330,6 @@ export class SimulationOrchestrator {
       actions: bodyRuntime.actions,
       barrier,
       failure,
-      claimedChangeIds: Object.freeze(this.claims.ids()),
     };
     const runMode: RunMode =
       failure !== null ? "failed" : barrier !== null ? "barrier" : this.idle(nextState) ? "idle" : "single-step";
@@ -400,7 +358,6 @@ export class SimulationOrchestrator {
     const config = this.requireConfig();
     if (state.configId !== config.configId)
       throw new Error(`save refers to config ${state.configId}, the runtime publishes ${config.configId}`);
-    this.claims = new TimelineClaims(state.claimedChangeIds);
     this.adapters.clear();
     this.current = Object.freeze({ ...state, runMode: "single-step", summary: state.summary });
   }
@@ -447,34 +404,6 @@ export class SimulationOrchestrator {
 
   private behaviourOwners(): readonly string[] {
     return this.characters.behaviorOwners(this.current.characters).map((character) => character.entityId);
-  }
-
-  private prerequisiteFor(world: WorldState, runtime: BodyRuntime): PrerequisiteCheck {
-    return (action: ActionInstance) => {
-      const actor = world.entities[action.entityId];
-      if (actor === undefined) return { ok: false, reason: `${action.entityId} is not in the world` };
-      const spec = this.body.actionSpecOf(action.action);
-      if (spec === undefined) return { ok: false, reason: `unknown action ${action.action}` };
-      if (spec.worldInfluence === "agentlife.demo/relocate") {
-        const destination = action.destination;
-        if (destination === null) return { ok: false, reason: "the move names no destination" };
-        if (world.entities[destination]?.kind !== "location")
-          return { ok: false, reason: `${destination} is not a place` };
-        const from = actor.locatedAt;
-        if (from !== null && from !== destination) {
-          const exits = exitsOf(this.runtime.config, from);
-          if (!exits.includes(destination)) return { ok: false, reason: `${destination} is not an exit of ${from}` };
-        }
-        return { ok: true };
-      }
-      if (spec.worldInfluence !== null && action.target !== null) {
-        const target = world.entities[action.target];
-        if (target === undefined) return { ok: false, reason: `${action.target} is not in the world` };
-        if (target.kind !== "item") return { ok: false, reason: `${action.target} is not an item` };
-      }
-      void runtime;
-      return { ok: true };
-    };
   }
 
   private runRulesFor(
@@ -590,13 +519,7 @@ export class SimulationOrchestrator {
         conflict: "queue",
         steps,
       };
-      const acceptance = this.body.acceptPlan(
-        body,
-        this.current.characters,
-        plan,
-        context,
-        this.prerequisiteFor(world, body),
-      );
+      const acceptance = this.body.acceptPlan(body, this.current.characters, plan, world, context);
       body = acceptance.runtime;
       adapter.bindPlan(plan.planId, context.tick + tree.decisionCooldown);
       notes.push(
@@ -778,12 +701,6 @@ function activityOf(runtime: BodyRuntime, entityId: string): { action: string; s
   if (action === undefined) return IDLE_ACTIVITY;
   const spec = action.action;
   return { action: spec, stage: String(action.stageIndex), status: action.status };
-}
-
-function exitsOf(config: RuntimeConfig, locationRef: string): readonly string[] {
-  const item = config.items.find((candidate) => candidate.ref === locationRef);
-  const exits = item?.values["exits"];
-  return Array.isArray(exits) ? exits.filter((entry): entry is string => typeof entry === "string") : [];
 }
 
 export { TICK_STAGES, IDLE_ACTIVITY, stageSummary };

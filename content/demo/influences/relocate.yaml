@@ -4,3 +4,4 @@ public: true
 fields:
   name: 移动
   description: 当事人从一个地点移动到另一个地点
+  relation: located-at

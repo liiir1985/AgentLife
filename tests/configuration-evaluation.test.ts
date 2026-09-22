@@ -99,7 +99,6 @@ describe("deterministic evaluation", () => {
         (change) => change.stateRef === "agentlife.body/cognitive-participation",
       );
       expect(sameValueA?.newValue).toBe(sameValueZ?.newValue);
-      expect(sameValueA?.changeId).not.toBe(sameValueZ?.changeId);
     } finally {
       removeDirectory(directory);
     }
@@ -576,7 +575,6 @@ changes:
       expect(evaluated.status).toBe("changes");
       expect(entityTrace(evaluated).processChanges).toEqual([
         {
-          changeId: expect.any(String),
           entityId: "agentlife.demo/companion",
           processRef: "test.process/recovery",
           system: "test.process",
@@ -587,7 +585,6 @@ changes:
       ]);
       expect(evaluated.trace.shared.processChanges).toEqual([
         {
-          changeId: expect.any(String),
           entityId: null,
           processRef: "test.process/global-recovery",
           system: "test.process",
@@ -597,7 +594,7 @@ changes:
         },
       ]);
       const again = registry.runRules(demoRequest("agentlife.body/tick-elapsed", "process"));
-      expect(entityTrace(again).processChanges[0]?.changeId).toBe(entityTrace(evaluated).processChanges[0]?.changeId);
+      expect(entityTrace(again).processChanges).toEqual(entityTrace(evaluated).processChanges);
     });
   });
 

@@ -14,9 +14,9 @@ import { currentMigrationLevel } from "./migrations.js";
 /**
  * Runtime store: the durable side of the configuration infrastructure.
  *
- * It owns the current runtime config version, the version history, evaluation
- * traces and the identities of effects that were already consumed, and it
- * refuses to continue a restore whose configuration version is missing.
+ * It owns the current runtime config version and its version history, together
+ * with the explicit simulation saves, and it refuses to continue a restore whose
+ * configuration version is missing.
  */
 
 export const configs = sqliteTable("config_versions", {
@@ -29,20 +29,6 @@ export const configs = sqliteTable("config_versions", {
 export const currentConfig = sqliteTable("current_config", {
   slot: integer("slot").primaryKey(),
   identity: text("identity").notNull(),
-});
-
-export const runTraces = sqliteTable("evaluation_traces", {
-  id: integer("id").primaryKey(),
-  idempotencyKey: text("idempotency_key").notNull(),
-  requestId: text("request_id").notNull(),
-  configIdentity: text("config_identity").notNull(),
-  traceJson: text("trace_json").notNull(),
-});
-
-export const claimedChanges = sqliteTable("consumed_effects", {
-  effectId: text("effect_id").primaryKey(),
-  timelineId: text("timeline_id").notNull(),
-  configIdentity: text("config_identity").notNull(),
 });
 
 export const RUNTIME_CONFIG_PAYLOAD_VERSION = "1";
@@ -106,11 +92,7 @@ export interface StoredRuntimeConfig {
   readonly document: unknown;
 }
 
-/** Tables owned by the runtime store itself, as opposed to the stage 0 probe. */
-export type StoreTable = "config_versions" | "current_config" | "evaluation_traces" | "consumed_effects";
-
 export type SaveResult = "committed" | "duplicate";
-export type ClaimResult = "claimed" | "duplicate";
 
 export type RestoreCheck =
   { readonly ok: true } | { readonly ok: false; readonly reason: "missing-config"; readonly message: string };
@@ -123,13 +105,6 @@ export class RuntimeStore extends RuntimeStoreProbe {
 
   migrationLevel(): number {
     return currentMigrationLevel(this.sqlite);
-  }
-
-  /** Row count of a store table, used as the observable state fingerprint. */
-  countStored(table: StoreTable): number {
-    const row = this.sqlite.prepare(`SELECT count(*) AS value FROM ${table}`).get();
-    const value = row?.["value"];
-    return typeof value === "number" ? value : Number(value ?? 0);
   }
 
   /**
@@ -245,61 +220,6 @@ export class RuntimeStore extends RuntimeStoreProbe {
         message: `Runtime config version ${configId} is missing from the store`,
       };
     return { ok: true };
-  }
-
-  /** Stores one evaluation trace under an idempotency key. */
-  saveRunTrace(
-    entry: {
-      readonly runId: string;
-      readonly configId: string;
-      readonly trace: unknown;
-    },
-    idempotencyKey: string,
-    failurePoint?: FailurePoint,
-  ): SaveResult {
-    if (failurePoint === "before-transaction") throw new Error("Injected failure before transaction");
-    const outcome = this.db.transaction((tx) => {
-      const inserted = tx
-        .insert(runTraces)
-        .values({
-          idempotencyKey,
-          requestId: entry.runId,
-          configIdentity: entry.configId,
-          traceJson: JSON.stringify(entry.trace),
-        })
-        .onConflictDoNothing()
-        .run();
-      if (failurePoint === "inside-transaction") throw new Error("Injected failure inside transaction");
-      return inserted.changes === 0 ? ("duplicate" as const) : ("committed" as const);
-    });
-    if (failurePoint === "after-commit") throw new Error("Injected failure after commit");
-    return outcome;
-  }
-
-  loadRunTrace(idempotencyKey: string): unknown | undefined {
-    const row = this.db
-      .select({ traceJson: runTraces.traceJson })
-      .from(runTraces)
-      .where(eq(runTraces.idempotencyKey, idempotencyKey))
-      .get();
-    if (row === undefined) return undefined;
-    return JSON.parse(row.traceJson) as unknown;
-  }
-
-  /** Claims a candidate effect for a timeline; the second claim is a duplicate. */
-  claimChange(changeId: string, timelineId: string, configId: string, failurePoint?: FailurePoint): ClaimResult {
-    if (failurePoint === "before-transaction") throw new Error("Injected failure before transaction");
-    const outcome = this.db.transaction((tx) => {
-      const inserted = tx
-        .insert(claimedChanges)
-        .values({ effectId: changeId, timelineId, configIdentity: configId })
-        .onConflictDoNothing()
-        .run();
-      if (failurePoint === "inside-transaction") throw new Error("Injected failure inside transaction");
-      return inserted.changes === 0 ? ("duplicate" as const) : ("claimed" as const);
-    });
-    if (failurePoint === "after-commit") throw new Error("Injected failure after commit");
-    return outcome;
   }
 
   /**

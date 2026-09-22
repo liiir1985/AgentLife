@@ -133,7 +133,7 @@ RuleRequest
 
 RuleEngine 不读取机器时钟、不使用随机数、不访问网络、不读取未声明状态。影响结果的所有数据都来自固定的 `RuntimeConfig` 和显式的 `RuleRequest`。
 
-规则、公式、状态引用、来源规则和实体 ID 都按稳定顺序处理。因此同一配置和同一输入会产生相同结果、变化 ID 与追踪；调用方传入实体的顺序不会改变结果。
+规则、公式、状态引用、来源规则和实体 ID 都按稳定顺序处理。因此同一配置和同一输入会产生相同结果、相同变化顺序与追踪；调用方传入实体的顺序不会改变结果。
 
 ## 6. 变化请求不是已经发生的状态
 
@@ -141,7 +141,6 @@ RuleEngine 不读取机器时钟、不使用随机数、不访问网络、不读
 
 ```ts
 interface StateChangeRequest {
-  changeId: string;
   entityId: string | null;
   stateRef: string;
   system: string;

@@ -175,7 +175,7 @@ embedding 记录只需包含记忆 ID、提供器、模型和向量数据。PoC 
 * `PerceptionService`：客观材料到观察者私有观察的转换。
 * `MemoryService`：Working、Recent、Long-term Memory、档案和检索。
 * `CognitionService`：注意、理解、疑问、意图、决定和等待边界。
-* `SimulationOrchestrator`：唯一时钟、Tick、屏障和运行模式。
+* `SimulationRunner`：唯一时钟、Tick、屏障和运行模式。
 * `AgentRuntime`：Pi Agent、模型供应商、流式输出和取消。
 * `TerminalApplication`：TUI 组合、用户输入和管理视图。
 * `RuntimeStore`：SQLite 存档、事件、记忆和诊断。

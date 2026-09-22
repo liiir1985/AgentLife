@@ -104,7 +104,6 @@ configId: string;
 contentId: string;
 systemId: string;
 ruleId: string;
-changeId: string;
 
 stateRef: string;
 formulaRef: string;
@@ -136,7 +135,6 @@ interface RuleResult {
 
 ```ts
 interface StateChangeRequest {
-  changeId: string;
   system: string;
   stateRef: string;
   newValue: SimpleValue;
@@ -157,14 +155,13 @@ interface StateChangeRequest {
 | `RuleCatalog` | 规则可读写状态的类型目录 |
 | `CoreRuntime` | 当前阶段的统一门面 |
 | `ConfigStore` | 保存和恢复运行配置的端口 |
-| `RuntimeStore` | 配置、运行追踪和变化认领的持久化实现 |
+| `RuntimeStore` | 运行配置版本与显式存档的持久化实现 |
 
 存储接口使用：
 
 ```text
 saveConfig / currentConfig / loadConfig
-saveRunTrace / loadRunTrace
-claimChange
+saveSimulation / loadSimulation / listSaves
 ```
 
 ## 8. 旧名称迁移表

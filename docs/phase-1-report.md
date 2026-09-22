@@ -202,7 +202,7 @@ entities:
     agentlife.body/channels: { vision.available: true, vision.efficiency: 0.8 }
 ```
 
-身体结果分别为两个实体生成，环境结果只生成一份共享变化；相同业务值在不同实体上具有不同 `changeId`。
+身体结果分别为两个实体生成，环境结果只生成一份共享变化；两个实体的相同业务值各自产生一份变化。
 
 | 触发器 | 选中规则 | 组合 | 状态变化请求 |
 | --- | --- | --- | --- |
@@ -227,12 +227,12 @@ SQLite 迁移（`PRAGMA user_version`，每个迁移独立事务）：
 | 版本 | 内容 |
 | --- | --- |
 | 1 | 阶段 0 的建表（timelines、payloads、snapshots、idempotency_commits、phase_records）原样收编为迁移，阶段 0 报告与测试不受影响 |
-| 2 | `config_versions`（identity PK、namespace、pack_version、document_json）、`current_config`（单槽位外键）、`evaluation_traces`（幂等键唯一）、`consumed_effects`（effect_id 主键 + timeline + config identity） |
+| 2 | `config_versions`（identity PK、namespace、pack_version、document_json）、`current_config`（单槽位外键） |
 
 - 运行配置文档以版本化 JSON 载荷（`schemaVersion 1` / `type runtime-config`）保存，写入与读取都按信封 Schema 校验；同一 identity 写入不同内容直接抛错（§5.2 「相同版本标识对应不同完整内容视为完整性错误」）。
 - 崩溃注入（`config-crash-worker.ts`）：`before-transaction` / `inside-transaction` 后当前配置仍为旧版本；`after-commit`（退出码 3）后为完整新版本，版本历史只多一条，不存在半生效状态。
 - 恢复核对：`checkRestore(identity)` 在配置版本缺失时阻止继续；`CoreRuntime.restore(identity)` 用存储的文档重建运行配置并要求**重建结果的身份与保存的身份完全一致**，否则 `config-unavailable`——不会静默替换成另一份配置（§15.2）。
-- 幂等：`evaluation_traces` 按幂等键去重；`consumeEffect` 第二次返回 `duplicate`，保证已提交效果不会被重复执行（§15.2）。
+- 幂等（阶段 2 已删除）：本阶段的 `evaluation_traces` 幂等键与 `consumeEffect`／`claimChange` 第二次返回 `duplicate` 已随身份层一并移除；确定性改由「值未变不提交 + 版本前置条件 + 存档校验」保证，理由与证据见 `docs/phase-2-report.md` 偏差表。
 
 ## 11. 验证
 

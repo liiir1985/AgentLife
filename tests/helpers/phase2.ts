@@ -1,7 +1,7 @@
 import type { RuntimeConfig } from "../../src/config/config-builder.js";
 import { CoreRuntime, packInput, type PublishResult } from "../../src/config/core-runtime.js";
 import { ContentPackLoader } from "../../src/content/content-pack-loader.js";
-import { SimulationOrchestrator } from "../../src/simulation/orchestrator.js";
+import { SimulationRunner } from "../../src/simulation/runner.js";
 import type { SimulationSettings } from "../../src/simulation/types.js";
 import type { SystemSpec } from "../../src/config/system-spec.js";
 import { createSystemSpecs } from "../../src/systems/index.js";
@@ -11,7 +11,7 @@ import { copyDemoPack, loadPack, removeDirectory } from "./demo-pack.js";
  * Phase 2 test helpers.
  *
  * Every phase 2 case starts from the real demo content pack: a service or the
- * orchestrator is only ever exercised through content that actually passed the
+ * runner is only ever exercised through content that actually passed the
  * seven stage configuration pipeline.
  */
 
@@ -33,7 +33,7 @@ const PHASE2_SETTINGS: SimulationSettings = Object.freeze({
 export interface DemoSimulation {
   readonly core: CoreRuntime;
   readonly config: RuntimeConfig;
-  readonly orchestrator: SimulationOrchestrator;
+  readonly runner: SimulationRunner;
 }
 
 function buildRegistry(systems: readonly SystemSpec[] = createSystemSpecs()): CoreRuntime {
@@ -88,7 +88,7 @@ export async function createSimulation(options: SimulationOptions = {}): Promise
   return {
     core,
     config,
-    orchestrator: SimulationOrchestrator.create(core, {
+    runner: SimulationRunner.create(core, {
       timelineId: options.timelineId ?? "timeline-test",
       settings: { ...PHASE2_SETTINGS, ...(options.settings ?? {}) },
     }),
@@ -105,7 +105,7 @@ export async function createSimulationWith(
     core,
     config,
     directory,
-    orchestrator: SimulationOrchestrator.create(core, {
+    runner: SimulationRunner.create(core, {
       timelineId: options.timelineId ?? "timeline-test",
       settings: { ...PHASE2_SETTINGS, ...(options.settings ?? {}) },
     }),
@@ -127,23 +127,23 @@ export function testPlan(
   return { planId, entityId, source: "diagnostic" as const, formedVersion: "", conflict, steps };
 }
 
-export function worldOf(orchestrator: SimulationOrchestrator) {
-  return orchestrator.state().world;
+export function worldOf(runner: SimulationRunner) {
+  return runner.state().world;
 }
 
 /** Position of one entity under whichever relation currently carries it. */
-export function positionOf(orchestrator: SimulationOrchestrator, entityId: string): string | null {
-  const entity = orchestrator.state().world.entities[entityId];
+export function positionOf(runner: SimulationRunner, entityId: string): string | null {
+  const entity = runner.state().world.entities[entityId];
   if (entity === undefined) return null;
   return entity.locatedAt ?? entity.heldBy ?? entity.placedOn;
 }
 
-export function actionsOf(orchestrator: SimulationOrchestrator, entityId: string) {
-  return orchestrator.state().actions.filter((action) => action.entityId === entityId);
+export function actionsOf(runner: SimulationRunner, entityId: string) {
+  return runner.state().actions.filter((action) => action.entityId === entityId);
 }
 
-export function lastAction(orchestrator: SimulationOrchestrator, planId: string) {
-  return orchestrator
+export function lastAction(runner: SimulationRunner, planId: string) {
+  return runner
     .state()
     .actions.filter((action) => action.plan.planId === planId)
     .at(-1);

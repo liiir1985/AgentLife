@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { getTableName } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { MIGRATIONS, STORE_TABLES } from "../src/storage/migrations.js";
-import { configs, claimedChanges, currentConfig, runTraces, RuntimeStore } from "../src/storage/runtime-store.js";
+import { configs, currentConfig, RuntimeStore } from "../src/storage/runtime-store.js";
 import type { FailurePoint } from "../src/storage/runtime-store-probe.js";
 
 const CONFIG_CRASH_WORKER = fileURLToPath(new URL("../src/storage/config-crash-worker.ts", import.meta.url));
@@ -66,8 +66,6 @@ describe("runtime store", () => {
       const expected = new Map([
         [getTableName(configs), ["identity", "namespace", "pack_version", "document_json"]],
         [getTableName(currentConfig), ["slot", "identity"]],
-        [getTableName(runTraces), ["id", "idempotency_key", "request_id", "config_identity", "trace_json"]],
-        [getTableName(claimedChanges), ["effect_id", "timeline_id", "config_identity"]],
       ]);
       for (const [table, columns] of expected) {
         const rows = store.sqlite.prepare("SELECT name FROM pragma_table_info(?)").all(table);
@@ -160,27 +158,6 @@ describe("runtime store", () => {
         document: loadConfig("1.0.0"),
       });
       expect(store.checkRestore("config-a")).toEqual({ ok: true });
-    });
-  });
-
-  it("records one evaluation trace per idempotency key", () => {
-    withStore((store) => {
-      const entry = { runId: "request-1", configId: "config-a", trace: { status: "changes" } };
-      expect(store.saveRunTrace(entry, "tick-1:request-1")).toBe("committed");
-      expect(store.saveRunTrace(entry, "tick-1:request-1")).toBe("duplicate");
-      expect(store.saveRunTrace(entry, "tick-2:request-1")).toBe("committed");
-      expect(store.loadRunTrace("tick-1:request-1")).toEqual({ status: "changes" });
-      expect(store.loadRunTrace("tick-9")).toBeUndefined();
-    });
-  });
-
-  it("consumes a candidate effect exactly once", () => {
-    withStore((store, directory) => {
-      store.initializeTimeline("timeline-a");
-      expect(store.claimChange("effect-1", "timeline-a", "config-a")).toBe("claimed");
-      expect(store.claimChange("effect-1", "timeline-a", "config-a")).toBe("duplicate");
-      expect(store.countStored("consumed_effects")).toBe(1);
-      expect(directory).toContain("agent-life-runtime-store-");
     });
   });
 
