@@ -1,0 +1,6 @@
+id: speak
+type: agentlife.body/ability
+public: true
+fields:
+  name: 说话
+  description: 说话这一基本行为的身体能力

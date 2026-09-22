@@ -28,6 +28,8 @@ export class SystemIndex {
   private readonly outputs = new Map<string, SystemEntry<OutputSpec>>();
   private readonly triggers = new Map<string, SystemEntry<string>>();
   private readonly processes = new Map<string, SystemEntry<ProcessSpec>>();
+  /** State prefix to the trigger that re-evaluates rules under it, longest first. */
+  private readonly propagation = new Map<string, { readonly trigger: string; readonly system: string }>();
 
   constructor(private readonly registry: SystemCatalog) {
     for (const system of registry.sorted()) {
@@ -51,7 +53,28 @@ export class SystemIndex {
         const ref = `${system.spec.namespace}/${declaration.name}`;
         this.processes.set(ref, { ref, system, declaration });
       }
+      for (const declaration of system.spec.propagation ?? [])
+        this.propagation.set(declaration.stateRef, {
+          trigger: declaration.trigger,
+          system: system.systemId,
+        });
     }
+  }
+
+  /**
+   * Trigger that re-evaluates rules after `stateRef` changed, or `undefined`
+   * when the system declares no propagation for that prefix.
+   */
+  propagationTrigger(stateRef: string): { readonly trigger: string; readonly system: string } | undefined {
+    let best: { readonly trigger: string; readonly system: string } | undefined;
+    let bestLength = -1;
+    for (const [prefix, entry] of this.propagation) {
+      if (prefix.length <= bestLength) continue;
+      if (stateRef !== prefix && !stateRef.startsWith(`${prefix}.`)) continue;
+      best = entry;
+      bestLength = prefix.length;
+    }
+    return best;
   }
 
   configType(ref: string): SystemEntry<ItemSpec> | undefined {

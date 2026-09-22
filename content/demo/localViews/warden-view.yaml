@@ -1,0 +1,14 @@
+id: warden-view
+type: agentlife.world/local-view
+public: true
+fields:
+  name: 护卫的局部执行视图
+  description: 只包含护卫当前能直接确认的地点、光照与自身身体状态。
+  members:
+    - agentlife.world/located-at.location
+    - agentlife.world/held-by.holder
+    - agentlife.world/environment.light-level
+    - agentlife.world/environment.lamp-state
+    - agentlife.body/values.stamina
+    - agentlife.body/activity.action
+    - agentlife.body/activity.status

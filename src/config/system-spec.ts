@@ -103,6 +103,19 @@ export interface ItemSpec {
    * existence, visibility and target type before any system sees them.
    */
   readonly references?: Readonly<Record<string, readonly string[]>>;
+  /**
+   * Fields holding a mapping whose keys are identities of other items (the
+   * `portable: true` an entity declares for one attribute). A key is checked
+   * exactly like a `references` value: it must exist, be visible and have one of
+   * the listed config types.
+   */
+  readonly memberReferences?: Readonly<Record<string, readonly string[]>>;
+  /**
+   * Fields holding local-view member names. Every member must name a granted
+   * runtime view (`<stateRef>.<field>`), so a behaviour tree can never be
+   * pointed at a view no system granted.
+   */
+  readonly viewMembers?: readonly string[];
   /** Fields that an explicit pack override may target. */
   readonly overridable: readonly string[];
   /** Merge strategy per field; a duplicate field without an entry is rejected. */
@@ -139,6 +152,18 @@ export interface ProcessSpec {
   readonly parameters: TSchema;
 }
 
+/**
+ * A declaration of which trigger re-evaluates rules after state under one
+ * prefix changed. The scheduler never scans every rule: it reads the changed
+ * state refs, looks up their prefix here and runs only the selected rules.
+ */
+export interface PropagationSpec {
+  /** Declared input or output the changed state refs start with. */
+  readonly stateRef: string;
+  /** Declared trigger of the same system. */
+  readonly trigger: string;
+}
+
 export interface SystemSpec {
   readonly name: string;
   readonly namespace: string;
@@ -152,6 +177,7 @@ export interface SystemSpec {
   readonly triggers: readonly string[];
   readonly outputs: readonly OutputSpec[];
   readonly processes?: readonly ProcessSpec[];
+  readonly propagation?: readonly PropagationSpec[];
   readonly validate?: (input: SystemCheck) => void;
 }
 
@@ -170,6 +196,12 @@ export interface LoadResult {
   readonly loadedSystem?: LoadedSystem;
 }
 
+/** A schema holding a mapping: fixed fields, or free keys with one value type. */
+function isMappingSchema(schema: TSchema | undefined): boolean {
+  const kind = schemaKind(schema);
+  return kind === "Object" || kind === "Record";
+}
+
 /** Schema kinds the kernel understands; everything else is unsupported semantics. */
 const SUPPORTED_SCHEMA_KINDS: readonly string[] = [
   "Object",
@@ -181,6 +213,12 @@ const SUPPORTED_SCHEMA_KINDS: readonly string[] = [
   "Null",
   "Literal",
   "Union",
+  // A mapping with free keys and one declared value type: what an entity declares
+  // for the attributes of its pack (`portable: true`).
+  "Record",
+  // A JSON document the kernel carries but never interprets: a behaviour tree
+  // definition is content, and only the owning system can validate its shape.
+  "Unknown",
 ];
 
 function schemaKind(schema: unknown): string | undefined {
@@ -242,6 +280,11 @@ function assertSupportedSchema(schema: TSchema, path: string, problems: string[]
     const items = record.items as TSchema | undefined;
     if (items === undefined) problems.push(`${path} must declare item schema`);
     else assertSupportedSchema(items, `${path}[]`, problems);
+  }
+  if (kind === "Record") {
+    const values = Object.values((record.patternProperties ?? {}) as Record<string, TSchema>)[0];
+    if (values === undefined) problems.push(`${path} must declare its member value schema`);
+    else assertSupportedSchema(values, `${path}.*`, problems);
   }
   if (kind === "Union") {
     const variants = (record.anyOf ?? []) as TSchema[];
@@ -432,7 +475,7 @@ function loadIssues(system: SystemSpec): {
         problems.push(`Config type ${declaration.kind} declares a merge strategy for unknown field ${field}`);
       else if (strategy === "append" && schemaKind(fieldSchema) !== "Array")
         semantics.push(`Config type ${declaration.kind}.${field} uses "append" on a non-array field`);
-      else if (strategy === "merge" && schemaKind(fieldSchema) !== "Object")
+      else if (strategy === "merge" && !isMappingSchema(fieldSchema))
         semantics.push(`Config type ${declaration.kind}.${field} uses "merge" on a non-object field`);
     }
     for (const [field, value] of Object.entries(declaration.defaults ?? {})) {
@@ -444,6 +487,20 @@ function loadIssues(system: SystemSpec): {
     }
     if (declaration.overridable.some((field) => declaration.merge[field] === "reject"))
       semantics.push(`Config type ${declaration.kind} marks a rejected field overridable`);
+    for (const field of Object.keys(declaration.memberReferences ?? {}))
+      if (!(field in properties))
+        problems.push(`Config type ${declaration.kind} declares member references for unknown field ${field}`);
+    for (const field of declaration.viewMembers ?? []) {
+      const fieldSchema = properties[field];
+      if (fieldSchema === undefined) {
+        problems.push(`Config type ${declaration.kind} declares view members for unknown field ${field}`);
+        continue;
+      }
+      const kind = schemaKind(fieldSchema);
+      const memberKind = kind === "Array" ? schemaKind(Reflect.get(fieldSchema as object, "items")) : kind;
+      if (memberKind !== "String")
+        semantics.push(`Config type ${declaration.kind}.${field} holds view members but is not a string list`);
+    }
     for (const [field, allowed] of Object.entries(declaration.references ?? {})) {
       const fieldSchema = properties[field];
       if (fieldSchema === undefined) {
@@ -507,6 +564,27 @@ function loadIssues(system: SystemSpec): {
   }
 
   for (const trigger of system.triggers) if (!isName(trigger)) problems.push(`Trigger name is invalid: ${trigger}`);
+
+  const declaredStatePrefixes = new Set<string>([
+    ...system.inputs.map((input) => `${system.namespace}/${input.name}`),
+    ...system.outputs.map((target) => `${system.namespace}/${target.name}`),
+    ...system.items.flatMap((declaration) => {
+      const valueSet = declaration.valueSet;
+      if (valueSet === undefined) return [];
+      const ref = `${system.namespace}/${valueSet.name}`;
+      return [ref];
+    }),
+  ]);
+  for (const propagation of system.propagation ?? []) {
+    if (!declaredStatePrefixes.has(propagation.stateRef))
+      problems.push(
+        `Propagation of ${systemRef(system)} names ${propagation.stateRef}, which is not a declared input or output`,
+      );
+    if (!system.triggers.some((trigger) => `${system.namespace}/${trigger}` === propagation.trigger))
+      problems.push(
+        `Propagation of ${systemRef(system)} names trigger ${propagation.trigger}, which the system does not declare`,
+      );
+  }
 
   for (const process of system.processes ?? []) {
     if (!isName(process.name)) problems.push(`Process name is invalid: ${process.name}`);
@@ -586,6 +664,7 @@ function specHashOf(system: SystemSpec): string {
     triggers: system.triggers,
     outputs: system.outputs,
     processes: system.processes ?? [],
+    propagation: system.propagation ?? [],
   });
 }
 

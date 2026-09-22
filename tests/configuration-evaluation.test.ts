@@ -114,9 +114,13 @@ describe("deterministic evaluation", () => {
       expect(shared.trace.shared.selectedRules).toEqual([
         "agentlife.demo/darkness-visibility",
         "agentlife.demo/fog-visibility",
+        "agentlife.demo/lamp-glow-start",
       ]);
       expect(shared.trace.shared.stateChanges).toHaveLength(1);
-      expect(shared.trace.shared.rules).toHaveLength(2);
+      expect(shared.trace.shared.rules).toHaveLength(3);
+      // The same run also establishes the process the lamp light is advanced by.
+      expect(shared.trace.processChanges).toHaveLength(1);
+      expect(shared.trace.processChanges[0]?.processRef).toBe("agentlife.world/lamp-glow");
       expect(shared.trace.entities.every((trace) => trace.entityId !== null)).toBe(true);
 
       const entities = registry.runRules(demoRequest("agentlife.body/tick-elapsed"));
@@ -163,10 +167,12 @@ describe("deterministic evaluation", () => {
       expect(first.configId).toBe(result.config?.configId);
 
       const values = Object.fromEntries(first.trace.stateChanges.map((entry) => [entry.stateRef, entry.newValue]));
-      expect(values["agentlife.body/values.stamina"]).toBe(0);
       expect(values["agentlife.body/values.move-cost"]).toBe(5.7);
       expect(values["agentlife.body/values.move-cost-factor"]).toBe(2.52);
       expect(values["agentlife.body/cognitive-participation"]).toBe("restricted");
+      expect(values["agentlife.body/current-mode"]).toBe("agentlife.demo/awake");
+      // `value-changed` no longer writes stamina; only advancing an action costs it.
+      expect(values).not.toHaveProperty("agentlife.body/values.stamina");
       expect(first.status).toBe("changes");
     } finally {
       removeDirectory(directory);
@@ -189,11 +195,33 @@ describe("deterministic evaluation", () => {
         "agentlife.demo/lamp-stimulus",
       ]);
       expect(wakefulness?.result).toBe(80);
-      const stamina = entityTrace(perTick).combines.find(
+
+      // Advancing a walking action is what spends stamina now: one rule reads the
+      // current stamina and both derived costs, and writes the resulting absolute
+      // value under priority, so no other rule may claim the same state.
+      const base = demoRequest("agentlife.body/action-advanced", "action");
+      const values = DEMO_ENTITY["agentlife.body/values"] as Readonly<Record<string, unknown>>;
+      const advanced = registry.runRules({
+        ...base,
+        entityIds: ["agentlife.demo/companion"],
+        input: {
+          ...base.input,
+          entities: {
+            "agentlife.demo/companion": {
+              ...DEMO_ENTITY,
+              "agentlife.body/values": { ...values, "move-cost": 5, "move-cost-factor": 2, stamina: 70 },
+              "agentlife.body/activity": { action: "agentlife.demo/walk", stage: "", status: "" },
+            },
+          },
+        },
+      });
+      const stamina = entityTrace(advanced).combines.find(
         (combine) => combine.stateRef === "agentlife.body/values.stamina",
       );
-      expect(stamina?.combine).toBe("add");
-      expect(stamina?.result).toBe(5);
+      expect(stamina?.combine).toBe("priority");
+      expect(stamina?.ruleValues.map((ruleValue) => ruleValue.ruleId)).toEqual(["agentlife.demo/move-exertion"]);
+      // 70 + (-2.5 cost at x=5) + (-2 factor at x=2)
+      expect(stamina?.result).toBe(65.5);
 
       const environment = registry.runRules(demoRequest("agentlife.world/environment-changed", "environment"));
       const visibility = environment.trace.shared.combines.find(
@@ -235,7 +263,7 @@ describe("deterministic evaluation", () => {
       expect(entityTrace(result_).selectedRules).toEqual([
         "agentlife.demo/daylight-wakefulness",
         "agentlife.demo/lamp-stimulus",
-        "agentlife.demo/rest-recovery",
+        "agentlife.demo/recovery-request",
       ]);
       expect(entityTrace(result_).skippedRules).toContain("agentlife.demo/base-move-cost");
       expect(entityTrace(result_).rules.map((rule) => rule.ruleId)).toEqual(entityTrace(result_).selectedRules);
@@ -309,9 +337,9 @@ changes:
       );
       expect(conflict?.status).toBe("conflict");
       expect(conflict?.conflicting).toEqual(["agentlife.demo/daylight-wakefulness", "agentlife.demo/lamp-stimulus"]);
-      expect(entityTrace(evaluated).stateChanges.map((candidate) => candidate.stateRef)).toEqual([
-        "agentlife.body/values.stamina",
-      ]);
+      // No rule writes a state change for this trigger any more: the only other
+      // entity rule establishes a process, which a conflict does not suppress.
+      expect(entityTrace(evaluated).stateChanges).toEqual([]);
     } finally {
       removeDirectory(directory);
     }

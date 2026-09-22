@@ -16,23 +16,23 @@ if (filename === undefined || failurePoint === undefined || identity === undefin
 const store = new RuntimeStore(filename);
 const document = {
   kernelVersion: "1.0.0",
-  extensions: [],
+  systems: [{ systemId: "agentlife.world", version: "1.0.0", specHash: "spec-1.0.0" }],
   packs: [
     {
       namespace: "agentlife.demo",
       root: true,
-      identity: "content-identity",
+      contentId: "content-identity",
       manifest: {
         namespace: "agentlife.demo",
         version: "1.0.0",
         kernel: ">=1.0.0 <2.0.0",
         dependencies: [],
-        extensions: [],
+        systems: ["agentlife.world/system@1.0.0"],
         sections: {},
       },
-      definitions: [],
+      items: [],
       rules: [],
-      derivations: [],
+      formulas: [],
     },
   ],
 };

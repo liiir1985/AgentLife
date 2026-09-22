@@ -1,7 +1,8 @@
 import { scalarKind, schemaProperties, type OutputSpec, type LoadedSystem, type StateScope } from "./system-spec.js";
 import { parsePartialNumberPolicy } from "./source.js";
-import { resolveNumberPolicy, checkNumberPolicy, type NumberPolicy } from "./numeric.js";
+import { resolveNumberPolicy, checkNumberPolicy, isWithinRange, roundValue, type NumberPolicy } from "./numeric.js";
 import { isName, parseQualifiedName } from "./identifiers.js";
+import type { SimpleValue } from "./value-expr.js";
 import type { TSchema } from "typebox";
 
 /**
@@ -32,6 +33,8 @@ export interface ValueMember {
   readonly contract: boolean;
   /** Definition that contributed this field. */
   readonly itemRef: string;
+  /** Declared starting state of a value-family member; `undefined` for a static view. */
+  readonly initial: SimpleValue | undefined;
 }
 
 export interface InputInfo {
@@ -146,6 +149,7 @@ export class RuleCatalog {
           allowedValues: null,
           contract: false,
           itemRef: "",
+          initial: undefined,
         });
       }
       this.inputs.set(ref, {
@@ -281,6 +285,16 @@ export class RuleCatalog {
         if (policy !== null)
           for (const problem of checkNumberPolicy(policy, `${item.ref}.policy`))
             problems.push({ scope: "compatibility", message: problem, subject: item.ref });
+        // A declared initial state has to satisfy the policy it declares, exactly
+        // like a declared string state has to be inside its vocabulary.
+        if (policy !== null && !isWithinRange(roundValue(state as number, policy.rounding), policy.range)) {
+          problems.push({
+            scope: "compatibility",
+            message: `Definition ${item.ref} field ${key} state ${String(state)} is outside its declared range`,
+            subject: item.ref,
+          });
+          continue;
+        }
       }
       if (this.fields.has(outputRef)) {
         problems.push({
@@ -302,6 +316,7 @@ export class RuleCatalog {
         allowedValues: valueType === "string" ? (allowedValues ?? null) : null,
         contract: field.contract === true,
         itemRef: item.ref,
+        initial: state as SimpleValue,
       };
       this.fields.set(outputRef, expanded);
       this.declared.set(outputRef, "value field");

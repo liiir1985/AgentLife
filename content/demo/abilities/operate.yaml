@@ -1,0 +1,6 @@
+id: operate
+type: agentlife.body/ability
+public: true
+fields:
+  name: 简单操作
+  description: 简单操作这一基本行为的身体能力

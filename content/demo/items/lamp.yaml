@@ -1,0 +1,10 @@
+id: lamp
+type: agentlife.world/item
+public: true
+fields:
+  name: 铜灯
+  description: 广场角落的铜灯，灯罩上有一圈被擦亮的纹路，灯芯还在。
+  tags:
+    - fixture
+  attributes:
+    agentlife.demo/operable: true

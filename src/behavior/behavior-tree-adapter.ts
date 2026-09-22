@@ -4,12 +4,17 @@ import type { Agent } from "mistreevous/dist/Agent.js";
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
 /**
- * The only surface a tree function can reach: a bounded JSON blackboard plus a plan
- * recorder. No world, no private state, no I/O, no LLM and no clock are in scope.
+ * The only surface a tree function can reach: a bounded JSON blackboard, the
+ * declared local execution view of this decision and a plan recorder. No world
+ * handle, no private state, no I/O, no LLM and no machine clock are in scope.
  */
 export interface BehaviorFunctionContext {
+  /** Simulated tick this decision belongs to. */
+  readonly tick: number;
   read(key: string): JsonValue | undefined;
   write(key: string, value: JsonValue): void;
+  /** Value of one whitelisted local view member; `undefined` when not granted. */
+  view(member: string): JsonValue | undefined;
   emit(step: string): void;
 }
 
@@ -38,6 +43,12 @@ export interface BehaviorRuntimeState {
   readonly plan: readonly string[];
   readonly trace: readonly BehaviorTraceEntry[];
   readonly appliedKeys: readonly string[];
+  /** Tick before which the tree must not be asked for another decision. */
+  readonly cooldownUntilTick: number;
+  /** Body plan the tree last handed over, so a restore never re-submits it. */
+  readonly activePlanId: string | null;
+  /** Version of the local view the last decision read. */
+  readonly inputVersion: string;
 }
 
 export interface BehaviorDecision {
@@ -54,6 +65,8 @@ export interface BehaviorTreeAdapterOptions {
   readonly registry: BehaviorFunctionRegistry;
   /** Explicit simulated duration of one tick; Mistreevous never sees a machine clock. */
   readonly tickSeconds: number;
+  /** Whitelisted local execution view of the entity this tree belongs to. */
+  readonly view?: Readonly<Record<string, JsonValue>>;
   readonly maxBlackboardKeys?: number;
   readonly maxStepsPerDecision?: number;
 }
@@ -92,21 +105,28 @@ const CALLBACK_ATTRIBUTES = ["entry", "step", "exit"] as const;
 
 /**
  * Restricted Mistreevous adapter: JSON definitions only, a fixed function registry,
- * blackboard and idempotency identity persisted by the adapter, and one decision per
- * `step()`. Internal `RUNNING` state is never relied upon or reachable.
+ * blackboard, a declared local view and idempotency identity persisted by the adapter,
+ * and one decision per `step()`. Internal `RUNNING` state is never relied upon or
+ * reachable.
  */
-export class BehaviorTreeAdapterProbe {
+export class BehaviorTreeAdapter {
   private readonly tree: BehaviourTree;
   private readonly paths: ReadonlyMap<string, string>;
   private readonly maxBlackboardKeys: number;
   private readonly maxStepsPerDecision: number;
   private readonly applied: Set<string>;
   private readonly context: BehaviorFunctionContext;
+  private readonly contextState: { tick: number };
   private blackboard: Map<string, JsonValue>;
   private pending: Map<string, JsonValue>;
   private trace: BehaviorTraceEntry[] = [];
   private plan: string[] = [];
   private tick: number;
+  private decisionTick: number;
+  private view: Readonly<Record<string, JsonValue>>;
+  private cooldownUntilTick: number;
+  private activePlanId: string | null;
+  private inputVersion: string;
   private failure: string | undefined;
 
   private constructor(options: BehaviorTreeAdapterOptions, state: BehaviorRuntimeState | undefined) {
@@ -117,13 +137,21 @@ export class BehaviorTreeAdapterProbe {
     this.pending = new Map(this.blackboard);
     this.applied = new Set(state?.appliedKeys ?? []);
     this.tick = state?.tick ?? 0;
+    this.decisionTick = this.tick;
+    this.view = options.view ?? {};
+    this.cooldownUntilTick = state?.cooldownUntilTick ?? 0;
+    this.activePlanId = state?.activePlanId ?? null;
+    this.inputVersion = state?.inputVersion ?? "";
     this.plan = [...(state?.plan ?? [])];
     this.trace = [...(state?.trace ?? [])];
     this.context = {
+      tick: this.decisionTick,
       read: (key) => this.pending.get(key),
       write: (key, value) => this.write(key, value),
+      view: (member) => this.view[member],
       emit: (step) => this.plan.push(step),
     };
+    this.contextState = this.context as { tick: number };
 
     const agent: Agent = {};
     for (const [name, behavior] of Object.entries(options.registry.functions)) {
@@ -155,12 +183,12 @@ export class BehaviorTreeAdapterProbe {
     this.paths = indexNodePaths(this.tree.getTreeNodeDetails());
   }
 
-  static create(options: BehaviorTreeAdapterOptions): BehaviorTreeAdapterProbe {
-    return new BehaviorTreeAdapterProbe(options, undefined);
+  static create(options: BehaviorTreeAdapterOptions): BehaviorTreeAdapter {
+    return new BehaviorTreeAdapter(options, undefined);
   }
 
-  static restore(options: BehaviorTreeAdapterOptions, state: BehaviorRuntimeState): BehaviorTreeAdapterProbe {
-    return new BehaviorTreeAdapterProbe(options, state);
+  static restore(options: BehaviorTreeAdapterOptions, state: BehaviorRuntimeState): BehaviorTreeAdapter {
+    return new BehaviorTreeAdapter(options, state);
   }
 
   /**
@@ -168,7 +196,12 @@ export class BehaviorTreeAdapterProbe {
    * strictly advance, and a decision that throws leaves the blackboard untouched and
    * latches the adapter as unusable.
    */
-  decide(input: { tick: number; key: string }): BehaviorDecision {
+  decide(input: {
+    tick: number;
+    key: string;
+    view?: Readonly<Record<string, JsonValue>>;
+    inputVersion?: string;
+  }): BehaviorDecision {
     if (this.failure !== undefined) throw new BehaviorTreeAdapterError(`Adapter is unusable after: ${this.failure}`);
     if (this.applied.has(input.key)) return this.snapshot(this.tick, input.key, "already-applied");
     if (input.tick <= this.tick) {
@@ -177,6 +210,10 @@ export class BehaviorTreeAdapterProbe {
 
     this.pending = new Map(this.blackboard);
     this.plan = [];
+    this.decisionTick = input.tick;
+    this.contextState.tick = input.tick;
+    this.view = input.view ?? {};
+    if (input.inputVersion !== undefined) this.inputVersion = input.inputVersion;
     // Mistreevous resets resolved nodes lazily inside `step()`; doing it explicitly
     // first keeps a decision's trace independent of which instance produced the
     // previous decision, so a restored adapter traces exactly like a fresh one.
@@ -207,6 +244,12 @@ export class BehaviorTreeAdapterProbe {
     return this.snapshot(input.tick, input.key, "resolved");
   }
 
+  /** Records the body plan this decision handed over, so a restore never re-submits it. */
+  bindPlan(planId: string, cooldownUntilTick: number): void {
+    this.activePlanId = planId;
+    this.cooldownUntilTick = cooldownUntilTick;
+  }
+
   exportState(): BehaviorRuntimeState {
     return Object.freeze({
       tick: this.tick,
@@ -214,6 +257,9 @@ export class BehaviorTreeAdapterProbe {
       plan: Object.freeze([...this.plan]),
       trace: Object.freeze(this.trace.map((entry) => Object.freeze({ ...entry }))),
       appliedKeys: Object.freeze([...this.applied].sort()),
+      cooldownUntilTick: this.cooldownUntilTick,
+      activePlanId: this.activePlanId,
+      inputVersion: this.inputVersion,
     });
   }
 
@@ -265,6 +311,20 @@ function indexNodePaths(details: NodeDetails): ReadonlyMap<string, string> {
   };
   visit(details, "");
   return paths;
+}
+
+/**
+ * Structural problems of one tree definition: unknown or excluded node kinds,
+ * unregistered calls, malformed composites and non-JSON arguments. Empty when
+ * the definition is valid.
+ */
+export function behaviorTreeProblems(definition: unknown, registry: BehaviorFunctionRegistry): readonly string[] {
+  try {
+    validateDefinition(definition, registry);
+    return [];
+  } catch (failure) {
+    return [failure instanceof Error ? failure.message : String(failure)];
+  }
 }
 
 function validateDefinition(definition: unknown, registry: BehaviorFunctionRegistry): void {

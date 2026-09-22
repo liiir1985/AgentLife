@@ -1,0 +1,9 @@
+id: drowsy
+type: agentlife.body/mode
+public: true
+fields:
+  name: 困倦
+  description: 只还能说话和做点手势，走不远也拿不稳。
+  abilities:
+    - agentlife.demo/speak
+    - agentlife.demo/gesture

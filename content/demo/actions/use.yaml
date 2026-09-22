@@ -1,0 +1,13 @@
+id: use
+type: agentlife.body/action
+public: true
+fields:
+  name: 操作
+  description: 操作的完整动作定义，包含每一个阶段占用的资源。
+  ability: agentlife.demo/operate
+  interruptible: true
+  worldInfluence: agentlife.demo/operate-item
+  stages:
+    - name: 拨弄
+      ticks: 2
+      resource: agentlife.demo/hands

@@ -1,0 +1,85 @@
+kind: rule
+id: influence-consent
+system: agentlife.world
+triggers:
+  - agentlife.world/influence-requested
+inputs:
+  - name: kind
+    state: agentlife.world/influence.kind
+  - name: role
+    state: agentlife.world/participation.role
+  - name: portable
+    state: agentlife.world/attributes.portable
+  - name: support
+    state: agentlife.world/attributes.support
+  - name: operable
+    state: agentlife.world/attributes.operable
+condition:
+  op: always
+changes:
+  - state: agentlife.world/consent
+    combine: priority
+    priority: 1
+    value:
+      kind: select
+      left:
+        kind: read
+        name: role
+      right:
+        kind: literal
+        value: actor
+      operator: eq
+      then:
+        kind: literal
+        value: true
+      otherwise:
+        kind: select
+        left:
+          kind: read
+          name: role
+        right:
+          kind: literal
+          value: subject
+        operator: eq
+        then:
+          kind: select
+          left:
+            kind: read
+            name: kind
+          right:
+            kind: literal
+            value: agentlife.demo/hold
+          operator: eq
+          then:
+            kind: read
+            name: portable
+          otherwise:
+            kind: select
+            left:
+              kind: read
+              name: kind
+            right:
+              kind: literal
+              value: agentlife.demo/operate-item
+            operator: eq
+            then:
+              kind: read
+              name: operable
+            otherwise:
+              kind: literal
+              value: true
+        otherwise:
+          kind: select
+          left:
+            kind: read
+            name: role
+          right:
+            kind: literal
+            value: destination
+          operator: eq
+          then:
+            kind: read
+            name: support
+          otherwise:
+            kind: literal
+            value: true

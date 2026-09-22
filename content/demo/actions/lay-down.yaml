@@ -1,0 +1,16 @@
+id: lay-down
+type: agentlife.body/action
+public: true
+fields:
+  name: 放置
+  description: 放置的完整动作定义，包含每一个阶段占用的资源。
+  ability: agentlife.demo/place
+  interruptible: true
+  worldInfluence: agentlife.demo/put-on
+  stages:
+    - name: 抬起
+      ticks: 2
+      resource: agentlife.demo/hands
+    - name: 放下
+      ticks: 2
+      resource: agentlife.demo/hands

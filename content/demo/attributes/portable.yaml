@@ -1,0 +1,7 @@
+id: portable
+type: agentlife.world/attribute
+public: true
+fields:
+  name: 可携带
+  type: boolean
+  initial: false

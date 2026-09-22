@@ -1,0 +1,6 @@
+id: gesture
+type: agentlife.body/ability
+public: true
+fields:
+  name: 手势
+  description: 手势这一基本行为的身体能力

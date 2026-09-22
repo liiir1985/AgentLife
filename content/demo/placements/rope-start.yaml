@@ -1,0 +1,6 @@
+id: rope-start
+type: agentlife.world/placement
+public: true
+fields:
+  entity: agentlife.demo/rope
+  location: agentlife.demo/lantern-square

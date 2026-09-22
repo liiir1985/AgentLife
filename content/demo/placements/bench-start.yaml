@@ -1,0 +1,6 @@
+id: bench-start
+type: agentlife.world/placement
+public: true
+fields:
+  entity: agentlife.demo/bench
+  location: agentlife.demo/lantern-square

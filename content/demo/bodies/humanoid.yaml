@@ -1,0 +1,21 @@
+id: humanoid
+type: agentlife.body/body
+public: true
+fields:
+  name: 人形身体
+  description: 一个有两手两脚、能说话也能搬东西的身体。
+  abilities:
+    - agentlife.demo/speak
+    - agentlife.demo/move
+    - agentlife.demo/gesture
+    - agentlife.demo/take
+    - agentlife.demo/place
+    - agentlife.demo/operate
+  resources:
+    - agentlife.demo/speech
+    - agentlife.demo/locomotion
+    - agentlife.demo/hands
+  modes:
+    - agentlife.demo/awake
+    - agentlife.demo/drowsy
+  initialMode: agentlife.demo/awake

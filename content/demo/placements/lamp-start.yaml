@@ -1,0 +1,6 @@
+id: lamp-start
+type: agentlife.world/placement
+public: true
+fields:
+  entity: agentlife.demo/lamp
+  location: agentlife.demo/lantern-square

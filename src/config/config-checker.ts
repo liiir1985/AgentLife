@@ -13,11 +13,11 @@ import type { SystemIndex } from "./system-index.js";
 import { conditionFormulas, conditionInputs, type Condition } from "./conditions.js";
 import { IssueList, error, warning, type ConfigIssue } from "./diagnostics.js";
 import { KERNEL_VERSION, satisfiesVersion } from "./identifiers.js";
-import { RATIO_UNIT, mapUnit, checkMap, type CombineMode } from "./numeric.js";
+import { RATIO_UNIT, applyNumberPolicy, mapUnit, checkMap, type CombineMode } from "./numeric.js";
 import type { PackSet } from "./packs.js";
 import type { MergedItem } from "./config-merge.js";
 import type { ParsedFormula, ParsedPack, ParsedInput, ParsedRule } from "./source.js";
-import { RuleCatalog, type RuleItem, type CatalogIssue } from "./rule-catalog.js";
+import { RuleCatalog, type RuleItem, type CatalogIssue, type ValueMember } from "./rule-catalog.js";
 import { formulaRefs, inputNames, type ValueExpr } from "./value-expr.js";
 import type { TSchema } from "typebox";
 
@@ -652,6 +652,99 @@ function checkCondition(
   }
 }
 
+/**
+ * Stage two: a member map names definitions in its keys and gives them values.
+ * The key is checked like a reference value; the value is checked against the
+ * declared value the same way a rule write is - the kind it must be, the range
+ * it may sit in and the values it may take.
+ */
+function checkMemberReferences(
+  packs: PackSet,
+  systemIndex: SystemIndex,
+  catalog: RuleCatalog,
+  items: readonly MergedItem[],
+  bag: IssueList,
+): void {
+  const declared = new Map<string, ValueMember>();
+  for (const system of systemIndex.systemsSorted())
+    for (const declaration of system.spec.items) {
+      const valueSet = declaration.valueSet;
+      if (valueSet === undefined) continue;
+      const input = catalog.input(`${system.spec.namespace}/${valueSet.name}`);
+      if (input === undefined) continue;
+      for (const member of input.fields.values()) declared.set(member.itemRef, member);
+    }
+  for (const item of items) {
+    const capability = systemIndex.configType(item.typeRef);
+    if (capability === undefined) continue;
+    for (const [field, allowed] of Object.entries(capability.declaration.memberReferences ?? {})) {
+      const value = item.values[field] as Record<string, unknown> | undefined;
+      if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
+      for (const member of Object.keys(value).sort()) {
+        const target = packs.item(member);
+        if (target === undefined) {
+          missingReference(bag, item.ref, `${item.ref}.${field} names unknown ${member}`);
+          continue;
+        }
+        if (!packs.checkVisibility(item.namespace, member)) {
+          bag.add(
+            error(
+              "reference",
+              "namespace-not-visible",
+              `${item.ref}.${field} names ${member}, which ${item.namespace} cannot address: ${packs.explainVisibility(
+                item.namespace,
+                member,
+              )}`,
+              { subject: item.ref },
+            ),
+          );
+          continue;
+        }
+        if (!allowed.includes(target.typeRef)) {
+          bag.add(
+            error(
+              "reference",
+              "reference-type-mismatch",
+              `${item.ref}.${field} member ${member} must be ${allowed.join(" or ")}, not ${target.typeRef}`,
+              { subject: item.ref },
+            ),
+          );
+          continue;
+        }
+        const definition = declared.get(member);
+        if (definition === undefined) continue;
+        const memberValue = value[member];
+        if (typeof memberValue !== definition.valueType) {
+          bindingFailure(bag, item.ref, `${item.ref}.${field}.${member} must be a ${definition.valueType}`);
+          continue;
+        }
+        if (typeof memberValue === "number" && definition.policy !== null) {
+          const applied = applyNumberPolicy(memberValue, definition.policy);
+          if (!applied.ok)
+            bag.add(
+              error("system", "invalid-value", `${item.ref}.${field}.${member}: ${applied.message}`, {
+                subject: item.ref,
+              }),
+            );
+        }
+        if (
+          typeof memberValue === "string" &&
+          definition.allowedValues !== null &&
+          !definition.allowedValues.includes(memberValue)
+        )
+          bag.add(
+            error(
+              "system",
+              "invalid-value",
+              `${item.ref}.${field}.${member} value ${memberValue} is outside the vocabulary of ${member}`,
+              { subject: item.ref },
+            ),
+          );
+      }
+    }
+  }
+}
+
 /** Stage two: identities held in config fields must exist, be visible and match. */
 function checkDefinitionReferences(
   packs: PackSet,
@@ -779,6 +872,54 @@ function resolveFormulaScopes(formulas: readonly CheckedFormula[]): CheckedFormu
   return formulas.map((formula) => ({ ...formula, evaluationScope: resolve(formula) }));
 }
 
+/** Stage two and five: a local view may only name a view some system granted. */
+function checkViewMembers(
+  items: readonly MergedItem[],
+  systemIndex: SystemIndex,
+  catalog: RuleCatalog,
+  bag: IssueList,
+): void {
+  for (const item of items) {
+    const capability = systemIndex.configType(item.typeRef);
+    if (capability === undefined) continue;
+    for (const field of capability.declaration.viewMembers ?? []) {
+      const value = item.values[field];
+      if (!Array.isArray(value)) continue;
+      for (const member of value) {
+        if (typeof member !== "string") {
+          bindingFailure(bag, item.ref, `${item.ref}.${field} must hold view member names`);
+          continue;
+        }
+        const separator = member.lastIndexOf(".");
+        if (separator <= 0) {
+          bindingFailure(bag, item.ref, `${item.ref}.${field} member ${member} must name <stateRef>.<field>`);
+          continue;
+        }
+        const inputRef = member.slice(0, separator);
+        const fieldName = member.slice(separator + 1);
+        const input = catalog.input(inputRef);
+        if (input === undefined) {
+          missingReference(bag, item.ref, `${item.ref}.${field} member ${member} names unknown view ${inputRef}`);
+          continue;
+        }
+        if (input.exposedTo.length === 0) {
+          bag.add(
+            error(
+              "permission",
+              "unauthorized-read",
+              `${item.ref}.${field} member ${member} names a view no system is granted; a local view cannot reach it`,
+              { subject: item.ref },
+            ),
+          );
+          continue;
+        }
+        if (!input.fields.has(fieldName))
+          missingReference(bag, item.ref, `${item.ref}.${field} member ${member} names no declared field`);
+      }
+    }
+  }
+}
+
 export function checkConfig(
   packs: PackSet,
   systemIndex: SystemIndex,
@@ -806,6 +947,8 @@ export function checkConfig(
             ...(problem.subject === undefined ? {} : { subject: problem.subject }),
           }),
     );
+  checkViewMembers(items, systemIndex, catalog, bag);
+  checkMemberReferences(packs, systemIndex, catalog, items, bag);
 
   const checkedRules: CheckedRule[] = [];
   let checkedFormulas: CheckedFormula[] = [];

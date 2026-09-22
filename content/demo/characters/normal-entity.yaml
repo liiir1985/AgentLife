@@ -13,3 +13,4 @@ fields:
     - cognition
     - memory
   homeLocation: agentlife.demo/lantern-square
+  bodyConfig: agentlife.demo/humanoid

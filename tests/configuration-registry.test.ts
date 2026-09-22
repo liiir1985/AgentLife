@@ -20,7 +20,7 @@ version: "1.0.0"
 kernel: ">=1.0.0 <2.0.0"
 dependencies: []
 systems:
-  - agentlife.world@1.0.0
+  - agentlife.world@1.1.0
 sections:
   locations: agentlife.world/location
 `;
@@ -39,7 +39,7 @@ kernel: ">=1.0.0 <2.0.0"
 dependencies:${dependencies.length === 0 ? " []" : ""}
 ${dependencies.map((dependency) => `  - ${dependency}`).join("\n")}
 systems:
-  - agentlife.world@1.0.0
+  - agentlife.world@1.1.0
 sections:
   world: agentlife.world/world
   locations: agentlife.world/location
@@ -141,11 +141,18 @@ fields:
         "agentlife.body/channels.vision.available",
         "agentlife.body/channels.vision.efficiency",
         "agentlife.body/cognitive-participation",
+        "agentlife.body/current-mode",
         "agentlife.body/values.move-cost",
         "agentlife.body/values.move-cost-factor",
         "agentlife.body/values.stamina",
         "agentlife.body/values.wakefulness",
+        "agentlife.world/consent",
+        "agentlife.world/environment.lamp-state",
+        "agentlife.world/environment.light-level",
         "agentlife.world/environment.visibility",
+        "agentlife.world/held-by",
+        "agentlife.world/located-at",
+        "agentlife.world/placed-on",
       ]);
     } finally {
       removeDirectory(directory);

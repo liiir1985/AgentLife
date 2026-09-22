@@ -1,0 +1,6 @@
+id: move
+type: agentlife.body/ability
+public: true
+fields:
+  name: 移动
+  description: 移动这一基本行为的身体能力

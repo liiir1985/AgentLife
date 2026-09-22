@@ -1,0 +1,30 @@
+kind: rule
+id: mode-selection
+system: agentlife.body
+triggers:
+  - agentlife.body/value-changed
+inputs:
+  - name: wakefulness
+    state: agentlife.body/values.wakefulness
+condition:
+  op: always
+changes:
+  - state: agentlife.body/current-mode
+    combine: priority
+    priority: 1
+    value:
+      kind: select
+      left:
+        kind: read
+        name: wakefulness
+      right:
+        kind: literal
+        value: 20
+        unit: points
+      operator: lt
+      then:
+        kind: literal
+        value: agentlife.demo/drowsy
+      otherwise:
+        kind: literal
+        value: agentlife.demo/awake

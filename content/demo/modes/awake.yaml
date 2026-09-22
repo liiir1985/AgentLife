@@ -1,0 +1,13 @@
+id: awake
+type: agentlife.body/mode
+public: true
+fields:
+  name: 清醒
+  description: 各项身体能力都可以正常使用。
+  abilities:
+    - agentlife.demo/speak
+    - agentlife.demo/move
+    - agentlife.demo/gesture
+    - agentlife.demo/take
+    - agentlife.demo/place
+    - agentlife.demo/operate

@@ -1,0 +1,6 @@
+id: hold
+type: agentlife.world/influence-kind
+public: true
+fields:
+  name: 拿取
+  description: 当事人把一个物品拿在手里

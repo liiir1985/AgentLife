@@ -1,0 +1,39 @@
+id: warden-patrol
+type: agentlife.character/behaviour-tree
+public: true
+fields:
+  name: 护卫巡守
+  description: 站到窑口就比划一下；不在窑口就沿路走过去；体力见底就先歇着。
+  decisionCooldown: 1
+  blackboard: {}
+  definition:
+    type: root
+    child:
+      type: selector
+      children:
+        - type: sequence
+          children:
+            - type: condition
+              call: view-below
+              args:
+                - agentlife.body/values.stamina
+                - 40
+            - type: action
+              call: idle
+        - type: sequence
+          children:
+            - type: condition
+              call: view-equals
+              args:
+                - agentlife.world/located-at.location
+                - agentlife.demo/kiln
+            - type: action
+              call: plan
+              args:
+                - agentlife.demo/wave
+        - type: action
+          call: plan
+          args:
+            - agentlife.demo/walk
+            - null
+            - agentlife.demo/kiln

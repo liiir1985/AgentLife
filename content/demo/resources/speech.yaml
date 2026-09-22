@@ -1,0 +1,7 @@
+id: speech
+type: agentlife.body/resource
+public: true
+fields:
+  name: 发声
+  description: 可被多个动作同时使用的发声资源
+  exclusive: false

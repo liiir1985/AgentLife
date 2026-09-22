@@ -1,0 +1,6 @@
+id: take
+type: agentlife.body/ability
+public: true
+fields:
+  name: 拿取
+  description: 拿取这一基本行为的身体能力

@@ -1,0 +1,37 @@
+kind: rule
+id: operate-influence
+system: agentlife.world
+triggers:
+  - agentlife.world/influence-accepted
+inputs:
+  - name: kind
+    state: agentlife.world/influence.kind
+  - name: accepted
+    state: agentlife.world/influence.accepted
+condition:
+  op: all
+  operands:
+    - op: compare
+      left:
+        kind: read
+        name: kind
+      right:
+        kind: literal
+        value: agentlife.demo/operate-item
+      operator: eq
+    - op: compare
+      left:
+        kind: read
+        name: accepted
+      right:
+        kind: literal
+        value: true
+      operator: eq
+changes:
+  - state: agentlife.world/environment.lamp-state
+    combine: priority
+    priority: 1
+    value:
+      kind: literal
+      value: 1
+      unit: state

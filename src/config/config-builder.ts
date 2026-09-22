@@ -7,6 +7,7 @@ import type { CombineMode, NumberPolicy } from "./numeric.js";
 import type { MergedItem } from "./config-merge.js";
 import type { ParsedPack } from "./source.js";
 import { formulaRefs, inputNames, type ValueExpr } from "./value-expr.js";
+import type { RuleCatalog } from "./rule-catalog.js";
 import type { CheckedFormula, CheckedChange, CheckedInput, CheckedRule, CheckedConfig } from "./config-checker.js";
 
 /**
@@ -75,6 +76,8 @@ export interface RuntimeConfig {
   /** Trigger to selected rules, in stable order. */
   readonly triggerIndex: Readonly<Record<string, readonly string[]>>;
   readonly combinePlans: Readonly<Record<string, CombinePlan>>;
+  /** Every readable field and writable state the runtime may name. */
+  readonly catalog: RuleCatalog;
   /** The exact content that can rebuild this artifact after a restore. */
   readonly sourceData: unknown;
 }
@@ -243,6 +246,7 @@ export function buildConfig(validation: CheckedConfig): RuntimeConfig {
     formulas: runtimeFormulas,
     triggerIndex,
     combinePlans,
+    catalog: validation.catalog,
     sourceData: sourceDataOf(validation, systemIndex),
   });
 }

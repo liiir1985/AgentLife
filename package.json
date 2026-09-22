@@ -21,7 +21,9 @@
     "store:verify": "vitest run tests/runtime-store.test.ts",
     "tui:manual": "tsx src/tui/manual-spike.ts",
     "phase0:verify": "tsc --noEmit && prettier --check . && vitest run",
-    "phase1:verify": "tsc --noEmit && prettier --check . && vitest run"
+    "phase1:verify": "tsc --noEmit && prettier --check . && vitest run",
+    "phase2:verify": "tsc --noEmit && prettier --check . && vitest run",
+    "phase2:demo": "tsx src/simulation/phase2-demo.ts"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.86.1",

@@ -1,0 +1,32 @@
+kind: rule
+id: recovery-effect
+system: agentlife.body
+triggers:
+  - agentlife.body/process-advanced
+inputs:
+  - name: rate
+    state: agentlife.body/process.rate
+  - name: stamina
+    state: agentlife.body/values.stamina
+condition:
+  op: compare
+  left:
+    kind: read
+    name: stamina
+  right:
+    kind: literal
+    value: 100
+    unit: points
+  operator: lt
+changes:
+  - state: agentlife.body/values.stamina
+    combine: priority
+    priority: 1
+    value:
+      kind: combine
+      method: add
+      operands:
+        - kind: read
+          name: stamina
+        - kind: read
+          name: rate

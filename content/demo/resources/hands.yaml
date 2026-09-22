@@ -1,0 +1,7 @@
+id: hands
+type: agentlife.body/resource
+public: true
+fields:
+  name: 双手
+  description: 同一时刻只能被一个动作占用的双手资源
+  exclusive: true

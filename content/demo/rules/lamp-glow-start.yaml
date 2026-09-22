@@ -1,0 +1,26 @@
+kind: rule
+id: lamp-glow-start
+system: agentlife.world
+triggers:
+  - agentlife.world/environment-changed
+inputs:
+  - name: lamp
+    state: agentlife.world/environment.lamp-state
+condition:
+  op: compare
+  left:
+    kind: read
+    name: lamp
+  right:
+    kind: literal
+    value: 1
+    unit: state
+  operator: eq
+changes:
+  - processRef: agentlife.world/lamp-glow
+    action: establish
+    params:
+      gain:
+        kind: literal
+        value: 200
+        unit: lux

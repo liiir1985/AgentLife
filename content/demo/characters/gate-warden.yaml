@@ -10,4 +10,7 @@ fields:
     kind: behaviour-tree
   modules:
     - behaviour-tree
-  homeLocation: agentlife.demo/kiln
+  homeLocation: agentlife.demo/lantern-square
+  bodyConfig: agentlife.demo/humanoid
+  behaviourTree: agentlife.demo/warden-patrol
+  localView: agentlife.demo/warden-view

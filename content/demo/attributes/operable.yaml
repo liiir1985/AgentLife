@@ -1,0 +1,7 @@
+id: operable
+type: agentlife.world/attribute
+public: true
+fields:
+  name: 可操作
+  type: boolean
+  initial: false

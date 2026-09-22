@@ -1,0 +1,7 @@
+id: locomotion
+type: agentlife.body/resource
+public: true
+fields:
+  name: 行走
+  description: 可被多个动作同时使用的行走资源
+  exclusive: false

@@ -1,0 +1,6 @@
+id: operate-item
+type: agentlife.world/influence-kind
+public: true
+fields:
+  name: 简单操作
+  description: 当事人对一个物品做一次简单操作

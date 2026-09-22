@@ -1,0 +1,42 @@
+kind: rule
+id: recovery-request
+system: agentlife.body
+triggers:
+  - agentlife.body/tick-elapsed
+inputs:
+  - name: stamina
+    state: agentlife.body/values.stamina
+  - name: light
+    state: agentlife.world/environment.light-level
+condition:
+  op: all
+  operands:
+    - op: simulation-time
+      operator: at-or-after
+      tick: 1
+    - op: compare
+      left:
+        kind: read
+        name: stamina
+      right:
+        kind: literal
+        value: 60
+        unit: points
+      operator: lt
+    - op: compare
+      left:
+        kind: read
+        name: light
+      right:
+        kind: literal
+        value: 10
+        unit: lux
+      operator: gt
+changes:
+  - processRef: agentlife.body/recovery
+    action: establish
+    params:
+      rate:
+        kind: literal
+        value: 5
+        unit: points

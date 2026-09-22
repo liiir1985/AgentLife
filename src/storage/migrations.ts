@@ -79,6 +79,20 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX IF NOT EXISTS evaluation_traces_request ON evaluation_traces(request_id);
     `,
   },
+  {
+    version: 3,
+    name: "simulation-saves",
+    statements: `
+      CREATE TABLE IF NOT EXISTS simulation_saves (
+        save_id TEXT PRIMARY KEY,
+        timeline_id TEXT NOT NULL REFERENCES timelines(timeline_id),
+        tick INTEGER NOT NULL,
+        config_identity TEXT NOT NULL REFERENCES config_versions(identity),
+        payload_json TEXT NOT NULL CHECK(json_valid(payload_json))
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS simulation_saves_timeline ON simulation_saves(timeline_id);
+    `,
+  },
 ];
 
 export function currentMigrationLevel(sqlite: DatabaseSync): number {
@@ -119,4 +133,5 @@ export const STORE_TABLES: readonly string[] = [
   "current_config",
   "evaluation_traces",
   "consumed_effects",
+  "simulation_saves",
 ];

@@ -1,0 +1,7 @@
+id: support
+type: agentlife.world/attribute
+public: true
+fields:
+  name: 可放置
+  type: boolean
+  initial: false

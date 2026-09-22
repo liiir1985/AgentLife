@@ -1,0 +1,48 @@
+kind: rule
+id: take-influence
+system: agentlife.world
+triggers:
+  - agentlife.world/influence-accepted
+inputs:
+  - name: kind
+    state: agentlife.world/influence.kind
+  - name: role
+    state: agentlife.world/participation.role
+  - name: accepted
+    state: agentlife.world/influence.accepted
+  - name: value
+    state: agentlife.world/influence.actor
+condition:
+  op: all
+  operands:
+    - op: compare
+      left:
+        kind: read
+        name: kind
+      right:
+        kind: literal
+        value: agentlife.demo/hold
+      operator: eq
+    - op: compare
+      left:
+        kind: read
+        name: role
+      right:
+        kind: literal
+        value: subject
+      operator: eq
+    - op: compare
+      left:
+        kind: read
+        name: accepted
+      right:
+        kind: literal
+        value: true
+      operator: eq
+changes:
+  - state: agentlife.world/held-by
+    combine: priority
+    priority: 1
+    value:
+      kind: read
+      name: value

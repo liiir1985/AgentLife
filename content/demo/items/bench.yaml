@@ -4,8 +4,7 @@ public: true
 fields:
   name: 石凳
   description: 广场边上一块被磨得发亮的石条，放得下随身的小东西。
-  roles:
-    - surface
-  containerCapacity: 0
   tags:
     - furniture
+  attributes:
+    agentlife.demo/support: true

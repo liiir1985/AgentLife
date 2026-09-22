@@ -1,0 +1,32 @@
+kind: rule
+id: lamp-glow-advance
+system: agentlife.world
+triggers:
+  - agentlife.world/process-advanced
+inputs:
+  - name: gain
+    state: agentlife.world/process.gain
+  - name: light
+    state: agentlife.world/environment.light-level
+condition:
+  op: compare
+  left:
+    kind: read
+    name: light
+  right:
+    kind: literal
+    value: 500
+    unit: lux
+  operator: lt
+changes:
+  - state: agentlife.world/environment.light-level
+    combine: priority
+    priority: 1
+    value:
+      kind: combine
+      method: add
+      operands:
+        - kind: read
+          name: light
+        - kind: read
+          name: gain

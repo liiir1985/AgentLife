@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   BehaviorTreeAdapterError,
-  BehaviorTreeAdapterProbe,
+  BehaviorTreeAdapter,
   type BehaviorDecision,
   type BehaviorFunctionRegistry,
   type BehaviorTreeAdapterOptions,
@@ -57,6 +57,9 @@ const seededState = {
   plan: [],
   trace: [],
   appliedKeys: [],
+  cooldownUntilTick: 0,
+  activePlanId: null,
+  inputVersion: "",
 } as const;
 
 function decisionView(decision: BehaviorDecision): Omit<BehaviorDecision, "key"> {
@@ -69,9 +72,9 @@ function decisionView(decision: BehaviorDecision): Omit<BehaviorDecision, "key">
   };
 }
 
-describe("BehaviorTreeAdapterProbe", () => {
+describe("BehaviorTreeAdapter", () => {
   it("resolves a JSON definition within one decision and traces canonical paths", () => {
-    const adapter = BehaviorTreeAdapterProbe.restore(options, seededState);
+    const adapter = BehaviorTreeAdapter.restore(options, seededState);
     const decision = adapter.decide({ tick: 1, key: "round-1:1" });
 
     expect(decision.status).toBe("resolved");
@@ -89,12 +92,12 @@ describe("BehaviorTreeAdapterProbe", () => {
   });
 
   it("produces identical decisions for the same tick sequence after save and restore", () => {
-    const fresh = BehaviorTreeAdapterProbe.restore(options, seededState);
+    const fresh = BehaviorTreeAdapter.restore(options, seededState);
     for (const tick of [1, 2]) fresh.decide({ tick, key: `round-1:${tick}` });
     const checkpoint = fresh.exportState();
     const direct = fresh.decide({ tick: 3, key: "round-1:3" });
 
-    const restored = BehaviorTreeAdapterProbe.restore(options, checkpoint);
+    const restored = BehaviorTreeAdapter.restore(options, checkpoint);
     const replayed = restored.decide({ tick: 3, key: "round-1:3" });
 
     expect(replayed).toEqual(direct);
@@ -104,7 +107,7 @@ describe("BehaviorTreeAdapterProbe", () => {
   });
 
   it("round-trips an exported state without losing plan, blackboard or trace", () => {
-    const adapter = BehaviorTreeAdapterProbe.restore(options, seededState);
+    const adapter = BehaviorTreeAdapter.restore(options, seededState);
     adapter.decide({ tick: 1, key: "round-1:1" });
     const state = adapter.exportState();
 
@@ -118,12 +121,15 @@ describe("BehaviorTreeAdapterProbe", () => {
       plan: ["gather", "spend"],
       trace: expect.any(Array),
       appliedKeys: ["round-1:1"],
+      cooldownUntilTick: 0,
+      activePlanId: null,
+      inputVersion: "",
     });
-    expect(BehaviorTreeAdapterProbe.restore(options, state).exportState()).toEqual(state);
+    expect(BehaviorTreeAdapter.restore(options, state).exportState()).toEqual(state);
   });
 
   it("reports a repeated key as already applied without touching the blackboard", () => {
-    const adapter = BehaviorTreeAdapterProbe.restore(options, seededState);
+    const adapter = BehaviorTreeAdapter.restore(options, seededState);
     adapter.decide({ tick: 1, key: "round-1:1" });
     const before = adapter.exportState();
 
@@ -134,7 +140,7 @@ describe("BehaviorTreeAdapterProbe", () => {
   });
 
   it("refuses ticks that do not advance", () => {
-    const adapter = BehaviorTreeAdapterProbe.restore(options, seededState);
+    const adapter = BehaviorTreeAdapter.restore(options, seededState);
     adapter.decide({ tick: 4, key: "round-1:4" });
     expect(() => adapter.decide({ tick: 4, key: "round-2:4" })).toThrow(/does not advance/);
     expect(() => adapter.decide({ tick: 3, key: "round-2:3" })).toThrow(/does not advance/);
@@ -157,7 +163,7 @@ describe("BehaviorTreeAdapterProbe", () => {
       tickSeconds: 1,
       maxBlackboardKeys: 2,
     };
-    const adapter = BehaviorTreeAdapterProbe.create(growOptions);
+    const adapter = BehaviorTreeAdapter.create(growOptions);
     const first = adapter.decide({ tick: 1, key: "k1" });
     expect(first.blackboard).toEqual({ count: 1, "key-0": 0 });
 
@@ -165,7 +171,7 @@ describe("BehaviorTreeAdapterProbe", () => {
     expect(adapter.exportState().blackboard).toEqual({ count: 1, "key-0": 0 });
     expect(() => adapter.decide({ tick: 2, key: "k3" })).toThrow(/unusable/);
 
-    const nonJson = BehaviorTreeAdapterProbe.create({
+    const nonJson = BehaviorTreeAdapter.create({
       definition: { type: "root", child: { type: "action", call: "store" } },
       registry: { functions: { store: (context) => (context.write("bad", Number.NaN), "succeeded") }, predicates: {} },
       tickSeconds: 1,
@@ -187,13 +193,13 @@ describe("BehaviorTreeAdapterProbe", () => {
       },
       tickSeconds: 1,
     };
-    expect(BehaviorTreeAdapterProbe.create(repeatOptions).decide({ tick: 1, key: "k1" }).plan).toEqual([
+    expect(BehaviorTreeAdapter.create(repeatOptions).decide({ tick: 1, key: "k1" }).plan).toEqual([
       "tick",
       "tick",
       "tick",
     ]);
 
-    const bounded = BehaviorTreeAdapterProbe.create({ ...repeatOptions, maxStepsPerDecision: 2 });
+    const bounded = BehaviorTreeAdapter.create({ ...repeatOptions, maxStepsPerDecision: 2 });
     expect(() => bounded.decide({ tick: 1, key: "k1" })).toThrow(/did not resolve within 2 steps/);
   });
 
@@ -211,12 +217,12 @@ describe("BehaviorTreeAdapterProbe", () => {
       tickSeconds: 1,
     };
 
-    const adapter = BehaviorTreeAdapterProbe.restore(guarded, seededState);
+    const adapter = BehaviorTreeAdapter.restore(guarded, seededState);
     expect(adapter.decide({ tick: 1, key: "k1" }).plan).toEqual(["note:enter", "gather"]);
     expect(adapter.exportState().blackboard).toEqual({ energy: 3 });
 
     // A failing guard blocks the guarded subtree for the decision without drift.
-    const blocked = BehaviorTreeAdapterProbe.restore(guarded, { ...seededState, blackboard: { energy: 9 } });
+    const blocked = BehaviorTreeAdapter.restore(guarded, { ...seededState, blackboard: { energy: 9 } });
     const decision = blocked.decide({ tick: 1, key: "k1" });
     expect(decision.plan).toEqual([]);
     expect(decision.blackboard).toEqual({ energy: 9 });
@@ -225,7 +231,7 @@ describe("BehaviorTreeAdapterProbe", () => {
   it("rejects MDSL text, excluded node kinds, unknown kinds and bad references", () => {
     const attempt = (candidate: unknown): string => {
       try {
-        BehaviorTreeAdapterProbe.create({ ...options, definition: candidate });
+        BehaviorTreeAdapter.create({ ...options, definition: candidate });
         return "accepted";
       } catch (error) {
         return (error as BehaviorTreeAdapterError).message;
@@ -262,11 +268,11 @@ describe("BehaviorTreeAdapterProbe", () => {
   });
 
   it("keeps decision streams deterministic across independent adapter instances", () => {
-    const record = (adapter: BehaviorTreeAdapterProbe, ticks: readonly number[]): BehaviorDecision[] =>
+    const record = (adapter: BehaviorTreeAdapter, ticks: readonly number[]): BehaviorDecision[] =>
       ticks.map((tick) => adapter.decide({ tick, key: `round-1:${tick}` }));
 
-    const first = record(BehaviorTreeAdapterProbe.restore(options, seededState), [1, 2, 3]);
-    const second = record(BehaviorTreeAdapterProbe.restore(options, seededState), [1, 2, 3]);
+    const first = record(BehaviorTreeAdapter.restore(options, seededState), [1, 2, 3]);
+    const second = record(BehaviorTreeAdapter.restore(options, seededState), [1, 2, 3]);
 
     expect(second.map(decisionView)).toEqual(first.map(decisionView));
   });

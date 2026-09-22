@@ -1,0 +1,85 @@
+kind: rule
+id: move-exertion
+system: agentlife.body
+triggers:
+  - agentlife.body/action-advanced
+inputs:
+  - name: action
+    state: agentlife.body/activity.action
+  - name: stamina
+    state: agentlife.body/values.stamina
+  - name: cost
+    state: agentlife.body/values.move-cost
+  - name: factor
+    state: agentlife.body/values.move-cost-factor
+condition:
+  op: compare
+  left:
+    kind: read
+    name: action
+  right:
+    kind: literal
+    value: agentlife.demo/walk
+  operator: eq
+changes:
+  - state: agentlife.body/values.stamina
+    combine: priority
+    priority: 1
+    value:
+      kind: combine
+      method: add
+      operands:
+        - kind: read
+          name: stamina
+        - kind: map
+          input:
+            kind: read
+            name: cost
+          mapping:
+            kind: piecewise-linear
+            inputUnit: points
+            points:
+              - x: 2
+                y: -1
+              - x: 5
+                y: -2.5
+              - x: 12
+                y: -6
+            outOfRange:
+              kind: clamp
+            policy:
+              unit: points
+              rounding:
+                mode: half-away-from-zero
+                precision: 1
+              range:
+                min: -10
+                max: 0
+                boundary: inclusive
+              overflow: saturate
+        - kind: map
+          input:
+            kind: read
+            name: factor
+          mapping:
+            kind: piecewise-linear
+            inputUnit: ratio
+            points:
+              - x: 1
+                y: -1
+              - x: 2
+                y: -2
+              - x: 3
+                y: -4
+            outOfRange:
+              kind: clamp
+            policy:
+              unit: points
+              rounding:
+                mode: half-away-from-zero
+                precision: 1
+              range:
+                min: -8
+                max: 0
+                boundary: inclusive
+              overflow: saturate

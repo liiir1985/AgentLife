@@ -1,0 +1,12 @@
+id: wave
+type: agentlife.body/action
+public: true
+fields:
+  name: 挥手
+  description: 挥手的完整动作定义，包含每一个阶段占用的资源。
+  ability: agentlife.demo/gesture
+  interruptible: true
+  stages:
+    - name: 抬手
+      ticks: 2
+      resource: agentlife.demo/hands

@@ -1,0 +1,6 @@
+id: place
+type: agentlife.body/ability
+public: true
+fields:
+  name: 放置
+  description: 放置这一基本行为的身体能力
