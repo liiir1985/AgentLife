@@ -1,0 +1,17 @@
+id: command-say
+type: agentlife.interaction/action-command
+public: true
+fields:
+  name: 说话
+  description: 说出一段文字；阶段 3 不触发其他角色认知。
+  order: 60
+  aliases: [say]
+  action: agentlife.demo/say
+  conflict: parallel
+  arguments:
+    - name: 话语
+      kind: text
+      field: utterance
+      prompt: 输入要说的话
+      minLength: 1
+      maxLength: 500

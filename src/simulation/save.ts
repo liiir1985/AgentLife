@@ -107,6 +107,7 @@ const STEP_SCHEMA = Type.Object(
     action: Type.String(),
     target: Type.Optional(Type.String()),
     destination: Type.Optional(Type.String()),
+    inputs: Type.Optional(Type.Record(Type.String(), Type.String())),
   },
   { additionalProperties: false },
 );

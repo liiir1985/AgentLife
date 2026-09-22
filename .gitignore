@@ -4,3 +4,4 @@ coverage/
 *.sqlite-shm
 *.sqlite-wal
 .env
+.agentlife/

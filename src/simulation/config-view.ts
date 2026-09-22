@@ -54,7 +54,8 @@ export type ItemTypeRef =
   | "agentlife.body/body"
   | "agentlife.body/action"
   | "agentlife.character/character"
-  | "agentlife.character/behaviour-tree";
+  | "agentlife.character/behaviour-tree"
+  | "agentlife.interaction/action-command";
 
 function asString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;

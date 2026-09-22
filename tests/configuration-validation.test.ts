@@ -15,13 +15,14 @@ import { Type } from "typebox";
 import { defineValueContainer } from "../src/config/value-shapes.js";
 
 const DEMO_MANIFEST = `pack: agentlife.demo
-version: "1.1.0"
+version: "1.2.0"
 kernel: ">=1.0.0 <2.0.0"
 dependencies: []
 systems:
   - agentlife.world@1.1.0
   - agentlife.body@1.1.0
   - agentlife.character@1.1.0
+  - agentlife.interaction@1.1.0
 sections:
   world: agentlife.world/world
   locations: agentlife.world/location
@@ -40,6 +41,7 @@ sections:
   actions: agentlife.body/action
   characters: agentlife.character/character
   behaviourTrees: agentlife.character/behaviour-tree
+  commands: agentlife.interaction/action-command
 `;
 
 interface RefusalCase {

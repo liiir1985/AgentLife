@@ -1,6 +1,7 @@
 import type { SystemSpec } from "../config/system-spec.js";
 import { createBodySpec } from "./body-spec.js";
 import { createCharacterSpec } from "./character-spec.js";
+import { createInteractionSpec } from "./interaction-spec.js";
 import { createWorldSpec } from "./world-spec.js";
 
 /**
@@ -10,7 +11,7 @@ import { createWorldSpec } from "./world-spec.js";
  * same registry: identity, not load order, decides visibility and ownership.
  */
 export function createSystemSpecs(): readonly SystemSpec[] {
-  return [createWorldSpec(), createBodySpec(), createCharacterSpec()];
+  return [createWorldSpec(), createBodySpec(), createCharacterSpec(), createInteractionSpec()];
 }
 
-export { createBodySpec, createCharacterSpec, createWorldSpec };
+export { createBodySpec, createCharacterSpec, createInteractionSpec, createWorldSpec };

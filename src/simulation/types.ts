@@ -176,6 +176,8 @@ export interface ActionStep {
   readonly target?: string;
   /** Place or supporting entity the action names. */
   readonly destination?: string;
+  /** Content-defined text captured by the interaction layer; services keep it opaque. */
+  readonly inputs?: Readonly<Record<string, string>>;
 }
 
 export interface ActionPlan {

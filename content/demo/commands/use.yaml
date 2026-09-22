@@ -1,0 +1,19 @@
+id: command-use
+type: agentlife.interaction/action-command
+public: true
+fields:
+  name: 操作
+  description: 操作当前位置可操作的物品。
+  order: 40
+  aliases: [use]
+  action: agentlife.demo/use
+  conflict: queue
+  arguments:
+    - name: 物品
+      kind: entity
+      binding: target
+      candidates: visible-items
+      filters:
+        - attribute: agentlife.demo/operable
+          equals: true
+      prompt: 选择要操作的物品

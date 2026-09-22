@@ -1,0 +1,19 @@
+id: command-take
+type: agentlife.interaction/action-command
+public: true
+fields:
+  name: 拿取
+  description: 拿起当前位置能够携带的物品。
+  order: 20
+  aliases: [take]
+  action: agentlife.demo/grasp
+  conflict: queue
+  arguments:
+    - name: 物品
+      kind: entity
+      binding: target
+      candidates: visible-items
+      filters:
+        - attribute: agentlife.demo/portable
+          equals: true
+      prompt: 选择要拿取的物品

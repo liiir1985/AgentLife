@@ -155,13 +155,14 @@ function moodAttribute(initial: string): string {
  * in their system declarations share one content identity.
  */
 const MANIFEST_ANY_WORLD_VERSION = `pack: agentlife.demo
-version: "1.1.0"
+version: "1.2.0"
 kernel: ">=1.0.0 <2.0.0"
 dependencies: []
 systems:
   - agentlife.world
   - agentlife.body@1.1.0
   - agentlife.character@1.1.0
+  - agentlife.interaction@1.1.0
 sections:
   world: agentlife.world/world
   locations: agentlife.world/location
@@ -180,6 +181,7 @@ sections:
   actions: agentlife.body/action
   characters: agentlife.character/character
   behaviourTrees: agentlife.character/behaviour-tree
+  commands: agentlife.interaction/action-command
 `;
 
 /** The demo systems with one version raised; the spec hash follows the version. */

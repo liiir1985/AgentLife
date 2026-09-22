@@ -1,0 +1,16 @@
+id: command-move
+type: agentlife.interaction/action-command
+public: true
+fields:
+  name: 移动
+  description: 前往当前地点相连的另一个地点。
+  order: 10
+  aliases: [move, go]
+  action: agentlife.demo/walk
+  conflict: queue
+  arguments:
+    - name: 目的地
+      kind: entity
+      binding: destination
+      candidates: current-exits
+      prompt: 选择要前往的地点

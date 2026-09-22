@@ -33,7 +33,7 @@ export const currentConfig = sqliteTable("current_config", {
 
 export const RUNTIME_CONFIG_PAYLOAD_VERSION = "1";
 export const RUNTIME_CONFIG_PAYLOAD_TYPE = "runtime-config";
-export const SIMULATION_SAVE_VERSION = "1";
+export const SIMULATION_SAVE_VERSION = "2";
 export const SIMULATION_SAVE_TYPE = "simulation-save";
 
 export const simulationSaves = sqliteTable("simulation_saves", {

@@ -1,0 +1,24 @@
+id: command-put
+type: agentlife.interaction/action-command
+public: true
+fields:
+  name: 放置
+  description: 把持有物放到当前位置的支撑物上。
+  order: 30
+  aliases: [put]
+  action: agentlife.demo/lay-down
+  conflict: queue
+  arguments:
+    - name: 物品
+      kind: entity
+      binding: target
+      candidates: held-items
+      prompt: 选择要放置的物品
+    - name: 支撑物
+      kind: entity
+      binding: destination
+      candidates: visible-items
+      filters:
+        - attribute: agentlife.demo/support
+          equals: true
+      prompt: 选择放置位置

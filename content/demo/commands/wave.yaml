@@ -1,0 +1,11 @@
+id: command-wave
+type: agentlife.interaction/action-command
+public: true
+fields:
+  name: 挥手
+  description: 向当前位置的人挥手。
+  order: 50
+  aliases: [wave]
+  action: agentlife.demo/wave
+  conflict: queue
+  arguments: []
