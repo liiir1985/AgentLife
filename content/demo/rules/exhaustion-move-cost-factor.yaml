@@ -1,0 +1,27 @@
+kind: rule
+id: exhaustion-move-cost-factor
+domain: agentlife.body/extension
+triggers:
+  - agentlife.body/value-changed
+reads:
+  - alias: stamina
+    view: agentlife.body/values
+    field: stamina
+condition:
+  op: compare
+  left:
+    kind: read
+    alias: stamina
+  right:
+    kind: literal
+    value: 0
+    unit: points
+  operator: gt
+dependsOn:
+  - agentlife.demo/exhaustion-factor
+effects:
+  - target: agentlife.body/values.move-cost-factor
+    composition: multiply
+    value:
+      kind: derived
+      ref: agentlife.demo/exhaustion-factor

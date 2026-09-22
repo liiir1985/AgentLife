@@ -1,0 +1,74 @@
+kind: rule
+id: vision-efficiency
+domain: agentlife.body/extension
+triggers:
+  - agentlife.world/environment-changed
+reads:
+  - alias: light
+    view: agentlife.world/environment
+    field: light-level
+  - alias: fog
+    view: agentlife.world/environment
+    field: fog-density
+condition:
+  op: always
+effects:
+  - target: agentlife.body/channels.vision.efficiency
+    composition: priority
+    priority: 1
+    value:
+      kind: combine
+      method: min
+      operands:
+        - kind: map
+          input:
+            kind: read
+            alias: light
+          mapping:
+            kind: piecewise-linear
+            inputUnit: lux
+            points:
+              - x: 0
+                y: 0
+              - x: 50
+                y: 0.35
+              - x: 500
+                y: 1
+            outOfRange:
+              kind: clamp
+            policy:
+              unit: ratio
+              rounding:
+                mode: half-away-from-zero
+                precision: 3
+              range:
+                min: 0
+                max: 1
+                boundary: inclusive
+              overflow: saturate
+        - kind: map
+          input:
+            kind: read
+            alias: fog
+          mapping:
+            kind: piecewise-constant
+            inputUnit: ratio
+            bands:
+              - from: null
+                value: 1
+              - from: 0.4
+                value: 0.6
+              - from: 0.8
+                value: 0.2
+            outOfRange:
+              kind: clamp
+            policy:
+              unit: ratio
+              rounding:
+                mode: half-away-from-zero
+                precision: 3
+              range:
+                min: 0
+                max: 1
+                boundary: inclusive
+              overflow: saturate

@@ -1,0 +1,33 @@
+kind: derivation
+id: exhaustion-factor
+domain: agentlife.body/extension
+reads:
+  - alias: stamina
+    view: agentlife.body/values
+    field: stamina
+outputUnit: ratio
+value:
+  kind: map
+  input:
+    kind: read
+    alias: stamina
+  mapping:
+    kind: piecewise-constant
+    inputUnit: points
+    bands:
+      - from: null
+        value: 1
+      - from: 20
+        value: 1.5
+    outOfRange:
+      kind: clamp
+    policy:
+      unit: ratio
+      rounding:
+        mode: half-away-from-zero
+        precision: 2
+      range:
+        min: 0.5
+        max: 3
+        boundary: inclusive
+      overflow: saturate

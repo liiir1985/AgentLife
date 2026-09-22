@@ -1,0 +1,10 @@
+id: orchard
+type: agentlife.world/location
+public: true
+fields:
+  name: 老果园
+  description: 一排排修剪过的果树，树影之间留着刚被踩出的小路。
+  exits:
+    - agentlife.demo/lantern-square
+  tags:
+    - outdoors

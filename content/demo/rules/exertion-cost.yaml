@@ -1,0 +1,63 @@
+kind: rule
+id: exertion-cost
+domain: agentlife.body/extension
+triggers:
+  - agentlife.body/value-changed
+reads:
+  - alias: intensity
+    view: agentlife.world/environment
+    field: slope
+  - alias: stamina
+    view: agentlife.body/values
+    field: stamina
+condition:
+  op: all
+  operands:
+    - op: compare
+      left:
+        kind: read
+        alias: intensity
+      right:
+        kind: literal
+        value: 0
+        unit: ratio
+      operator: gt
+    - op: compare
+      left:
+        kind: read
+        alias: stamina
+      right:
+        kind: literal
+        value: 0
+        unit: points
+      operator: gt
+effects:
+  - target: agentlife.body/values.stamina
+    composition: add
+    value:
+      kind: map
+      input:
+        kind: read
+        alias: intensity
+      mapping:
+        kind: piecewise-linear
+        inputUnit: ratio
+        points:
+          - x: 0
+            y: 0
+          - x: 0.25
+            y: -2
+          - x: 1
+            y: -12
+        outOfRange:
+          kind: clamp
+        policy:
+          unit: points
+          rounding:
+            mode: half-away-from-zero
+            precision: 1
+          range:
+            min: -20
+            max: 0
+            boundary: inclusive
+          overflow: saturate

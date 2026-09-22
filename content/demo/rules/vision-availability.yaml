@@ -1,0 +1,31 @@
+kind: rule
+id: vision-availability
+domain: agentlife.body/extension
+triggers:
+  - agentlife.world/environment-changed
+reads:
+  - alias: fog
+    view: agentlife.world/environment
+    field: fog-density
+condition:
+  op: always
+effects:
+  - target: agentlife.body/channels.vision.available
+    composition: priority
+    priority: 1
+    value:
+      kind: select
+      left:
+        kind: read
+        alias: fog
+      right:
+        kind: literal
+        value: 0.9
+        unit: ratio
+      operator: gt
+      then:
+        kind: literal
+        value: false
+      otherwise:
+        kind: literal
+        value: true

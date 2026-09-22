@@ -1,0 +1,11 @@
+id: rope
+type: agentlife.world/item
+public: true
+fields:
+  name: 麻绳
+  description: 一段被反复打成结又解开的麻绳，握起来比看起来更硬。
+  roles:
+    - carryable
+  containerCapacity: 0
+  tags:
+    - tool

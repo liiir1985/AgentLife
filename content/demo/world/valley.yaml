@@ -1,0 +1,6 @@
+id: valley
+type: agentlife.world/world
+public: true
+fields:
+  name: 山谷定居点
+  description: texts/valley.md

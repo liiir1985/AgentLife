@@ -1,0 +1,16 @@
+pack: agentlife.demo
+version: "1.0.0"
+kernel: ">=1.0.0 <2.0.0"
+dependencies: []
+extensions:
+  - agentlife.world/extension@1.0.0
+  - agentlife.body/extension@1.0.0
+  - agentlife.character/extension@1.0.0
+sections:
+  world: agentlife.world/world
+  locations: agentlife.world/location
+  items: agentlife.world/item
+  environment: agentlife.world/fact
+  values: agentlife.body/value
+  channels: agentlife.body/channel
+  characters: agentlife.character/character

@@ -1,0 +1,17 @@
+id: lamp-state
+type: agentlife.world/fact
+public: true
+fields:
+  name: 灯火状态
+  type: number
+  initial: 0
+  unit: state
+  policy:
+    rounding:
+      mode: half-away-from-zero
+      precision: 0
+    range:
+      min: 0
+      max: 1
+      boundary: inclusive
+    overflow: saturate

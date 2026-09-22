@@ -1,0 +1,17 @@
+id: move-cost-factor
+type: agentlife.body/value
+public: true
+fields:
+  name: 移动代价系数
+  type: number
+  initial: 1
+  unit: ratio
+  policy:
+    rounding:
+      mode: half-away-from-zero
+      precision: 2
+    range:
+      min: 0.25
+      max: 4
+      boundary: inclusive
+    overflow: saturate

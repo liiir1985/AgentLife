@@ -1,0 +1,12 @@
+id: lantern-square
+type: agentlife.world/location
+public: true
+fields:
+  name: 灯笼广场
+  description: texts/lantern-square.md
+  exits:
+    - agentlife.demo/orchard
+    - agentlife.demo/kiln
+  tags:
+    - public
+    - lit

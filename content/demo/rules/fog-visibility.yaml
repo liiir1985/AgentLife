@@ -1,0 +1,49 @@
+kind: rule
+id: fog-visibility
+domain: agentlife.world/extension
+triggers:
+  - agentlife.world/environment-changed
+reads:
+  - alias: fog
+    view: agentlife.world/environment
+    field: fog-density
+condition:
+  op: compare
+  left:
+    kind: read
+    alias: fog
+  right:
+    kind: literal
+    value: 0
+    unit: ratio
+  operator: gt
+effects:
+  - target: agentlife.world/environment.visibility
+    composition: min
+    value:
+      kind: map
+      input:
+        kind: read
+        alias: fog
+      mapping:
+        kind: piecewise-constant
+        inputUnit: ratio
+        bands:
+          - from: null
+            value: 1
+          - from: 0.4
+            value: 0.5
+          - from: 0.8
+            value: 0.15
+        outOfRange:
+          kind: clamp
+        policy:
+          unit: ratio
+          rounding:
+            mode: half-away-from-zero
+            precision: 3
+          range:
+            min: 0
+            max: 1
+            boundary: inclusive
+          overflow: saturate

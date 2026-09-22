@@ -1,0 +1,17 @@
+id: light-level
+type: agentlife.world/fact
+public: true
+fields:
+  name: 环境光照
+  type: number
+  initial: 320
+  unit: lux
+  policy:
+    rounding:
+      mode: half-away-from-zero
+      precision: 1
+    range:
+      min: 0
+      max: 1000
+      boundary: inclusive
+    overflow: saturate

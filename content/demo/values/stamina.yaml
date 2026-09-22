@@ -1,0 +1,17 @@
+id: stamina
+type: agentlife.body/value
+public: true
+fields:
+  name: 体力
+  type: number
+  initial: 70
+  unit: points
+  policy:
+    rounding:
+      mode: half-away-from-zero
+      precision: 1
+    range:
+      min: 0
+      max: 100
+      boundary: inclusive
+    overflow: saturate

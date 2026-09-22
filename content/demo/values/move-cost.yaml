@@ -1,0 +1,17 @@
+id: move-cost
+type: agentlife.body/value
+public: true
+fields:
+  name: 一次移动的代价
+  type: number
+  initial: 0
+  unit: points
+  policy:
+    rounding:
+      mode: half-away-from-zero
+      precision: 2
+    range:
+      min: 0
+      max: 50
+      boundary: inclusive
+    overflow: reject

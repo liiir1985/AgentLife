@@ -1,0 +1,44 @@
+kind: rule
+id: daylight-wakefulness
+domain: agentlife.body/extension
+triggers:
+  - agentlife.body/tick-elapsed
+reads:
+  - alias: angle
+    view: agentlife.world/environment
+    field: sun-angle
+condition:
+  op: simulation-time
+  operator: at-or-after
+  tick: 1
+effects:
+  - target: agentlife.body/values.wakefulness
+    composition: priority
+    priority: 10
+    value:
+      kind: map
+      input:
+        kind: read
+        alias: angle
+      mapping:
+        kind: piecewise-constant
+        inputUnit: degrees
+        bands:
+          - from: null
+            value: 0
+          - from: 60
+            value: 40
+          - from: 120
+            value: 80
+        outOfRange:
+          kind: clamp
+        policy:
+          unit: points
+          rounding:
+            mode: half-away-from-zero
+            precision: 0
+          range:
+            min: 0
+            max: 100
+            boundary: inclusive
+          overflow: saturate

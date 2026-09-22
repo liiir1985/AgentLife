@@ -16,8 +16,12 @@
     "spike:content": "vitest run tests/content-pack-loader.test.ts",
     "spike:storage": "vitest run tests/runtime-store-probe.test.ts",
     "spike:behavior": "vitest run tests/behavior-tree-adapter.test.ts",
+    "config:verify": "vitest run tests/rule-kernel.test.ts tests/configuration-validation.test.ts",
+    "config:demo": "tsx src/config/demo-runner.ts",
+    "store:verify": "vitest run tests/runtime-store.test.ts",
     "tui:manual": "tsx src/tui/manual-spike.ts",
-    "phase0:verify": "tsc --noEmit && prettier --check . && vitest run"
+    "phase0:verify": "tsc --noEmit && prettier --check . && vitest run",
+    "phase1:verify": "tsc --noEmit && prettier --check . && vitest run"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.86.1",

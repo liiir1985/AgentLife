@@ -1,0 +1,10 @@
+id: companion
+type: agentlife.character/character
+public: true
+templates:
+  - agentlife.demo/normal-entity
+fields:
+  name: 阿禾
+  identity: texts/companion-identity.md
+  main: true
+  homeLocation: agentlife.demo/orchard

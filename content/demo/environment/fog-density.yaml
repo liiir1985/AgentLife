@@ -1,0 +1,17 @@
+id: fog-density
+type: agentlife.world/fact
+public: true
+fields:
+  name: 雾气浓度
+  type: number
+  initial: 0.2
+  unit: ratio
+  policy:
+    rounding:
+      mode: half-away-from-zero
+      precision: 3
+    range:
+      min: 0
+      max: 1
+      boundary: inclusive
+    overflow: saturate

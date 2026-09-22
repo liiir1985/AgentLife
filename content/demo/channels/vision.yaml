@@ -1,0 +1,17 @@
+id: vision
+type: agentlife.body/channel
+public: true
+fields:
+  name: 视觉
+  available: true
+  efficiency: 0.8
+  unit: ratio
+  policy:
+    rounding:
+      mode: half-away-from-zero
+      precision: 3
+    range:
+      min: 0
+      max: 1
+      boundary: inclusive
+    overflow: saturate

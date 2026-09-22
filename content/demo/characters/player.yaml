@@ -1,0 +1,12 @@
+id: player
+type: agentlife.character/character
+public: true
+templates:
+  - agentlife.demo/normal-entity
+fields:
+  name: 旅人
+  identity: 来自山谷外，靠替人跑腿换取住处；去年冬天在最冷的那个月走完了整条北岭，从此不再轻易相信路程表。谨慎、慢热，习惯先把周围看清楚再开口；看重清晨和有顶的地方，认为自己是个靠得住的人。
+  main: true
+  control:
+    kind: user
+  homeLocation: agentlife.demo/lantern-square

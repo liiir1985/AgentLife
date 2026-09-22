@@ -1,0 +1,8 @@
+id: load
+type: agentlife.body/value
+public: true
+fields:
+  name: 负重
+  type: number
+  initial: 0
+  unit: mass

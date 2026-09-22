@@ -1,0 +1,10 @@
+id: kiln
+type: agentlife.world/location
+public: true
+fields:
+  name: 斜坡窑口
+  description: 窑口的余温还在往坡上散，地面因此比别处更干更滑。
+  exits:
+    - agentlife.demo/lantern-square
+  tags:
+    - warm

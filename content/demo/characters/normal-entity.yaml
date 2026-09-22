@@ -1,0 +1,15 @@
+id: normal-entity
+type: agentlife.character/character
+public: true
+fields:
+  name: 正常实体基线
+  identity: 一个有感知、有认知、有记忆的正常实体；具体身世由派生角色写明。
+  tier: normal
+  main: false
+  control:
+    kind: cognition
+  modules:
+    - perception
+    - cognition
+    - memory
+  homeLocation: agentlife.demo/lantern-square

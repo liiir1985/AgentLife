@@ -1,0 +1,41 @@
+kind: rule
+id: darkness-visibility
+domain: agentlife.world/extension
+triggers:
+  - agentlife.world/environment-changed
+reads:
+  - alias: light
+    view: agentlife.world/environment
+    field: light-level
+condition:
+  op: always
+effects:
+  - target: agentlife.world/environment.visibility
+    composition: min
+    value:
+      kind: map
+      input:
+        kind: read
+        alias: light
+      mapping:
+        kind: piecewise-linear
+        inputUnit: lux
+        points:
+          - x: 0
+            y: 0
+          - x: 50
+            y: 0.3
+          - x: 500
+            y: 1
+        outOfRange:
+          kind: clamp
+        policy:
+          unit: ratio
+          rounding:
+            mode: half-away-from-zero
+            precision: 3
+          range:
+            min: 0
+            max: 1
+            boundary: inclusive
+          overflow: saturate

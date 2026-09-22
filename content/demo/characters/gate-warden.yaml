@@ -1,0 +1,13 @@
+id: gate-warden
+type: agentlife.character/character
+public: true
+fields:
+  name: 门口的护卫
+  identity: 领一份口粮，守一段路；记不住太多事，只记得谁在夜里进出过。按规矩办事。
+  tier: degraded
+  main: false
+  control:
+    kind: behaviour-tree
+  modules:
+    - behaviour-tree
+  homeLocation: agentlife.demo/kiln

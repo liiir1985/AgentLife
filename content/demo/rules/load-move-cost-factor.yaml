@@ -1,0 +1,36 @@
+kind: rule
+id: load-move-cost-factor
+domain: agentlife.body/extension
+triggers:
+  - agentlife.body/value-changed
+reads:
+  - alias: load
+    view: agentlife.body/values
+    field: load
+condition:
+  op: always
+effects:
+  - target: agentlife.body/values.move-cost-factor
+    composition: multiply
+    value:
+      kind: map
+      input:
+        kind: read
+        alias: load
+      mapping:
+        kind: threshold
+        inputUnit: mass
+        at: 10
+        boundary: lower
+        below: 1
+        above: 1.2
+        policy:
+          unit: ratio
+          rounding:
+            mode: half-away-from-zero
+            precision: 2
+          range:
+            min: 0.25
+            max: 4
+            boundary: inclusive
+          overflow: saturate

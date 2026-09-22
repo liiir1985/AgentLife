@@ -1,0 +1,41 @@
+kind: rule
+id: terrain-move-cost-factor
+domain: agentlife.body/extension
+triggers:
+  - agentlife.body/value-changed
+reads:
+  - alias: slope
+    view: agentlife.world/environment
+    field: slope
+condition:
+  op: always
+effects:
+  - target: agentlife.body/values.move-cost-factor
+    composition: multiply
+    value:
+      kind: map
+      input:
+        kind: read
+        alias: slope
+      mapping:
+        kind: piecewise-constant
+        inputUnit: ratio
+        bands:
+          - from: null
+            value: 1
+          - from: 0.2
+            value: 1.4
+          - from: 0.6
+            value: 2
+        outOfRange:
+          kind: clamp
+        policy:
+          unit: ratio
+          rounding:
+            mode: half-away-from-zero
+            precision: 2
+          range:
+            min: 0.25
+            max: 4
+            boundary: inclusive
+          overflow: saturate

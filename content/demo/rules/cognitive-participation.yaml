@@ -1,0 +1,44 @@
+kind: rule
+id: cognitive-participation
+domain: agentlife.body/extension
+triggers:
+  - agentlife.body/value-changed
+reads:
+  - alias: wakefulness
+    view: agentlife.body/values
+    field: wakefulness
+condition:
+  op: always
+effects:
+  - target: agentlife.body/cognitive-participation
+    composition: priority
+    priority: 1
+    value:
+      kind: select
+      left:
+        kind: read
+        alias: wakefulness
+      right:
+        kind: literal
+        value: 20
+        unit: points
+      operator: lt
+      then:
+        kind: literal
+        value: forbidden
+      otherwise:
+        kind: select
+        left:
+          kind: read
+          alias: wakefulness
+        right:
+          kind: literal
+          value: 60
+          unit: points
+        operator: lt
+        then:
+          kind: literal
+          value: restricted
+        otherwise:
+          kind: literal
+          value: allowed

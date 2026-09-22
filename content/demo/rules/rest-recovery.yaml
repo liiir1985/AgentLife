@@ -1,0 +1,59 @@
+kind: rule
+id: rest-recovery
+domain: agentlife.body/extension
+triggers:
+  - agentlife.body/tick-elapsed
+reads:
+  - alias: stamina
+    view: agentlife.body/values
+    field: stamina
+  - alias: light
+    view: agentlife.world/environment
+    field: light-level
+condition:
+  op: all
+  operands:
+    - op: simulation-time
+      operator: at-or-after
+      tick: 1
+    - op: within
+      value:
+        kind: read
+        alias: stamina
+      min: 0
+      max: 60
+      boundary: exclusive
+    - op: compare
+      left:
+        kind: read
+        alias: light
+      right:
+        kind: literal
+        value: 10
+        unit: lux
+      operator: gt
+effects:
+  - target: agentlife.body/values.stamina
+    composition: add
+    value:
+      kind: map
+      input:
+        kind: read
+        alias: stamina
+      mapping:
+        kind: threshold
+        inputUnit: points
+        at: 30
+        boundary: lower
+        below: 5
+        above: 1
+        policy:
+          unit: points
+          rounding:
+            mode: half-away-from-zero
+            precision: 1
+          range:
+            min: 0
+            max: 10
+            boundary: inclusive
+          overflow: saturate

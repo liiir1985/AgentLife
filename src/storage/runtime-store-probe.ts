@@ -5,6 +5,7 @@ import { drizzle, type NodeSQLiteDatabase } from "drizzle-orm/node-sqlite";
 import { integer, sqliteTable, text, type AnySQLiteColumn, type SQLiteTable } from "drizzle-orm/sqlite-core";
 import type { TSchema } from "typebox";
 import { Value } from "typebox/value";
+import { applyMigrations } from "./migrations.js";
 
 export const timelines = sqliteTable("timelines", {
   timelineId: text("timeline_id").primaryKey(),
@@ -210,36 +211,7 @@ export class RuntimeStoreProbe {
   }
 
   private migrate(): void {
-    this.sqlite.exec(`
-      CREATE TABLE IF NOT EXISTS timelines (
-        timeline_id TEXT PRIMARY KEY,
-        parent_timeline_id TEXT REFERENCES timelines(timeline_id)
-      ) STRICT;
-      CREATE TABLE IF NOT EXISTS payloads (
-        id INTEGER PRIMARY KEY,
-        schema_version TEXT NOT NULL,
-        payload_type TEXT NOT NULL,
-        payload_json TEXT NOT NULL CHECK(json_valid(payload_json))
-      ) STRICT;
-      CREATE TABLE IF NOT EXISTS snapshots (
-        id INTEGER PRIMARY KEY,
-        timeline_id TEXT NOT NULL REFERENCES timelines(timeline_id),
-        tick INTEGER NOT NULL,
-        phase TEXT NOT NULL,
-        payload_json TEXT NOT NULL CHECK(json_valid(payload_json))
-      ) STRICT;
-      CREATE TABLE IF NOT EXISTS idempotency_commits (
-        idempotency_key TEXT PRIMARY KEY,
-        timeline_id TEXT NOT NULL REFERENCES timelines(timeline_id)
-      ) STRICT;
-      CREATE TABLE IF NOT EXISTS phase_records (
-        id INTEGER PRIMARY KEY,
-        timeline_id TEXT NOT NULL REFERENCES timelines(timeline_id),
-        tick INTEGER NOT NULL,
-        phase TEXT NOT NULL,
-        idempotency_key TEXT NOT NULL UNIQUE REFERENCES idempotency_commits(idempotency_key)
-      ) STRICT;
-    `);
+    applyMigrations(this.sqlite);
   }
 }
 

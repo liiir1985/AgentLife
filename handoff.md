@@ -18,7 +18,9 @@
 
 总设计及详细设计索引位于 `Readme.md`。具体语义以各详细设计文档为准，本交接只记录阶段结论和后续约束。
 
-实现层面已按 `docs/implementation-roadmap.md` 完成**阶段 0：技术 Spike**（工程入口 + 五组组件验证），结论、风险与阶段 1 硬约束见 `docs/phase-0-spike-report.md`。当前处于阶段 1 起点（内容、配置与规则基础），尚无领域实现。
+实现层面已按 `docs/implementation-roadmap.md` 完成**阶段 0：技术 Spike**（工程入口 + 五组组件验证）与**阶段 1：内容、配置与规则基础**（内容包规范与演示内容、七阶段验证、不可变运行配置与触发索引、三种映射与五种组合、SQLite 版本化迁移与存档接口）。结论、退出条件证据、硬约束与暂缓范围见 `docs/phase-0-spike-report.md` 与 `docs/phase-1-report.md`。当前处于阶段 2 起点（确定性模拟内核），尚无领域运行状态。
+
+阶段 1 交付的运行时能力集中在 `src/config`（身份/诊断/数值与映射/取值与条件/扩展注册/值族与词汇展开/内容包解析/解析与来源/七阶段验证/编译/确定性求值/原子更新/演示运行器）与 `src/storage`（迁移、`RuntimeStore`、配置提交崩溃注入），领域词汇以扩展形式注册在 `src/domains`（world/body/character），演示内容为仓库内的 `content/demo`。规则只产生候选效果并返回完整追踪；领域提交、动作生命周期、过程推进与 Tick 阶段仍属阶段 2。进入阶段 2 前先读 `docs/phase-1-report.md` 的 §13 硬约束，以及 §15 记录的阶段 1 偏差（**值族取代硬编码指标词汇**：值由内容定义展开为 `agentlife.body/values.<id>`、`agentlife.body/channels.<id>.*`、`agentlife.world/environment.<id>`；契约值单写方；组合方式由规则声明）。
 
 ## 已有配置生成 Skill 设计内容
 
@@ -255,4 +257,6 @@ AI 没有提交立即行动时，必须等待可验证外部事件、登记确�
 
 设计阶段新增 `docs/configuration-authoring-skill.md`，并同步修改 `Readme.md`、`handoff.md`、`docs/configuration-rule-infrastructure.md`、`docs/character-system.md`、`docs/body-system.md`、`docs/perception-system.md`、`docs/cognition-system.md` 和 `docs/memory-system.md`。未实现实际 Skill、结构化资料编辑工具或配置审阅及应用系统；第三方行为树内部设计不属于 AgentLife。
 
-随后按 `docs/implementation-roadmap.md` 的**阶段 0：技术 Spike** 建立了工程入口（Node 24 + ESM + pnpm + Vitest + 严格 TS，依赖精确锁定并提交 lockfile），五组 Spike 的适配器与测试位于 `src/{agent,content,storage,behavior,tui}` 与 `tests`，结论、风险和阶段 1 硬约束记录在 `docs/phase-0-spike-report.md`。阶段 0 已判定完成（自动测试 59 passed | 1 skipped，`pnpm phase0:verify` 全绿，Windows Terminal 人工清单全部通过）：Mistreevous **受限接受**，Drizzle node-sqlite RC 线接受，TUI 保留 Pi TUI、不启用 Web 回退。下一步是阶段 1（内容、配置与规则基础）；进入阶段 1 前先读 `docs/phase-0-spike-report.md` 的 §7 硬约束汇总。
+随后按 `docs/implementation-roadmap.md` 的**阶段 0：技术 Spike** 建立了工程入口（Node 24 + ESM + pnpm + Vitest + 严格 TS，依赖精确锁定并提交 lockfile），五组 Spike 的适配器与测试位于 `src/{agent,content,storage,behavior,tui}` 与 `tests`，结论、风险和阶段 1 硬约束记录在 `docs/phase-0-spike-report.md`。阶段 0 已判定完成（`pnpm phase0:verify` 全绿，Windows Terminal 人工清单全部通过）：Mistreevous **受限接受**，Drizzle node-sqlite RC 线接受，TUI 保留 Pi TUI、不启用 Web 回退。
+
+**阶段 1：内容、配置与规则基础**已完成（`pnpm phase1:verify` 全绿，11 个测试文件 159 passed | 1 skipped；`pnpm config:demo` 两次运行摘要一致）：内容包规范与最小演示内容 `content/demo`、七阶段验证与结构化诊断、不可变运行配置与触发索引、值族词汇展开（内容定义 → 视图成员与可写目标）、硬阈值/分段常量/分段线性映射与优先级/最小/最大/加法/乘法组合、取值来源的组合/比较/选择、原子配置更新与崩溃恢复、SQLite 迁移与版本化载荷、恢复身份核对。结论、验收场景对照、硬约束、暂缓范围与本阶段偏差见 `docs/phase-1-report.md`；下一步是阶段 2（确定性模拟内核），进入前先读该报告的 §13 硬约束汇总与 §15 偏差。
