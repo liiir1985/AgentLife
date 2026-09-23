@@ -65,7 +65,12 @@ describe("phase 2 save and load", () => {
     await runTicks(simulation.runner, 1, 13);
     const state = simulation.runner.state();
     expect(state.world.processes.map((process) => process.processRef)).toEqual(["agentlife.world/lamp-glow"]);
-    expect(state.body.bodies[DEMO_PLAYER]?.values["wakefulness"]).toBe(40);
+    // Two walks spent stamina before the lamp was lit, and what the body carries is
+    // derived from that: 65 points is still a body that can think and act, so its
+    // participation is full - the light level has no part in either.
+    expect(state.body.bodies[DEMO_PLAYER]?.values["stamina"]).toBe(65);
+    expect(state.body.bodies[DEMO_PLAYER]?.participation).toBe("allowed");
+    expect(state.body.bodies[DEMO_PLAYER]?.mode).toBe("agentlife.demo/awake");
     expect(state.actions.length).toBeGreaterThan(0);
     expect(state.behaviours[DEMO_WARDEN]).toBeDefined();
 
@@ -167,7 +172,7 @@ describe("phase 2 save and load", () => {
     const simulation = await createSimulation({ timelineId: "timeline-save" });
     await runTicks(simulation.runner, 1, 7);
     const saved = snapshotOf(simulation.runner.state(), "save-checked", simulation.config);
-    const other = await publishDemoWith({ "rules/daylight-wakefulness.yaml": null });
+    const other = await publishDemoWith({ "rules/recovery-request.yaml": null });
     expect(other.config.configId).not.toBe(simulation.config.configId);
 
     expect(checkSnapshot(saved, other.config).ok).toBe(false);

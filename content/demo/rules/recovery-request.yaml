@@ -1,3 +1,7 @@
+# 累了就歇一会：体力掉到 60 以下时建立恢复过程。
+#
+# 条件里没有环境。原先这里还要求「环境光 > 10 lux」——那是把光线接进体力的另一条
+# 支路，而光线只该走视觉；在暗处躺着也是休息，亮不亮和恢复快慢无关。
 kind: rule
 id: recovery-request
 system: agentlife.body
@@ -6,8 +10,6 @@ triggers:
 inputs:
   - name: stamina
     state: agentlife.body/values.stamina
-  - name: light
-    state: agentlife.world/environment.light-level
 condition:
   op: all
   operands:
@@ -23,15 +25,6 @@ condition:
         value: 60
         unit: points
       operator: lt
-    - op: compare
-      left:
-        kind: read
-        name: light
-      right:
-        kind: literal
-        value: 10
-        unit: lux
-      operator: gt
 changes:
   - processRef: agentlife.body/recovery
     action: establish

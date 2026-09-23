@@ -1,8 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { idleDecision, type ScriptedDraft } from "../src/agent/scripted-cognition.js";
+import { CognitionService } from "../src/simulation/cognition-service.js";
 import { cognitionSettings } from "../src/simulation/config-view.js";
 import { cognitionActionNames } from "../src/simulation/cognition-coordinator.js";
-import type { CognitionInput, SimulationState } from "../src/simulation/types.js";
+import type {
+  CognitionDemand,
+  CognitionDemandReason,
+  CognitionInput,
+  CognitionRecord,
+  Observation,
+  SimulationState,
+} from "../src/simulation/types.js";
 import {
   companionCharacter,
   commandPlan,
@@ -273,3 +281,117 @@ function pendingIds(state: SimulationState, observer: string): readonly string[]
 function actionIds(state: SimulationState): readonly string[] {
   return state.actions.map((action) => `${action.entityId}/${action.action}/${action.status}`);
 }
+
+/**
+ * Who owes a decision, decided by participation.
+ *
+ * The demand summary is the system's own rule and is asserted on the service that
+ * owns it: `demands` is a pure read of the state handed to it, so a body's tier and
+ * what reached its Working Memory are the only inputs that can change the answer.
+ */
+describe("the demands a body's participation allows", () => {
+  it("never asks a body that forbids cognition and narrows a restricted one to what happened", async () => {
+    const simulation = await phase4Simulation();
+    try {
+      const state = simulation.runner.state();
+      const service = new CognitionService(simulation.config);
+      const fresh = state.cognition.records[COMPANION];
+      if (state.characters.characters[COMPANION] === undefined || fresh === undefined)
+        throw new Error("the demo companion is missing");
+      const tick = 2;
+      const observation = (kind: Observation["kind"], observationId: string): Observation => ({
+        observationId,
+        tick,
+        channel: "vision",
+        kind,
+        subject: null,
+        eventId: null,
+        text: "有人走过来",
+        salience: 1,
+      });
+      /** Every demand the service answers for one entity under one participation. */
+      const demandsFor = (
+        entityId: string,
+        participation: string,
+        admitted: readonly Observation[],
+        record?: CognitionRecord,
+      ): readonly CognitionDemand[] =>
+        service.demands({
+          tick,
+          cognition: {
+            ...state.cognition,
+            records:
+              record === undefined ? state.cognition.records : { ...state.cognition.records, [entityId]: record },
+          },
+          characters: state.characters.characters,
+          participation: { [entityId]: participation },
+          admitted: { [entityId]: admitted },
+        });
+      /** Only the demands the service addressed to that one entity. */
+      const demandsOn = (...args: Parameters<typeof demandsFor>): readonly CognitionDemand[] =>
+        demandsFor(...args).filter((demand) => demand.characterId === args[0]);
+      const reasonsFor = (
+        entityId: string,
+        participation: string,
+        admitted: readonly Observation[],
+        record?: CognitionRecord,
+      ): readonly CognitionDemandReason[] =>
+        demandsOn(entityId, participation, admitted, record).map((demand) => demand.reason);
+
+      // Nothing has reached the body yet, so a full participant still owes its first
+      // decision. "Has not decided yet" is not something that happened to it, so the
+      // same body under restricted participation owes nothing here.
+      expect(reasonsFor(COMPANION, "allowed", [])).toEqual(["initial"]);
+      expect(reasonsFor(COMPANION, "restricted", [])).toEqual([]);
+
+      // What did happen reaches a restricted body as it reaches a full one: it keeps
+      // reacting to its own results and to the events it could perceive.
+      const decided: CognitionRecord = { ...fresh, decisions: 1 };
+      const event = observation("event", "o1");
+      const outcome = observation("outcome", "o2");
+      const reacting = demandsOn(COMPANION, "restricted", [event, outcome], decided);
+      expect(reacting.map((demand) => demand.reason)).toEqual(["outcome"]);
+      expect(reacting[0]?.characterId).toBe(COMPANION);
+      expect(reacting[0]?.observations).toEqual(["o1", "o2"]);
+      expect(reasonsFor(COMPANION, "allowed", [event, outcome], decided)).toEqual(["outcome"]);
+
+      // A commitment to wait is re-reviewed on its own schedule, but a body that may
+      // only react is asked again when something arrives, never because the wait came
+      // around: idle-review and idle-expiry are not reasons a restricted body has.
+      const waiting: CognitionRecord = {
+        ...fresh,
+        decisions: 1,
+        idle: {
+          kind: "external-event",
+          detail: "等一件能听见的事",
+          event: "utterance",
+          reviewTick: tick,
+          untilTick: tick + 3,
+        },
+      };
+      const expired: CognitionRecord = {
+        ...waiting,
+        idle: {
+          kind: "external-event",
+          detail: "等一件能听见的事",
+          event: "utterance",
+          reviewTick: tick,
+          untilTick: tick,
+        },
+      };
+      expect(reasonsFor(COMPANION, "allowed", [], waiting)).toEqual(["idle-review"]);
+      expect(reasonsFor(COMPANION, "allowed", [], expired)).toEqual(["idle-expiry"]);
+      expect(reasonsFor(COMPANION, "restricted", [], waiting)).toEqual([]);
+      expect(reasonsFor(COMPANION, "restricted", [], expired)).toEqual([]);
+
+      // A body that forbids cognition is never asked, not even for what happened to
+      // it, and a body the player controls is never asked to think at all.
+      expect(reasonsFor(COMPANION, "forbidden", [event, outcome])).toEqual([]);
+      expect(reasonsFor(COMPANION, "forbidden", [], waiting)).toEqual([]);
+      expect(state.characters.characters[PLAYER]?.control).toBe("user");
+      expect(reasonsFor(PLAYER, "allowed", [event])).toEqual([]);
+    } finally {
+      dispose(simulation);
+    }
+  }, 40_000);
+});

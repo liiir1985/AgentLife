@@ -57,7 +57,6 @@ export const REFS = {
   participation: "agentlife.body/cognitive-participation",
   worldEnvironment: "agentlife.world/environment",
   stamina: "agentlife.body/values.stamina",
-  wakefulness: "agentlife.body/values.wakefulness",
   moveCost: "agentlife.body/values.move-cost",
   moveCostFactor: "agentlife.body/values.move-cost-factor",
   visibility: "agentlife.world/environment.visibility",
@@ -142,7 +141,7 @@ export const DEMO_ENTITY_IDS = ["agentlife.demo/companion", "agentlife.demo/play
 
 /** Shared inputs and per-entity projections used by the demo rules. */
 export const DEMO_SHARED: Readonly<Record<string, unknown>> = {
-  [REFS.worldEnvironment]: { "light-level": 40, "fog-density": 0.9, "sun-angle": 130, slope: 0.3, "lamp-state": 1 },
+  [REFS.worldEnvironment]: { "light-level": 40, "fog-density": 0.9, slope: 0.3, "lamp-state": 1 },
   "agentlife.world/influence": {
     kind: "agentlife.demo/relocate",
     actor: "agentlife.demo/player",
@@ -157,7 +156,6 @@ export const DEMO_ENTITY: Readonly<Record<string, unknown>> = {
   [REFS.bodyValues]: {
     stamina: 25,
     integrity: 1,
-    wakefulness: 40,
     load: 12,
     "move-cost": 0,
     "move-cost-factor": 1,

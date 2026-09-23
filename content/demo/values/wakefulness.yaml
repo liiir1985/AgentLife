@@ -1,8 +1,0 @@
-id: wakefulness
-type: agentlife.body/value
-public: true
-fields:
-  name: 清醒度
-  type: number
-  initial: 100
-  unit: points

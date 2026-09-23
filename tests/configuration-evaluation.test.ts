@@ -146,11 +146,11 @@ describe("deterministic evaluation", () => {
       const entities = {
         "entity-z": {
           ...DEMO_ENTITY,
-          "agentlife.body/values": { stamina: 25, integrity: 1, wakefulness: 40, load: 30 },
+          "agentlife.body/values": { stamina: 25, integrity: 1, load: 30 },
         },
         "entity-a": {
           ...DEMO_ENTITY,
-          "agentlife.body/values": { stamina: 25, integrity: 1, wakefulness: 40, load: 0 },
+          "agentlife.body/values": { stamina: 25, integrity: 1, load: 0 },
         },
       };
       const request = {
@@ -212,7 +212,7 @@ describe("deterministic evaluation", () => {
       const entities = registry.runRules(demoRequest("agentlife.body/tick-elapsed"));
       expect(entities.trace.shared.selectedRules).toEqual([]);
       expect(entities.trace.entities).toHaveLength(2);
-      expect(entities.trace.entities.every((trace) => trace.rules.length === 3)).toBe(true);
+      expect(entities.trace.entities.every((trace) => trace.rules.length === 1)).toBe(true);
     } finally {
       removeDirectory(directory);
     }
@@ -296,8 +296,10 @@ describe("deterministic evaluation", () => {
       const values = Object.fromEntries(first.trace.stateChanges.map((entry) => [entry.stateRef, entry.newValue]));
       expect(values["agentlife.body/values.move-cost"]).toBe(5.7);
       expect(values["agentlife.body/values.move-cost-factor"]).toBe(2.52);
+      // 25 points of stamina is tired: cognition narrows to what actually happens,
+      // and the body drops the abilities that need strength.
       expect(values["agentlife.body/cognitive-participation"]).toBe("restricted");
-      expect(values["agentlife.body/current-mode"]).toBe("agentlife.demo/awake");
+      expect(values["agentlife.body/current-mode"]).toBe("agentlife.demo/drowsy");
       // `value-changed` no longer writes stamina; only advancing an action costs it.
       expect(values).not.toHaveProperty("agentlife.body/values.stamina");
       expect(first.status).toBe("changes");
@@ -312,16 +314,23 @@ describe("deterministic evaluation", () => {
     try {
       expect(result.status).toBe("valid");
 
+      // `tick-elapsed` writes no state at all any more: the two rules that used to
+      // write wakefulness here went with the chain they belonged to, and what is
+      // left on this trigger only asks the body to establish its recovery process.
       const perTick = registry.runRules(demoRequest("agentlife.body/tick-elapsed", "tick"));
-      const wakefulness = entityTrace(perTick).combines.find(
-        (combine) => combine.stateRef === "agentlife.body/values.wakefulness",
-      );
-      expect(wakefulness?.combine).toBe("priority");
-      expect(wakefulness?.ruleValues.map((ruleValue) => ruleValue.ruleId)).toEqual([
-        "agentlife.demo/daylight-wakefulness",
-        "agentlife.demo/lamp-stimulus",
-      ]);
-      expect(wakefulness?.result).toBe(80);
+      expect(perTick.trace.stateChanges).toEqual([]);
+      expect(entityTrace(perTick).combines).toEqual([]);
+
+      // A priority combine answers with the highest-priority source. Two rules
+      // claiming one state at the same priority is the tie case, and the demo no
+      // longer contains one by itself - the conflict cases below build it by
+      // overriding a rule - so what is asserted here is which source answered.
+      const mode = registry.runRules(demoRequest("agentlife.body/value-changed", "mode"));
+      const chosen = entityTrace(mode).combines.find((combine) => combine.stateRef === "agentlife.body/current-mode");
+      expect(chosen?.combine).toBe("priority");
+      expect(chosen?.ruleValues.map((ruleValue) => ruleValue.ruleId)).toEqual(["agentlife.demo/mode-selection"]);
+      // 25 points of stamina is under the 40 a body needs to keep its abilities.
+      expect(chosen?.result).toBe("agentlife.demo/drowsy");
 
       // Advancing a walking action is what spends stamina now: one rule reads the
       // current stamina and both derived costs, and writes the resulting absolute
@@ -387,11 +396,7 @@ describe("deterministic evaluation", () => {
     try {
       expect(result.status).toBe("valid");
       const result_ = registry.runRules(demoRequest("agentlife.body/tick-elapsed"));
-      expect(entityTrace(result_).selectedRules).toEqual([
-        "agentlife.demo/daylight-wakefulness",
-        "agentlife.demo/lamp-stimulus",
-        "agentlife.demo/recovery-request",
-      ]);
+      expect(entityTrace(result_).selectedRules).toEqual(["agentlife.demo/recovery-request"]);
       expect(entityTrace(result_).skippedRules).toContain("agentlife.demo/base-move-cost");
       expect(entityTrace(result_).rules.map((rule) => rule.ruleId)).toEqual(entityTrace(result_).selectedRules);
 
@@ -409,63 +414,52 @@ describe("deterministic evaluation", () => {
   it("reports a priority tie as a structured conflict instead of choosing a source", async () => {
     const registry = createRegistry();
     const { result, directory } = await applyDemoPack(registry, {
-      "rules/lamp-stimulus.yaml": `kind: rule
-id: lamp-stimulus
+      // A second rule claiming stamina on the same trigger, at the same priority and
+      // with a different value. Nothing in the content says which of the two a
+      // walking body's stamina should be, so the run reports the tie.
+      "rules/recovery-effect.yaml": `kind: rule
+id: recovery-effect
 system: agentlife.body
 triggers:
-  - agentlife.body/tick-elapsed
-inputs:
-  - name: lamp
-    state: agentlife.world/environment.lamp-state
+  - agentlife.body/action-advanced
 condition:
-  op: compare
-  left:
-    kind: read
-    name: lamp
-  right:
-    kind: literal
-    value: 1
-    unit: state
-  operator: eq
+  op: always
 changes:
-  - state: agentlife.body/values.wakefulness
+  - state: agentlife.body/values.stamina
     combine: priority
-    priority: 10
+    priority: 1
     value:
-      kind: map
-      input:
-        kind: read
-        name: lamp
-      mapping:
-        kind: threshold
-        inputUnit: state
-        at: 1
-        boundary: lower
-        below: 0
-        above: 60
-        policy:
-          unit: points
-          rounding:
-            mode: half-away-from-zero
-            precision: 0
-          range:
-            min: 0
-            max: 100
-            boundary: inclusive
-          overflow: saturate
+      kind: literal
+      value: 80
+      unit: points
 `,
     });
     try {
       expect(result.status).toBe("valid");
-      const evaluated = registry.runRules(demoRequest("agentlife.body/tick-elapsed"));
+      const base = demoRequest("agentlife.body/action-advanced", "tie");
+      const values = DEMO_ENTITY["agentlife.body/values"] as Readonly<Record<string, unknown>>;
+      const evaluated = registry.runRules({
+        ...base,
+        entityIds: ["agentlife.demo/companion"],
+        input: {
+          ...base.input,
+          entities: {
+            "agentlife.demo/companion": {
+              ...DEMO_ENTITY,
+              "agentlife.body/values": { ...values, "move-cost": 5, "move-cost-factor": 2, stamina: 70 },
+              "agentlife.body/activity": { action: "agentlife.demo/walk", stage: "", status: "" },
+            },
+          },
+        },
+      });
       expect(evaluated.status).toBe("conflict");
       const conflict = entityTrace(evaluated).combines.find(
-        (combine) => combine.stateRef === "agentlife.body/values.wakefulness",
+        (combine) => combine.stateRef === "agentlife.body/values.stamina",
       );
       expect(conflict?.status).toBe("conflict");
-      expect(conflict?.conflicting).toEqual(["agentlife.demo/daylight-wakefulness", "agentlife.demo/lamp-stimulus"]);
-      // No rule writes a state change for this trigger any more: the only other
-      // entity rule establishes a process, which a conflict does not suppress.
+      expect(conflict?.conflicting).toEqual(["agentlife.demo/move-exertion", "agentlife.demo/recovery-effect"]);
+      // The conflict suppresses the change itself, and stamina is the only state this
+      // trigger touches.
       expect(entityTrace(evaluated).stateChanges).toEqual([]);
     } finally {
       removeDirectory(directory);
@@ -475,20 +469,23 @@ changes:
   it("isolates a priority conflict to the entity whose values disagree", async () => {
     const registry = createRegistry();
     const { result, directory } = await applyDemoPack(registry, {
-      "rules/lamp-stimulus.yaml": `kind: rule
-id: lamp-stimulus
+      // The same second writer as the tie above, but this one is not always wrong: it
+      // agrees with the arithmetic a rested body does (70 - 4.5 is still 65.5) and
+      // disagrees with a weary one.
+      "rules/recovery-effect.yaml": `kind: rule
+id: recovery-effect
 system: agentlife.body
 triggers:
-  - agentlife.body/tick-elapsed
+  - agentlife.body/action-advanced
 inputs:
   - name: stamina
     state: agentlife.body/values.stamina
 condition:
   op: always
 changes:
-  - state: agentlife.body/values.wakefulness
+  - state: agentlife.body/values.stamina
     combine: priority
-    priority: 10
+    priority: 1
     value:
       kind: map
       input:
@@ -497,15 +494,15 @@ changes:
       mapping:
         kind: threshold
         inputUnit: points
-        at: 50
+        at: 70
         boundary: lower
         below: 80
-        above: 60
+        above: 65.5
         policy:
           unit: points
           rounding:
             mode: half-away-from-zero
-            precision: 0
+            precision: 1
           range:
             min: 0
             max: 100
@@ -515,35 +512,25 @@ changes:
     });
     try {
       expect(result.status).toBe("valid");
-      const base = demoRequest("agentlife.body/tick-elapsed", "isolated-conflict");
+      const base = demoRequest("agentlife.body/action-advanced", "isolated-conflict");
+      const values = DEMO_ENTITY["agentlife.body/values"] as Readonly<Record<string, unknown>>;
+      const walking = (stamina: number) => ({
+        ...DEMO_ENTITY,
+        "agentlife.body/values": { ...values, "move-cost": 5, "move-cost-factor": 2, stamina },
+        "agentlife.body/activity": { action: "agentlife.demo/walk", stage: "", status: "" },
+      });
       const evaluated = registry.runRules({
         ...base,
-        entityIds: ["calm", "tired"],
-        input: {
-          ...base.input,
-          entities: {
-            calm: {
-              ...DEMO_ENTITY,
-              "agentlife.body/values": { stamina: 25, integrity: 1, wakefulness: 40, load: 12 },
-            },
-            tired: {
-              ...DEMO_ENTITY,
-              "agentlife.body/values": { stamina: 75, integrity: 1, wakefulness: 40, load: 12 },
-            },
-          },
-        },
+        entityIds: ["rested", "weary"],
+        input: { ...base.input, entities: { rested: walking(70), weary: walking(60) } },
       });
       expect(evaluated.status).toBe("conflict");
-      expect(
-        entityTrace(evaluated, "calm").combines.find(
-          (combine) => combine.stateRef === "agentlife.body/values.wakefulness",
-        )?.status,
-      ).toBe("composed");
-      expect(
-        entityTrace(evaluated, "tired").combines.find(
-          (combine) => combine.stateRef === "agentlife.body/values.wakefulness",
-        )?.status,
-      ).toBe("conflict");
+      const combineOf = (entityId: string) =>
+        entityTrace(evaluated, entityId).combines.find(
+          (combine) => combine.stateRef === "agentlife.body/values.stamina",
+        );
+      expect(combineOf("rested")?.status).toBe("composed");
+      expect(combineOf("weary")?.status).toBe("conflict");
     } finally {
       removeDirectory(directory);
     }
@@ -605,7 +592,6 @@ changes:
               slope: 0.3,
               "light-level": 40,
               "fog-density": 0,
-              "sun-angle": 90,
               "lamp-state": 0,
             },
           },
@@ -738,20 +724,19 @@ changes:
     const first = await applyDemoPack(registry);
     const started = registry.current();
     const updated = await applyDemoPack(registry, {
-      "rules/lamp-stimulus.yaml": `kind: rule
-id: lamp-stimulus
+      // The kind of edit that changes what a run answers: the same trigger, the same
+      // state, a different value.
+      "rules/move-exertion.yaml": `kind: rule
+id: move-exertion
 system: agentlife.body
 triggers:
-  - agentlife.body/tick-elapsed
-inputs:
-  - name: lamp
-    state: agentlife.world/environment.lamp-state
+  - agentlife.body/action-advanced
 condition:
   op: always
 changes:
-  - state: agentlife.body/values.wakefulness
+  - state: agentlife.body/values.stamina
     combine: priority
-    priority: 20
+    priority: 1
     value:
       kind: literal
       value: 10
@@ -763,17 +748,33 @@ changes:
       expect(updated.result.status).toBe("valid");
       expect(updated.result.config?.configId).not.toBe(started?.configId);
 
-      const before = runRules(started as RuntimeConfig, demoRequest("agentlife.body/tick-elapsed"));
-      expect(before.configId).toBe(started?.configId);
-      expect(
-        entityTrace(before).combines.find((entry) => entry.stateRef === "agentlife.body/values.wakefulness")?.result,
-      ).toBe(80);
+      const base = demoRequest("agentlife.body/action-advanced");
+      const values = DEMO_ENTITY["agentlife.body/values"] as Readonly<Record<string, unknown>>;
+      const request = {
+        ...base,
+        entityIds: ["agentlife.demo/companion"],
+        input: {
+          ...base.input,
+          entities: {
+            "agentlife.demo/companion": {
+              ...DEMO_ENTITY,
+              "agentlife.body/values": { ...values, "move-cost": 5, "move-cost-factor": 2, stamina: 70 },
+              "agentlife.body/activity": { action: "agentlife.demo/walk", stage: "", status: "" },
+            },
+          },
+        },
+      };
+      const staminaOf = (run: RuleResult): unknown =>
+        entityTrace(run).combines.find((entry) => entry.stateRef === "agentlife.body/values.stamina")?.result;
 
-      const after = registry.runRules(demoRequest("agentlife.body/tick-elapsed"));
+      const before = runRules(started as RuntimeConfig, request);
+      expect(before.configId).toBe(started?.configId);
+      // 70 + (-2.5 cost at x=5) + (-2 factor at x=2), the shipped arithmetic.
+      expect(staminaOf(before)).toBe(65.5);
+
+      const after = registry.runRules(request);
       expect(after.configId).toBe(updated.result.config?.configId);
-      expect(
-        entityTrace(after).combines.find((entry) => entry.stateRef === "agentlife.body/values.wakefulness")?.result,
-      ).toBe(10);
+      expect(staminaOf(after)).toBe(10);
     } finally {
       removeDirectory(first.directory);
       removeDirectory(updated.directory);

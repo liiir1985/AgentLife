@@ -1,11 +1,15 @@
+# 身体能力随体力降级：累到走不动、拿不稳的时候换到困倦模式，只剩说话和手势。
+#
+# 降级线取 40，和护卫巡逻树里「体力见底就先歇着」用同一个数：树不去做的动作，
+# 身体也不允许做，两边说的是同一件事——护卫不会一直拿一个必败的计划去撞身体。
 kind: rule
 id: mode-selection
 system: agentlife.body
 triggers:
   - agentlife.body/value-changed
 inputs:
-  - name: wakefulness
-    state: agentlife.body/values.wakefulness
+  - name: stamina
+    state: agentlife.body/values.stamina
 condition:
   op: always
 changes:
@@ -16,10 +20,10 @@ changes:
       kind: select
       left:
         kind: read
-        name: wakefulness
+        name: stamina
       right:
         kind: literal
-        value: 20
+        value: 40
         unit: points
       operator: lt
       then:

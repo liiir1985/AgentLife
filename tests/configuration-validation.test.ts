@@ -236,7 +236,7 @@ inputs:
 condition:
   op: always
 changes:
-  - state: agentlife.body/values.wakefulness
+  - state: agentlife.body/values.stamina
     combine: priority
     priority: 1
     value:
@@ -452,8 +452,8 @@ fields:
   {
     name: "a rule without any state change",
     overrides: {
-      "rules/lamp-stimulus.yaml": `kind: rule
-id: lamp-stimulus
+      "rules/recovery-request.yaml": `kind: rule
+id: recovery-request
 system: agentlife.body
 triggers:
   - agentlife.body/tick-elapsed
@@ -468,8 +468,8 @@ changes: []
   {
     name: "a branch that declares neither a change nor words",
     overrides: {
-      "rules/lamp-stimulus.yaml": `kind: rule
-id: lamp-stimulus
+      "rules/recovery-request.yaml": `kind: rule
+id: recovery-request
 system: agentlife.body
 triggers:
   - agentlife.body/tick-elapsed
@@ -485,8 +485,8 @@ branches:
   {
     name: "a rule that declares its effect both flat and as branches",
     overrides: {
-      "rules/lamp-stimulus.yaml": `kind: rule
-id: lamp-stimulus
+      "rules/recovery-request.yaml": `kind: rule
+id: recovery-request
 system: agentlife.body
 triggers:
   - agentlife.body/tick-elapsed
@@ -507,8 +507,8 @@ branches:
   {
     name: "a branch whose guard is spelled condition",
     overrides: {
-      "rules/lamp-stimulus.yaml": `kind: rule
-id: lamp-stimulus
+      "rules/recovery-request.yaml": `kind: rule
+id: recovery-request
 system: agentlife.body
 triggers:
   - agentlife.body/tick-elapsed
@@ -520,7 +520,7 @@ branches:
 `,
     },
     code: "structure-invalid",
-    message: "rules/lamp-stimulus.yaml.branches[0].condition is not a supported field",
+    message: "rules/recovery-request.yaml.branches[0].condition is not a supported field",
   },
   {
     name: "a kernel version the pack cannot run against",
@@ -838,8 +838,8 @@ value:
   {
     name: "a process operation a foreign system does not own",
     overrides: {
-      "rules/lamp-stimulus.yaml": `kind: rule
-id: lamp-stimulus
+      "rules/recovery-request.yaml": `kind: rule
+id: recovery-request
 system: test.limits
 triggers:
   - test.limits/changed
@@ -868,8 +868,8 @@ changes:
   {
     name: "a process parameter the declaration does not accept",
     overrides: {
-      "rules/lamp-stimulus.yaml": `kind: rule
-id: lamp-stimulus
+      "rules/recovery-request.yaml": `kind: rule
+id: recovery-request
 system: test.process
 triggers:
   - test.limits/changed

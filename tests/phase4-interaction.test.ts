@@ -22,12 +22,19 @@ class ManualTimer implements TimerPort {
   cancel(): void {}
 }
 
-/** Waits until the controller published the tick its barrier opened. */
+/**
+ * Waits until the controller published the tick its barrier opened.
+ *
+ * `step` hands the round to the model and the controller keeps resolving it in the
+ * background, so the wait has to let real time pass: an answer takes as long as the
+ * model takes, and a loop that only drains microtasks can never observe a model that
+ * streams over an interval. The budget below is far above any scripted answer.
+ */
 async function settled(app: SimulationController, tick: number): Promise<void> {
-  for (let hop = 0; hop < 4000; hop += 1) {
+  for (let hop = 0; hop < 200; hop += 1) {
     const state = app.runner.state();
     if (state.tick === tick && state.phase === "publish") return;
-    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error(`tick ${tick} was never published`);
 }

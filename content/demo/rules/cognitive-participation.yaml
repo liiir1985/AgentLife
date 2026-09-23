@@ -1,11 +1,18 @@
+# 认知参与由身体状况决定：体力是身体侧的量，走路花掉它（move-exertion），休息的过程
+# 把它养回来（recovery-effect），于是「累了只剩对眼前事情的反应、累垮了什么都想不了」
+# 是从身体状态推出来的。
+#
+# 光照这类环境输入走感官那条线（vision-efficiency、darkness-visibility），不挂到这里。
+# 至于「睡着了认知下线、光把人唤醒」，那是睡眠内容的事：应当由「睡眠状态 → 这个值下线」
+# 与「光照刺激 → 结束睡眠」表达，而不是把光照直接写进这个值。
 kind: rule
 id: cognitive-participation
 system: agentlife.body
 triggers:
   - agentlife.body/value-changed
 inputs:
-  - name: wakefulness
-    state: agentlife.body/values.wakefulness
+  - name: stamina
+    state: agentlife.body/values.stamina
 condition:
   op: always
 changes:
@@ -16,7 +23,7 @@ changes:
       kind: select
       left:
         kind: read
-        name: wakefulness
+        name: stamina
       right:
         kind: literal
         value: 20
@@ -29,7 +36,7 @@ changes:
         kind: select
         left:
           kind: read
-          name: wakefulness
+          name: stamina
         right:
           kind: literal
           value: 60

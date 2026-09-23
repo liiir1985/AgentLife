@@ -145,7 +145,6 @@ fields:
         "agentlife.body/values.move-cost",
         "agentlife.body/values.move-cost-factor",
         "agentlife.body/values.stamina",
-        "agentlife.body/values.wakefulness",
         "agentlife.world/consent",
         "agentlife.world/environment.lamp-state",
         "agentlife.world/environment.light-level",

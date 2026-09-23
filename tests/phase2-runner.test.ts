@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { TICK_STAGES } from "../src/simulation/runner.js";
-import type { StageRecord } from "../src/simulation/types.js";
+import type { ActionPlan, StageRecord } from "../src/simulation/types.js";
 import {
   DEMO_KILN,
   DEMO_LAMP,
@@ -46,13 +46,15 @@ const OPERATE_LAMP = testPlan("player-operate", DEMO_PLAYER, "parallel", [
  * Every round it flips the value it reads, so no round ever confirms the previous
  * one and the state keeps changing forever. Its condition keeps it out of
  * initialization - which has to settle for any simulation to start at all - and
- * lets it in on the first tick.
+ * the tick trigger lets it in on the first tick, where the demo content on its own
+ * changes no body value at all.
  */
 const DIVERGENT_INTEGRITY = `kind: rule
 id: divergent-integrity
 system: agentlife.body
 triggers:
   - agentlife.body/value-changed
+  - agentlife.body/tick-elapsed
 inputs:
   - name: integrity
     state: agentlife.body/values.integrity
@@ -151,8 +153,9 @@ describe("phase 2 simulation runner", () => {
     expect([...new Set(stages.map((stage) => stage.status))].sort()).toEqual(["done", "no-op"]);
     expect(stages.find((stage) => stage.stage === "stability")?.status).toBe("done");
     expect(stages.find((stage) => stage.stage === "publish")?.status).toBe("done");
-    // The propagation phase is recorded every tick, even when it selects no trigger.
-    expect(stages.find((stage) => stage.stage === "propagate")?.status).toBe("done");
+    // The propagation phase is recorded every tick, even when it selects no rule: a
+    // body at rest with full stamina has nothing to recompute until it moves.
+    expect(stages.find((stage) => stage.stage === "propagate")?.status).toBe("no-op");
 
     // The demo content gives the companion perception and cognition modules, so the
     // stages that used to be explicit no-ops now carry the observations and the
@@ -173,32 +176,37 @@ describe("phase 2 simulation runner", () => {
       current.push(request.trigger);
       return call(request);
     };
+    const runTick = async (plans: readonly ActionPlan[] = []): Promise<string[]> => {
+      await runPublishedTick(simulation.runner, plans);
+      const triggers = current;
+      current = [];
+      requested.push(triggers);
+      return triggers;
+    };
 
-    // Tick 1 wakes the standing tick rules, whose body value changes are re-evaluated in the same tick.
-    const first = await runPublishedTick(simulation.runner);
-    requested.push(current);
-    current = [];
-    expect(requested[0]).toContain("agentlife.body/value-changed");
+    // A body at rest changes nothing, so the tick rule is all the tick asks for.
+    expect(await runTick()).toEqual(["agentlife.body/tick-elapsed"]);
+
+    // The warden walks on its own, and the tick its action advances is the first tick
+    // that changes a body value: the value trigger is re-evaluated in that same tick,
+    // through the index and not by asking everything the content declares.
+    let walking: string[] = [];
+    for (let tick = 0; tick < 4 && !walking.includes("agentlife.body/value-changed"); tick += 1)
+      walking = await runTick();
+    expect(walking).toContain("agentlife.body/action-advanced");
+    expect(walking).toContain("agentlife.body/value-changed");
     // No rule under the environment trigger ran: nothing changed the environment yet.
-    expect(requested[0]).not.toContain("agentlife.world/environment-changed");
-    expect(first.stages.find((stage) => stage.stage === "propagate")?.detail).toContain("agentlife.body/value-changed");
-
-    await runPublishedTick(simulation.runner);
-    requested.push(current);
-    current = [];
-    expect(requested[1]).not.toContain("agentlife.world/environment-changed");
+    expect(walking).not.toContain("agentlife.world/environment-changed");
 
     // Operating the lamp changes an environment value; the same tick re-evaluates that trigger.
-    let environmentTick = 0;
-    for (let tick = 3; tick <= 8 && environmentTick === 0; tick += 1) {
-      await runPublishedTick(simulation.runner, tick === 3 ? [OPERATE_LAMP] : []);
-      requested.push(current);
-      current = [];
-      if (requested.at(-1)?.includes("agentlife.world/environment-changed")) environmentTick = tick;
-    }
-    expect(environmentTick).toBeGreaterThan(0);
+    let environment: string[] = [];
+    for (let tick = 0; tick < 6 && !environment.includes("agentlife.world/environment-changed"); tick += 1)
+      environment = await runTick(tick === 0 ? [OPERATE_LAMP] : []);
+    expect(environment).toContain("agentlife.world/environment-changed");
     expect(simulation.runner.state().world.environment["lamp-state"]).toBe(1);
-    expect(requested.at(-2)).not.toContain("agentlife.world/environment-changed");
+    // The tick before the lamp was lit had nothing to re-evaluate either.
+    const litAt = requested.lastIndexOf(environment);
+    expect(requested[litAt - 1] ?? []).not.toContain("agentlife.world/environment-changed");
     expect(
       simulation.runner
         .state()
@@ -271,7 +279,13 @@ describe("phase 2 simulation runner", () => {
       requested.push(request.trigger);
       return call(request);
     };
-    const result = await simulation.runner.runTickToPublication();
+    // Nothing changes a body value while everyone stands still, so the run has to
+    // reach the tick where the warden's own action advances: that change is the one
+    // nothing in this content is indexed for any more.
+    let result = await simulation.runner.runTickToPublication();
+    for (let tick = 0; tick < 5 && result.status !== "rule-barrier"; tick += 1) {
+      result = await simulation.runner.runTickToPublication();
+    }
     const state = simulation.runner.state();
 
     expect(result.status).toBe("rule-barrier");
@@ -282,9 +296,10 @@ describe("phase 2 simulation runner", () => {
     expect(state.barrier?.kind).toBe("missing-rules");
     expect(state.barrier?.trigger).toBe("agentlife.body/value-changed");
     expect(state.barrier?.stateRef?.startsWith("agentlife.body/values")).toBe(true);
-    // No stable tick was published: the tick number stays and the barrier is recorded.
-    expect(state.tick).toBe(0);
-    expect(result.summary.tick).toBe(0);
+    // This tick was not published: the number stays where the last published tick left
+    // it, and the barrier is recorded instead.
+    expect(state.tick).toBe(3);
+    expect(result.summary.tick).toBe(3);
     expect(result.summary.stages.find((stage) => stage.stage === "stability")?.status).toBe("failed");
     expect(result.summary.stages.find((stage) => stage.stage === "propagate")?.status).toBe("no-op");
 
