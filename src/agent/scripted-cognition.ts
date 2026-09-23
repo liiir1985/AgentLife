@@ -4,7 +4,7 @@ import type { CognitionInput } from "../simulation/types.js";
 export type ScriptedDraft = (input: CognitionInput) => unknown;
 
 /** The demo's walking action; a scripted policy is tied to the content it runs on. */
-const WALK = "agentlife.demo/walk";
+const WALK = "walk";
 
 /**
  * Faux cognition policies.

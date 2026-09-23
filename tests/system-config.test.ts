@@ -125,6 +125,20 @@ describe("system configuration", () => {
     });
   });
 
+  it("accepts and validates configured prices for a selected subsystem model", () => {
+    const document = `${configured("deepseek/deepseek-flash")}cognition:\n  model: deepseek/deepseek-flash\n  cost:\n    input: 2\n    output: 8\n    cacheRead: 0.04\n    cacheWrite: 0.04\n`;
+    expect(modelTarget(parseSystemConfig(document), "cognition").cost).toEqual({
+      input: 2,
+      output: 8,
+      cacheRead: 0.04,
+      cacheWrite: 0.04,
+    });
+    expect(() => parseSystemConfig(document.replace("output: 8", "output: -1"))).toThrow(/cost.output/);
+    expect(() => parseSystemConfig(document.replace("cacheWrite: 0.04", "cacheWrite: unknown"))).toThrow(
+      /cost.cacheWrite/,
+    );
+  });
+
   it("splits a reference at its first slash, so a model name may contain slashes", () => {
     const reference = "fireworks/accounts/fireworks/models/gpt-oss-120b";
     const config = parseSystemConfig(`models:

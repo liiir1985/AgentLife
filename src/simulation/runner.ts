@@ -6,6 +6,7 @@ import type { ProcessChangeRequest, RuleResult, StateChangeRequest } from "../co
 import type { SystemIndex } from "../config/system-index.js";
 import type { SimpleValue } from "../config/value-expr.js";
 import type { CognitionModelPort } from "../agent/cognition-agent.js";
+import type { SessionTrace } from "../diagnostics/session-trace.js";
 import { BodyService, type BodyRuntime } from "./body-service.js";
 import { CharacterService } from "./character-service.js";
 import { CognitionCoordinator, type DecisionResult, type RoundInput } from "./cognition-coordinator.js";
@@ -86,6 +87,7 @@ export interface RunnerOptions {
   readonly settings?: Partial<SimulationSettings>;
   /** The cognition model the AI participants are decided with; required once an AI entity exists. */
   readonly models?: CognitionModelPort;
+  readonly trace?: SessionTrace;
 }
 
 const DEFAULT_SETTINGS: SimulationSettings = Object.freeze({
@@ -148,6 +150,7 @@ export class SimulationRunner {
   private readonly rounds: CognitionCoordinator;
   private held: HeldTick | undefined;
   private roundSequence = 0;
+  private readonly trace: SessionTrace | undefined;
   private current: SimulationState;
 
   constructor(
@@ -159,6 +162,7 @@ export class SimulationRunner {
     private readonly systemIndex: SystemIndex,
   ) {
     const config = this.requireConfig();
+    this.trace = options.trace;
     this.settings = Object.freeze({ ...DEFAULT_SETTINGS, ...(options.settings ?? {}) });
     this.runtime = {
       config,
@@ -168,7 +172,12 @@ export class SimulationRunner {
     this.perception = new PerceptionService(config);
     this.cognition = new CognitionService(config);
     const characterState = characters.initialize();
-    this.rounds = new CognitionCoordinator(config, this.cognition, requireModels(options, characters, characterState));
+    this.rounds = new CognitionCoordinator(
+      config,
+      this.cognition,
+      requireModels(options, characters, characterState),
+      this.trace,
+    );
     const worldState = world.initialize(
       characters.sorted(characterState).map((character) => ({
         entityId: character.entityId,
@@ -262,6 +271,7 @@ export class SimulationRunner {
     const config = this.requireConfig();
     const stages: StageRecord[] = [];
     const startingTick = this.current.tick + 1;
+    this.trace?.startTurn(this.current.timelineId, startingTick);
     const context: TickContext = { timelineId: this.current.timelineId, tick: startingTick, command: "tick" };
     let world = this.current.world;
     let bodyRuntime: BodyRuntime = { body: this.current.body, actions: this.current.actions };
@@ -277,6 +287,7 @@ export class SimulationRunner {
       const attempt = this.body.acceptPlan(bodyRuntime, this.current.characters, plan, world, context);
       bodyRuntime = attempt.runtime;
       actionOutcomes.push(`${attempt.outcome.status} ${plan.planId}: ${attempt.outcome.reason}`);
+      this.trace?.record("plan-acceptance", { plan, outcome: attempt.outcome }, { entityId: plan.entityId });
     }
     stages.push({
       stage: "fixed",
@@ -306,6 +317,12 @@ export class SimulationRunner {
     const worldProcesses = this.world.advanceProcesses(sourcesFor(), context);
     world = worldProcesses.state;
     const advanced = this.body.advance(bodyRuntime, sourcesFor(), this.current.characters, context);
+    this.trace?.record("advance-result", {
+      worldProcesses: worldProcesses.advanced,
+      worldChanges: worldProcesses.applied,
+      bodyChanges: advanced.applied,
+      actionNotes: advanced.notes,
+    });
     bodyRuntime = advanced.runtime;
     actionOutcomes.push(...advanced.notes);
     // Only an action that finished every stage it declares becomes audible: what a
@@ -342,6 +359,7 @@ export class SimulationRunner {
 
     // 4. Let the degraded entities decide, then accept the plans they formed.
     const decisions = this.runBehaviourTrees(world, bodyRuntime, context);
+    this.trace?.record("behaviour-result", { notes: decisions.notes });
     bodyRuntime = decisions.runtime;
     actionOutcomes.push(...decisions.notes);
     stages.push({
@@ -366,6 +384,11 @@ export class SimulationRunner {
       world = adjudication.state;
       bodyRuntime = this.body.absorb(bodyRuntime, adjudication.outcome, context);
       influenceOutcomes.push(adjudication.outcome);
+      this.trace?.record(
+        "world-adjudication",
+        { request, outcome: adjudication.outcome, applied: adjudication.applied },
+        { entityId: action.entityId },
+      );
       changedRefs.push(...adjudication.applied.map((change) => change.stateRef));
       actionOutcomes.push(
         `world ${adjudication.outcome.status} for ${request.influenceId}: ${adjudication.outcome.reason}`,
@@ -382,6 +405,13 @@ export class SimulationRunner {
 
     // 6. Propagate committed changes through the indexed rules until stable.
     const propagation = this.propagate(world, bodyRuntime, context, changedRefs);
+    this.trace?.record("propagation-result", {
+      rounds: propagation.rounds,
+      triggers: propagation.triggers,
+      notes: propagation.notes,
+      barrier: propagation.barrier ?? null,
+      exceeded: propagation.exceeded,
+    });
     world = propagation.world;
     bodyRuntime = propagation.body;
     actionOutcomes.push(...propagation.notes);
@@ -438,6 +468,16 @@ export class SimulationRunner {
         };
         const result = this.perception.observe(perceptionState, frame);
         perceptionState = result.state;
+        this.trace?.record(
+          "perception-result",
+          {
+            material: frame,
+            observations: result.observations,
+            notes: result.notes,
+            pending: result.state.observers[observer]?.pending ?? [],
+          },
+          { entityId: observer },
+        );
         notes.push(...result.notes.map((note) => `${observer}: ${note}`));
       }
       stages.push({
@@ -453,6 +493,7 @@ export class SimulationRunner {
       //    anyone is asked to think about it.
       for (const observer of observers) {
         const admittedNow = this.perception.pendingObservations(perceptionState, observer);
+        const previousEntries = this.workingMemory.contextFor(memoryState, observer);
         const result = this.workingMemory.admitObservations(memoryState, {
           characterId: observer,
           tick: startingTick,
@@ -461,6 +502,27 @@ export class SimulationRunner {
           references: this.perception.observer(perceptionState, observer)?.references ?? {},
         });
         memoryState = result.state;
+        const retained = new Set(this.workingMemory.contextFor(memoryState, observer).map((entry) => entry.sourceId));
+        const evictedObservations = admittedNow
+          .filter((observation) => !retained.has(observation.observationId))
+          .map((observation) => observation.observationId);
+        evictedObservations.push(
+          ...previousEntries.filter((entry) => result.evicted.includes(entry.entryId)).map((entry) => entry.sourceId),
+        );
+        // Capacity drops are final. Leaving them in perception.pending would
+        // reintroduce the same old observations on every following tick.
+        perceptionState = this.perception.confirmConsumed(perceptionState, observer, evictedObservations);
+        this.trace?.record(
+          "memory-admission",
+          {
+            offered: admittedNow,
+            admitted: result.admitted,
+            evicted: result.evicted,
+            discardedObservations: evictedObservations,
+            notes: result.notes,
+          },
+          { entityId: observer },
+        );
         admitted[observer] = Object.freeze(
           admittedNow.filter((observation) =>
             result.admitted.some((entry) => entry.sourceId === observation.observationId),
@@ -478,6 +540,7 @@ export class SimulationRunner {
           participation: this.participationOf(bodyRuntime),
           admitted,
         });
+    this.trace?.record("cognitive-demands", { demands });
     stages.push({
       stage: "cognitive-demand",
       status: demands.length === 0 ? "no-op" : "done",
@@ -500,7 +563,7 @@ export class SimulationRunner {
       for (const characterId of Object.keys(memoryState.records).sort()) {
         if (!demanded.has(characterId) && this.current.characters.characters[characterId]?.control !== "user") continue;
         entries[characterId] = this.workingMemory.contextFor(memoryState, characterId);
-        situations[characterId] = this.situationOf(characterId, world, bodyRuntime);
+        situations[characterId] = this.situationOf(characterId, world, bodyRuntime, startingTick);
       }
       const input: RoundInput = {
         roundId: `${this.current.timelineId}/tick-${startingTick}/round-${this.roundSequence}`,
@@ -514,6 +577,7 @@ export class SimulationRunner {
         cognition: cognitionState,
       };
       const round = this.rounds.openRound(input);
+      this.trace?.record("cognitive-barrier", { round, situations, entries }, { roundId: round.roundId });
       stages.push({
         stage: "cognitive-barrier",
         status: "done",
@@ -557,6 +621,7 @@ export class SimulationRunner {
         failure: null,
         summary: null,
       });
+      for (const stage of stages) this.trace?.record("stage", stage);
       return { status: "cognitive-barrier", round };
     }
     stages.push({ stage: "cognitive-barrier", status: "no-op", detail: "no barrier was needed" });
@@ -600,6 +665,8 @@ export class SimulationRunner {
       // A tick that could not be decided is not published: the objective state stays
       // exactly where the barrier found it, and only the failure becomes visible.
       const failed = this.publishFailed(held, failure, resolution.round);
+      this.trace?.record("stage", { stage: "cognitive-barrier", status: "failed", detail: failure.detail });
+      this.trace?.finishTurn("failed", { failure, summary: failed });
       return { status: "failed", summary: failed, failure };
     }
 
@@ -614,16 +681,37 @@ export class SimulationRunner {
         decision,
       });
       cognitionState = applied.state;
+      this.trace?.record(
+        "cognitive-decision",
+        { decision, notes: applied.notes },
+        { entityId: decision.characterId, requestId: decision.requestId, roundId: resolution.round.roundId },
+      );
     }
     for (const [characterId, references] of Object.entries(resolution.consumptions)) {
       const entries = this.workingMemory.contextFor(memoryState, characterId);
-      const entryIds = this.cognition.usedEntries(entries, references);
+      const acknowledgedEvents = new Set(
+        this.perception
+          .pendingObservations(perceptionState, characterId)
+          .filter((observation) => observation.kind === "event" || observation.kind === "outcome")
+          .map((observation) => observation.observationId),
+      );
+      const entryIds = [
+        ...new Set([
+          ...this.cognition.usedEntries(entries, references),
+          ...entries.filter((entry) => acknowledgedEvents.has(entry.sourceId)).map((entry) => entry.entryId),
+        ]),
+      ];
       const confirmed = this.workingMemory.confirmUsage(memoryState, { characterId, entryIds });
       memoryState = confirmed.state;
       const observationIds = confirmed.confirmed
         .map((entryId) => entries.find((entry) => entry.entryId === entryId)?.sourceId)
         .filter((sourceId): sourceId is string => sourceId !== undefined);
       perceptionState = this.perception.confirmConsumed(perceptionState, characterId, observationIds);
+      this.trace?.record(
+        "memory-consumption",
+        { references, confirmed: confirmed.confirmed, observationIds },
+        { entityId: characterId, roundId: resolution.round.roundId },
+      );
     }
     stages.push({
       stage: "memory",
@@ -641,6 +729,11 @@ export class SimulationRunner {
       });
       bodyRuntime = attempt.runtime;
       actionOutcomes.push(`${attempt.outcome.status} ${plan.planId}: ${attempt.outcome.reason}`);
+      this.trace?.record(
+        "plan-acceptance",
+        { plan, outcome: attempt.outcome },
+        { entityId: plan.entityId, roundId: resolution.round.roundId },
+      );
     }
     this.rounds.close();
     this.held = undefined;
@@ -660,6 +753,7 @@ export class SimulationRunner {
       scheduled: held.scheduled,
       stageTruncated: false,
       round: resolution.round,
+      recordedStages: held.stages.length,
     });
   }
 
@@ -719,10 +813,13 @@ export class SimulationRunner {
   }
 
   /** One readable frame per participant: where it is and what it is doing. */
-  private situationOf(characterId: string, world: WorldState, runtime: BodyRuntime): string {
+  private situationOf(characterId: string, world: WorldState, runtime: BodyRuntime, tick: number): string {
     const place = this.world.position(world, characterId);
     const activity = activityOf(runtime, characterId);
-    const parts = [place === null ? "你还不知道自己在哪里" : `你在${itemLabel(this.config, place)}`];
+    const parts = [
+      `当前为第 ${tick} Tick，模拟时间 ${tick * this.settings.tickSeconds} 秒`,
+      place === null ? "你还不知道自己在哪里" : `你在${itemLabel(this.config, place)}`,
+    ];
     if (activity.action !== "")
       parts.push(`当前动作：${itemLabel(this.config, activity.action)}（${activity.status}）`);
     return `${parts.join("；")}。`;
@@ -789,7 +886,11 @@ export class SimulationRunner {
 
   /** Publishes one finished tick and returns the matching result. */
   private publish(
-    held: Omit<HeldTick, "previous"> & { readonly stageTruncated: boolean; readonly round?: CognitionRound },
+    held: Omit<HeldTick, "previous"> & {
+      readonly stageTruncated: boolean;
+      readonly round?: CognitionRound;
+      readonly recordedStages?: number;
+    },
   ): TickResult {
     const config = this.requireConfig();
     const stages = [...held.stages];
@@ -847,6 +948,12 @@ export class SimulationRunner {
           : `${held.round.roundId} ${held.round.status}: ${held.round.participants.map((participant) => `${participant.characterId}=${participant.state}`).join(", ")}`,
     });
     this.current = Object.freeze({ ...nextState, runMode, summary });
+    for (const stage of stages.slice(held.recordedStages ?? 0)) this.trace?.record("stage", stage);
+    this.trace?.finishTurn(held.failure !== null ? "failed" : held.barrier !== null ? "rule-barrier" : "completed", {
+      summary,
+      failure: held.failure,
+      barrier: held.barrier,
+    });
     if (held.failure !== null) return { status: "failed", summary, failure: held.failure };
     if (held.barrier !== null) return { status: "rule-barrier", summary, barrier: held.barrier };
     return { status: "completed", summary };

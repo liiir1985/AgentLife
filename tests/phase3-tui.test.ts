@@ -3,7 +3,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { SimulationController, type TimerPort } from "../src/interaction/simulation-controller.js";
 import { walkingDecision } from "../src/agent/scripted-cognition.js";
 import { RuntimeStore } from "../src/storage/runtime-store.js";
-import { TerminalApplication } from "../src/tui/terminal-application.js";
+import { SessionCost } from "../src/diagnostics/session-cost.js";
+import type { Api, Model, Usage } from "@earendil-works/pi-ai";
+import { TerminalApplication, type TerminalApplicationOptions } from "../src/tui/terminal-application.js";
 import { VirtualTerminal } from "../src/tui/virtual-terminal.js";
 import { DEMO_PLAYER } from "./helpers/phase2.js";
 import { gatedModel, phase4Simulation, type Phase4Simulation } from "./helpers/phase4.js";
@@ -28,13 +30,13 @@ interface Harness {
   readonly app: TerminalApplication;
 }
 
-function startTui(simulation: Phase4Simulation, rows = 30): Harness {
+function startTui(simulation: Phase4Simulation, rows = 30, options: TerminalApplicationOptions = {}): Harness {
   const controller = new SimulationController(simulation.runner, simulation.config, new RuntimeStore(":memory:"), {
     playerId: DEMO_PLAYER,
     timer: idleTimer,
   });
   const terminal = new VirtualTerminal(120, rows);
-  const app = new TerminalApplication(terminal, controller);
+  const app = new TerminalApplication(terminal, controller, options);
   app.start();
   return { terminal, controller, app };
 }
@@ -57,6 +59,35 @@ async function published(controller: SimulationController, tick: number): Promis
 
 describe("phase 4 terminal application", () => {
   afterEach(() => vi.useRealTimers());
+
+  it("updates the session inference cost in the main header", async () => {
+    const sessionCost = new SessionCost();
+    const { terminal, app } = startTui(await phase4Simulation(), 30, { sessionCost });
+    try {
+      expect(terminal.screen().join("\n")).toContain("推理 $0.000000");
+      const model = {
+        provider: "test",
+        id: "priced",
+        cost: { input: 2, output: 8, cacheRead: 0, cacheWrite: 0 },
+      } as Model<Api>;
+      const usage: Usage = {
+        input: 1_000,
+        output: 500,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 1_500,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      };
+      sessionCost.record(model, usage);
+      await rendered();
+      expect(terminal.screen().join("\n")).toContain("推理 $0.006000");
+      terminal.resize(70, 30);
+      await rendered();
+      expect(terminal.screen().join("\n")).toContain("推理 $0.006000");
+    } finally {
+      app.stop();
+    }
+  });
 
   it("renders the contextual action bar and completes the entity parameter wizard", async () => {
     vi.useFakeTimers();

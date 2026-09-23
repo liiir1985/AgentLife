@@ -530,6 +530,7 @@ export interface CognitionRound {
 /** One observation as a cognition request carries it. */
 export interface CognitionObservationInput {
   readonly observationId: string;
+  readonly tick: number;
   /** How the model may name the object; `null` when the line is about no object. */
   readonly reference: string | null;
   readonly text: string;
@@ -546,6 +547,7 @@ export interface CognitionIntentionInput {
 
 /** One action a decision may request. */
 export interface CognitionActionInput {
+  /** Model-facing name, qualified only when another allowed action shares its short name. */
   readonly action: string;
   readonly name: string;
   readonly description: string;

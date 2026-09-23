@@ -99,10 +99,8 @@ fields:
     // The take completed, and the log shows it as the player's own result.
     expect(app.perceptionLog().map((observation) => observation.text)).toContain("你完成了「拿取」");
     expect(app.availableActions().map((entry) => entry.command.name)).toContain("放置");
-    // The carried rope is still observed, and a candidate is discovery rather than a
-    // prediction of success, so the take command stays offered; the world refuses a
-    // second take of an item someone already carries.
-    expect(app.availableActions().map((entry) => entry.command.name)).toContain("拿取");
+    // The carried rope remains visible, but is no longer a candidate for taking.
+    expect(app.availableActions().map((entry) => entry.command.name)).not.toContain("拿取");
     const put = app.beginAction("agentlife.demo/command-put");
     const heldRope = put?.choices()[0];
     if (put === undefined || heldRope === undefined) throw new Error("the carried rope was not offered");

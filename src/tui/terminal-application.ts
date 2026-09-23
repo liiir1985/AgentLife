@@ -16,6 +16,7 @@ import {
   type Terminal,
   type TuiInputListenerResult,
 } from "@earendil-works/pi-tui";
+import { basename } from "node:path";
 import type {
   ActionParameterSession,
   ControllerMode,
@@ -23,15 +24,19 @@ import type {
 } from "../interaction/simulation-controller.js";
 import type { PerceivedSubject } from "../interaction/context-actions.js";
 import type { CognitionRound } from "../simulation/types.js";
+import type { SessionInspector } from "../diagnostics/session-inspector.js";
+import type { SessionLog } from "../diagnostics/session-trace.js";
+import { formatSessionCost, type SessionCost } from "../diagnostics/session-cost.js";
 import { ContextActionBar } from "./context-action-bar.js";
 
 const WIDE_WIDTH = 120;
 const LOG_LIMIT = 500;
 const NOTIFICATION_MS = 2_000;
-const SHORTCUTS = "←/→ 选择  Enter 确认  Space 运行/暂停  / 管理  F2 监视";
+const SHORTCUTS = "←/→ 选择  Enter 确认  Space 运行/暂停  / 管理  F2 调试";
 
 type FocusMode = "action-bar" | "entity-parameter" | "text-parameter" | "management-input" | "monitor";
 type NarrowTab = "location" | "entities" | "log";
+type MonitorTab = "status" | "session-log";
 
 /**
  * How the ordinary view names a perceived object: what it recognised, or the
@@ -56,6 +61,46 @@ class ProjectedText implements Component {
   }
   invalidate(): void {
     this.text.invalidate();
+  }
+}
+
+/** Keeps the management surface visibly separate from the ordinary TUI. */
+class DebugPanel implements Component {
+  private scrollTop = 0;
+  private visibleLines = 1;
+  private totalLines = 0;
+
+  constructor(
+    private readonly content: Component,
+    private readonly maxHeight: () => number,
+  ) {}
+
+  scrollBy(lines: number): void {
+    this.scrollTop = Math.max(0, Math.min(this.scrollTop + lines, this.totalLines - this.visibleLines));
+  }
+
+  resetScroll(): void {
+    this.scrollTop = 0;
+  }
+
+  render(width: number): string[] {
+    if (width < 5) return this.content.render(width);
+    const contentWidth = width - 4;
+    const title = "─ 调试面板 ";
+    const top = `┌${title}${"─".repeat(Math.max(0, width - 2 - visibleWidth(title)))}┐`;
+    const lines = this.content.render(contentWidth);
+    this.totalLines = lines.length;
+    this.visibleLines = Math.max(1, this.maxHeight() - 2);
+    this.scrollTop = Math.min(this.scrollTop, Math.max(0, this.totalLines - this.visibleLines));
+    const body = lines.slice(this.scrollTop, this.scrollTop + this.visibleLines).map((line) => {
+      const fitted = truncateToWidth(line, contentWidth);
+      return `│ ${fitted}${" ".repeat(Math.max(0, contentWidth - visibleWidth(fitted)))} │`;
+    });
+    return [top, ...body, `└${"─".repeat(width - 2)}┘`];
+  }
+
+  invalidate(): void {
+    this.content.invalidate?.();
   }
 }
 
@@ -86,6 +131,9 @@ export interface TerminalApplicationOptions {
   readonly mouse?: boolean;
   /** The model the AI characters think with, shown in the monitor panel. */
   readonly model?: string;
+  readonly sessionLog?: SessionLog;
+  readonly sessionCost?: SessionCost;
+  readonly inspector?: SessionInspector;
   readonly onExit?: () => void;
 }
 
@@ -100,18 +148,24 @@ export class TerminalApplication {
   private resumeAfterParameter = false;
   private mode: FocusMode = "action-bar";
   private tab: NarrowTab = "location";
+  private monitorTab: MonitorTab = "status";
+  private selectedLogSession: string | null = null;
+  private selectedLogTurn: number | null = null;
   private overlay: OverlayHandle | undefined;
+  private debugPanel: DebugPanel | undefined;
   private session: ActionParameterSession | undefined;
   private activeInput: Input | undefined;
   private readonly managementHistory: string[] = [];
   private historyIndex = 0;
   private unsubscribeInput: (() => void) | undefined;
   private unsubscribeController: (() => void) | undefined;
+  private unsubscribeCost: (() => void) | undefined;
   /** The mode the last notice was based on, so a stop is reported once. */
   private lastMode: ControllerMode | undefined;
+  private lastLogError: string | null = null;
 
   constructor(
-    terminal: Terminal,
+    private readonly terminal: Terminal,
     readonly controller: SimulationController,
     private readonly options: TerminalApplicationOptions = {},
   ) {
@@ -180,12 +234,15 @@ export class TerminalApplication {
     this.unsubscribeController = this.controller.subscribe(() => {
       this.appendPerceivedObservations();
       this.noticeStall();
+      this.noticeLogFailure();
       this.tui.requestRender(true);
     });
+    this.unsubscribeCost = this.options.sessionCost?.subscribe(() => this.tui.requestRender(true));
     this.appendPerceivedObservations();
     this.tui.start();
     this.tui.setFocus(this.actionBar);
     this.notify("左右选择动作，空格运行/暂停，/ 打开管理命令");
+    this.noticeLogFailure();
     this.tui.renderNow(true);
   }
 
@@ -200,13 +257,23 @@ export class TerminalApplication {
     if (mode === "failed") this.notify("AI 这一轮没有给出可用的决定：按空格再试一次，或 /load 载入存档");
   }
 
+  private noticeLogFailure(): void {
+    const error = this.options.sessionLog?.error ?? null;
+    if (error === null || error === this.lastLogError) return;
+    this.lastLogError = error;
+    this.notify(`Session Log 写入失败：${error}`);
+  }
+
   stop(): void {
     this.unsubscribeInput?.();
     this.unsubscribeController?.();
+    this.unsubscribeCost?.();
     if (this.notificationTimer !== undefined) clearTimeout(this.notificationTimer);
     this.closeOverlay();
     this.tui.stop();
     this.controller.close();
+    this.options.inspector?.close();
+    this.options.sessionLog?.close();
   }
 
   private notify(message: string): void {
@@ -249,7 +316,9 @@ export class TerminalApplication {
     const view = this.controller.view();
     const status = this.controller.status();
     const save = status.pendingSave === null ? "" : ` · 保存待处理 ${status.pendingSave}`;
-    return `AgentLife │ ${view.simSeconds}s · Tick ${view.tick} · ${this.waitState()} · ${view.configId.slice(0, 12)}${save}`;
+    const cost = formatSessionCost(this.options.sessionCost === undefined ? 0 : this.options.sessionCost.totalUsd);
+    if (this.terminal.columns < 80) return `AgentLife │ Tick ${view.tick} · ${cost} · ${this.waitState()}`;
+    return `AgentLife │ ${view.simSeconds}s · Tick ${view.tick} · ${cost} · ${this.waitState()} · ${view.configId.slice(0, 12)}${save}`;
   }
 
   private locationText(): string {
@@ -296,6 +365,7 @@ export class TerminalApplication {
       this.toggleMonitor();
       return { consume: true };
     }
+    if (this.mode === "monitor") return this.handleMonitorInput(data);
     if (
       this.mode === "management-input" &&
       this.activeInput !== undefined &&
@@ -335,6 +405,51 @@ export class TerminalApplication {
       const delta = matchesKey(data, "shift+tab") ? -1 : 1;
       this.tab = tabs[(index + delta + tabs.length) % tabs.length] ?? "location";
       this.tui.requestRender(true);
+      return { consume: true };
+    }
+    return undefined;
+  }
+
+  private handleMonitorInput(data: string): TuiInputListenerResult | undefined {
+    if (matchesKey(data, "escape")) {
+      this.closeOverlayToActions();
+      return { consume: true };
+    }
+    if (matchesKey(data, "left") || matchesKey(data, "right") || matchesKey(data, "tab")) {
+      this.monitorTab = this.monitorTab === "status" ? "session-log" : "status";
+      this.debugPanel?.resetScroll();
+      this.tui.requestRender(true);
+      return { consume: true };
+    }
+    if (this.monitorTab !== "session-log") {
+      if (matchesKey(data, "up") || matchesKey(data, "down")) {
+        this.debugPanel?.scrollBy(matchesKey(data, "up") ? -1 : 1);
+        this.tui.requestRender(true);
+        return { consume: true };
+      }
+      return undefined;
+    }
+    const selection = this.logSelection();
+    if (data.toLowerCase() === "s") {
+      const sessions = selection.sessions;
+      if (sessions.length > 0) {
+        const current = sessions.indexOf(selection.session ?? "");
+        this.selectedLogSession = sessions[(current + 1) % sessions.length] ?? null;
+        this.selectedLogTurn = null;
+        this.tui.requestRender(true);
+      }
+      return { consume: true };
+    }
+    if (matchesKey(data, "up") || matchesKey(data, "down")) {
+      const index = selection.turns.indexOf(selection.turn ?? -1);
+      const delta = matchesKey(data, "up") ? -1 : 1;
+      this.selectedLogTurn = selection.turns[Math.max(0, Math.min(selection.turns.length - 1, index + delta))] ?? null;
+      this.tui.requestRender(true);
+      return { consume: true };
+    }
+    if (matchesKey(data, "enter")) {
+      if (selection.session !== null && selection.turn !== null)
+        void this.openInspector({ session: selection.session, turn: selection.turn });
       return { consume: true };
     }
     return undefined;
@@ -484,13 +599,24 @@ export class TerminalApplication {
         this.notify(this.controller.save(argument).message);
       } else if (command === "/load" && argument !== undefined) {
         this.notify(this.controller.load(argument).message);
+      } else if (command === "/inspect") {
+        void this.openInspector();
       } else if (command === "/status") this.notify(this.statusLine());
       else if (command === "/monitor") this.toggleMonitor();
       else if (command === "/help")
-        this.notify("管理：/step /run [ticks] /pause /skip /save <id> /load <id> /status /monitor /help");
+        this.notify("管理：/step /run [ticks] /pause /skip /save <id> /load <id> /status /monitor /inspect /help");
       else this.notify("未知或缺少参数的管理命令；输入 /help 查看帮助");
     } catch (failure) {
       this.notify(failure instanceof Error ? failure.message : String(failure));
+    }
+  }
+
+  private async openInspector(selection?: { readonly session: string; readonly turn: number }): Promise<void> {
+    try {
+      const url = await this.options.inspector?.open(true, selection);
+      this.notify(url === undefined ? "日志审视器未配置" : `日志审视页：${url}`);
+    } catch (error) {
+      this.notify(`无法打开日志审视页：${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -508,11 +634,13 @@ export class TerminalApplication {
       return;
     }
     this.closeOverlay();
-    const box = new Box(1, 1);
-    box.addChild(new ProjectedText(() => this.monitorText()));
-    this.overlay = this.tui.showOverlay(box, { width: "92%", maxHeight: "85%", anchor: "center" });
+    const panel = new DebugPanel(new ProjectedText(() => this.monitorText()), () =>
+      Math.max(5, Math.floor(this.terminal.rows * 0.75)),
+    );
+    this.debugPanel = panel;
+    this.overlay = this.tui.showOverlay(panel, { width: "92%", maxHeight: "85%", anchor: "center" });
     this.mode = "monitor";
-    this.tui.setFocus(box);
+    this.tui.setFocus(panel);
     this.tui.renderNow(true);
   }
 
@@ -522,16 +650,21 @@ export class TerminalApplication {
    * admitted text.
    */
   private monitorText(): string {
+    const tabs = this.monitorTab === "status" ? "[当前状态]  Session Log" : "当前状态  [Session Log]";
+    if (this.monitorTab === "session-log") return `管理员视图 — 不属于角色观察\n${tabs}\n\n${this.sessionLogText()}`;
     const snapshot = this.controller.managementSnapshot();
     const state = snapshot.state;
     const status = snapshot.status;
     const round = state.round;
     const lines: string[] = [
       "管理员视图 — 不属于角色观察",
+      tabs,
       `Entities: ${Object.keys(state.world.entities).length} · Bodies: ${Object.keys(state.body.bodies).length}`,
       `World: ${state.world.processes.length} process · ${state.world.events.length} events`,
       `Scheduler: ${status.mode} · Tick ${state.tick} · pending ${snapshot.pendingPlans.length}${status.pendingSave === null ? "" : ` · save ${status.pendingSave}`}`,
       `Model: ${this.options.model ?? "未设置"}`,
+      `Session Log: ${this.options.sessionLog?.path ?? "未设置"}`,
+      `Log status: ${this.options.sessionLog?.error ?? "正常"}`,
       `Barrier: ${state.barrier?.detail ?? "none"} · Failure: ${state.failure?.detail ?? "none"}`,
       "",
       `Perception（${snapshot.perception.length} 观察者）`,
@@ -566,6 +699,63 @@ export class TerminalApplication {
     return lines.join("\n");
   }
 
+  private logSelection(): {
+    readonly sessions: readonly string[];
+    readonly session: string | null;
+    readonly turns: readonly number[];
+    readonly turn: number | null;
+    readonly entries: readonly import("../diagnostics/session-trace.js").SessionLogEntry[];
+  } {
+    const sessions = this.options.inspector?.sessions() ?? [];
+    const current = this.options.sessionLog === undefined ? null : basename(this.options.sessionLog.path);
+    const session =
+      this.selectedLogSession !== null && sessions.includes(this.selectedLogSession)
+        ? this.selectedLogSession
+        : current !== null && sessions.includes(current)
+          ? current
+          : (sessions[0] ?? null);
+    if (session === null) return { sessions, session, turns: [], turn: null, entries: [] };
+    try {
+      const entries = this.options.inspector?.entries(session) ?? [];
+      const turns = [...new Set(entries.flatMap((entry) => (entry.turn === null ? [] : [entry.turn])))].sort(
+        (left, right) => right - left,
+      );
+      const turn =
+        this.selectedLogTurn !== null && turns.includes(this.selectedLogTurn)
+          ? this.selectedLogTurn
+          : (turns[0] ?? null);
+      return { sessions, session, turns, turn, entries };
+    } catch {
+      return { sessions, session, turns: [], turn: null, entries: [] };
+    }
+  }
+
+  private sessionLogText(): string {
+    const { sessions, session, turns, turn, entries } = this.logSelection();
+    const lines = ["←/→ 切换页签 · S 切换 Session · ↑/↓ 选择 Turn · Enter 查看详情 · F2/Esc 关闭"];
+    if (session === null) return `${lines.join("\n")}\n\n（还没有 Session Log）`;
+    lines.push(`Session ${sessions.indexOf(session) + 1}/${sessions.length}: ${session}`);
+    if (this.options.sessionLog !== undefined && basename(this.options.sessionLog.path) === session) {
+      lines.push(`日志：${this.options.sessionLog.path}`);
+      lines.push(`写入：${this.options.sessionLog.error ?? "正常"}`);
+    }
+    lines.push("");
+    if (turns.length === 0) lines.push("（尚无 Turn）");
+    const selectedIndex = Math.max(0, turns.indexOf(turn ?? -1));
+    const start = Math.max(0, Math.min(selectedIndex - 4, turns.length - 9));
+    for (const number of turns.slice(start, start + 9)) {
+      const records = entries.filter((entry) => entry.turn === number);
+      const first = records.find((entry) => entry.kind === "turn-start");
+      const end = records.find((entry) => entry.kind === "turn-end");
+      const perceptions = records.filter((entry) => entry.kind === "perception-result").length;
+      const attempts = records.filter((entry) => entry.kind === "cognition-attempt-start").length;
+      lines.push(
+        `${number === turn ? "▶" : " "} Turn ${number} · Tick ${first?.targetTick ?? "?"} · ${(end?.data as { status?: string } | undefined)?.status ?? "进行中"} · 感知 ${perceptions} · 认知尝试 ${attempts}`,
+      );
+    }
+    return lines.join("\n");
+  }
+
   private waitingReason(round: CognitionRound | null): string {
     if (round === null) return "没有等待决定的轮次";
     const waiting = round.demands.map((demand) => `${demand.characterId}: ${demand.reason}（${demand.detail}）`);
@@ -576,6 +766,7 @@ export class TerminalApplication {
     this.overlay?.hide();
     this.overlay = undefined;
     this.activeInput = undefined;
+    this.debugPanel = undefined;
   }
 
   private closeOverlayToActions(): void {

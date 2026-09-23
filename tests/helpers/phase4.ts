@@ -2,6 +2,8 @@ import type { RuntimeConfig } from "../../src/config/config-builder.js";
 import { CoreRuntime, packInput, type PublishResult } from "../../src/config/core-runtime.js";
 import { ContentPackLoader } from "../../src/content/content-pack-loader.js";
 import type { CognitionModelPort } from "../../src/agent/cognition-agent.js";
+import type { SessionTrace } from "../../src/diagnostics/session-trace.js";
+import type { SessionCost } from "../../src/diagnostics/session-cost.js";
 import { SimulationRunner, type TickResult } from "../../src/simulation/runner.js";
 import { createSystemSpecs } from "../../src/systems/index.js";
 import type {
@@ -37,6 +39,8 @@ export interface Phase4Options {
   readonly timelineId?: string;
   /** A model the test drives itself; the scripted faux model is used when omitted. */
   readonly models?: CognitionModelPort;
+  readonly trace?: SessionTrace;
+  readonly sessionCost?: SessionCost;
 }
 
 /** Releases the temporary pack of a run that needed overrides. */
@@ -63,7 +67,14 @@ export async function phase4Simulation(options: Phase4Options = {}): Promise<Pha
     directory,
     runner: SimulationRunner.create(core, {
       timelineId: options.timelineId ?? "timeline-phase4",
-      models: options.models ?? scriptedModel(options.script ?? {}),
+      models:
+        options.models ??
+        scriptedModel({
+          ...(options.script ?? {}),
+          ...(options.trace === undefined ? {} : { trace: options.trace }),
+          ...(options.sessionCost === undefined ? {} : { sessionCost: options.sessionCost }),
+        }),
+      ...(options.trace === undefined ? {} : { trace: options.trace }),
     }),
   };
 }

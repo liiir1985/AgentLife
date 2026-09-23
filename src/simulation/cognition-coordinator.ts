@@ -1,5 +1,6 @@
 import type { RuntimeConfig } from "../config/config-builder.js";
 import type { CognitionModelPort } from "../agent/cognition-agent.js";
+import type { SessionTrace } from "../diagnostics/session-trace.js";
 import {
   actionUtteranceField,
   cognitionPrompt,
@@ -69,6 +70,19 @@ export interface RoundResolution {
 export type DecisionResult =
   { readonly ok: true; readonly message: string } | { readonly ok: false; readonly message: string };
 
+/** Names offered to cognition; only collisions need their configured identity. */
+export function cognitionActionNames(allowedActions: readonly string[]): ReadonlyMap<string, string> {
+  const shortName = (action: string): string => action.split("/").at(-1) ?? action;
+  const counts = new Map<string, number>();
+  for (const action of allowedActions) {
+    const name = shortName(action);
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  return new Map(
+    allowedActions.map((action) => [counts.get(shortName(action)) === 1 ? shortName(action) : action, action]),
+  );
+}
+
 interface OpenRound {
   readonly input: RoundInput;
   participants: CognitionParticipant[];
@@ -98,6 +112,7 @@ export class CognitionCoordinator {
     private readonly config: RuntimeConfig,
     private readonly cognition: CognitionService,
     private readonly models: CognitionModelPort,
+    private readonly trace?: SessionTrace,
   ) {}
 
   current(): CognitionRound | undefined {
@@ -186,7 +201,11 @@ export class CognitionCoordinator {
       if (this.open === undefined || this.open.input.roundId !== roundId) return;
       const requestId = `${roundId}/${characterId}/attempt-${attempt}`;
       this.update(characterId, { state: "requested", requestId, attempts: attempt, detail: `attempt ${attempt}` });
-      const result = await this.models.request(this.inputFor(open, characterId, requestId, attempt, rejection));
+      const input = this.inputFor(open, characterId, requestId, attempt, rejection);
+      const identity = { entityId: characterId, roundId, requestId };
+      this.trace?.record("cognition-attempt-start", { input }, identity);
+      const result = await this.models.request(input);
+      this.trace?.record("cognition-model-result", result, identity);
       if (this.open === undefined || this.open.input.roundId !== roundId) return;
       if (result.status === "decided" && result.decision !== null) {
         const checked = this.validate(open, characterId, result.decision);
@@ -196,19 +215,23 @@ export class CognitionCoordinator {
           open.consumptions.set(characterId, checked.decision.consumedObservations);
           open.notes.push(`${characterId} decided at attempt ${attempt}: ${this.summaryOf(checked.decision)}`);
           this.update(characterId, { state: "decided", detail: this.summaryOf(checked.decision) });
+          this.trace?.record("cognition-attempt-end", { status: "accepted", decision: checked.decision }, identity);
           return;
         }
         rejection = checked.reason;
         open.notes.push(`${characterId} attempt ${attempt} refused: ${rejection}`);
         this.update(characterId, { state: "waiting", detail: rejection });
+        this.trace?.record("cognition-attempt-end", { status: "rejected", reason: rejection }, identity);
         continue;
       }
       rejection = result.detail;
       open.notes.push(`${characterId} attempt ${attempt} ${result.status}: ${result.detail}`);
       this.update(characterId, { state: "waiting", detail: rejection });
+      this.trace?.record("cognition-attempt-end", { status: result.status, reason: rejection }, identity);
     }
     open.failure = `${characterId} submitted no usable decision: ${rejection ?? "no attempt was made"}`;
     this.update(characterId, { state: "failed", detail: open.failure });
+    this.trace?.record("cognition-failure", { reason: open.failure }, { entityId: characterId, roundId });
   }
 
   private summaryOf(decision: CognitiveDecision): string {
@@ -244,6 +267,7 @@ export class CognitionCoordinator {
           .filter((entry) => entry.kind === "observation")
           .map((entry) => ({
             observationId: entry.sourceId,
+            tick: entry.admittedTick,
             reference: entry.reference,
             text: entry.text,
             role: entry.role,
@@ -259,8 +283,8 @@ export class CognitionCoordinator {
           })),
       ),
       actions: Object.freeze(
-        (settings?.allowedActions ?? []).map((action) => ({
-          action,
+        [...cognitionActionNames(settings?.allowedActions ?? [])].map(([name, action]) => ({
+          action: name,
           name: itemLabel(this.config, action),
           description: itemDescription(this.config, action),
         })),
@@ -292,6 +316,9 @@ export class CognitionCoordinator {
     if (decision.speech !== null && speech !== undefined)
       steps.push(Object.freeze({ action: speech.action, inputs: Object.freeze({ [speech.field]: decision.speech }) }));
     for (const step of decision.steps) {
+      // `speech` is the utterance for this decision. A second say step often
+      // repeats it without the declared utterance field and must not run again.
+      if (decision.speech !== null && step.action === speech?.action) continue;
       const target = step.target === undefined ? undefined : anchorOf(step.target);
       const destination = step.destination === undefined ? undefined : anchorOf(step.destination);
       steps.push(
@@ -351,17 +378,25 @@ export class CognitionCoordinator {
     }
     if (draft.speech !== null && this.speechAction() === undefined)
       return { ok: false, reason: "the decision speaks, but no allowed action declares an utterance" };
-    const carried = draft.steps.length + (draft.speech === null ? 0 : 1);
+    const speech = this.speechAction();
+    const carried =
+      draft.steps.filter(
+        (step) =>
+          draft.speech === null || cognitionActionNames(settings.allowedActions).get(step.action) !== speech?.action,
+      ).length + (draft.speech === null ? 0 : 1);
     if (carried > settings.maxPlanSteps)
       return { ok: false, reason: `the plan carries ${carried} steps, the bound is ${settings.maxPlanSteps}` };
+    const steps: ActionStep[] = [];
+    const actionNames = cognitionActionNames(settings.allowedActions);
     for (const step of draft.steps) {
-      if (!settings.allowedActions.includes(step.action))
-        return { ok: false, reason: `action ${step.action} is not allowed for this entity` };
+      const action = actionNames.get(step.action);
+      if (action === undefined) return { ok: false, reason: `action ${step.action} is not allowed for this entity` };
       for (const reference of [step.target, step.destination]) {
         if (reference === undefined) continue;
         if (!references.has(reference))
           return { ok: false, reason: `${step.action} names ${reference}, which was never admitted` };
       }
+      steps.push(Object.freeze({ ...step, action }));
     }
     if (draft.steps.length > 0 && draft.idle !== null)
       return { ok: false, reason: "a decision with a plan must not also declare an idle commitment" };
@@ -378,7 +413,7 @@ export class CognitionCoordinator {
         attention: Object.freeze([...draft.attention]),
         questions: Object.freeze([...draft.questions]),
         intentionChanges: Object.freeze([...draft.intentionChanges]),
-        steps: Object.freeze(draft.steps.map((step) => Object.freeze({ ...step }))),
+        steps: Object.freeze(steps),
         consumedObservations: Object.freeze([...draft.consumedObservations]),
         consideredIntentions: Object.freeze([...draft.consideredIntentions]),
       }),
@@ -443,6 +478,11 @@ export class CognitionCoordinator {
     open.consumptions.set(plan.entityId, Object.freeze(confirmed));
     this.update(plan.entityId, { state: "decided", detail: `player command ${plan.planId}` });
     open.notes.push(`${plan.entityId} joined the round with ${plan.steps.length} step(s)`);
+    this.trace?.record(
+      "player-decision",
+      { status: "planned", plan, consumedReferences: confirmed },
+      { entityId: plan.entityId, roundId: open.input.roundId },
+    );
     return { ok: true, message: "已加入本轮统一交接" };
   }
 
@@ -457,6 +497,11 @@ export class CognitionCoordinator {
     if (participant === undefined) open.participants.push(participantOf(seed, "skipped while the barrier was open"));
     this.update(seed.characterId, { state: "skipped", detail: "player skipped" });
     open.notes.push(`${seed.characterId} skipped this round`);
+    this.trace?.record(
+      "player-decision",
+      { status: "skipped" },
+      { entityId: seed.characterId, roundId: open.input.roundId },
+    );
     return { ok: true, message: "本轮不提交新计划" };
   }
 

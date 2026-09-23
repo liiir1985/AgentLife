@@ -257,7 +257,7 @@ function passesFilters(
 function sourceOf(view: PerceivedPlayerView, source: EntityCandidateSource): readonly PerceivedSubject[] {
   if (source === "current-exits") return view.exits;
   if (source === "held-items") return view.heldItems;
-  if (source === "visible-items") return view.entities.filter((subject) => subject.kind === "item");
+  if (source === "visible-items") return view.entities.filter((subject) => subject.kind === "item" && !subject.held);
   return view.entities;
 }
 

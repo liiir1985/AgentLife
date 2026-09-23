@@ -131,7 +131,7 @@ export class WorkingMemoryService {
           entryId: `${input.characterId}/wm-${sequence}`,
           kind: "observation" as const,
           sourceId: observation.observationId,
-          admittedTick: input.tick,
+          admittedTick: observation.tick,
           salience: observation.salience,
           text: observation.text,
           anchor,

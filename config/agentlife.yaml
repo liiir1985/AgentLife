@@ -18,3 +18,9 @@ models:
 # 子系统名必须是代码里已声明的消费者（当前只有 cognition），拼错会按未声明顶层字段报错。
 # cognition:
 #   model: anthropic/claude-opus-4-5
+#   # 配置后覆盖 Pi 内置单价；单位为美元/百万 token：
+#   cost:
+#     input: 2
+#     output: 8
+#     cacheRead: 0.04
+#     cacheWrite: 0.04

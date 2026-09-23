@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { idleDecision, type ScriptedDraft } from "../src/agent/scripted-cognition.js";
 import { cognitionSettings } from "../src/simulation/config-view.js";
+import { cognitionActionNames } from "../src/simulation/cognition-coordinator.js";
 import type { CognitionInput, SimulationState } from "../src/simulation/types.js";
 import {
   companionCharacter,
@@ -32,6 +33,87 @@ const consumeFirstObservation: ScriptedDraft = (input: CognitionInput): unknown 
 };
 
 describe("working memory and the cognition barrier", () => {
+  it("turns a decision's speech and repeated say step into one utterance action", async () => {
+    const simulation = await phase4Simulation({
+      script: {
+        draft: (input: CognitionInput) => ({
+          ...(idleDecision(input) as Record<string, unknown>),
+          speech: "你好",
+          steps: [{ action: "say" }],
+          idle: null,
+        }),
+      },
+    });
+    try {
+      const result = await simulation.runner.runTickToPublication();
+      expect(result.status).toBe("completed");
+      const plan = simulation.runner.state().actions.find((action) => action.entityId === COMPANION)?.plan;
+      expect(plan?.steps).toEqual([{ action: "agentlife.demo/say", inputs: { utterance: "你好" } }]);
+    } finally {
+      dispose(simulation);
+    }
+  }, 40_000);
+
+  it("delivers a heard utterance once even when the model leaves consumption empty", async () => {
+    const heard: string[] = [];
+    const simulation = await phase4Simulation({
+      overrides: { "characters/companion.yaml": companionCharacter(SQUARE) },
+      script: {
+        draft: (input: CognitionInput) => {
+          heard.push(
+            ...input.observations.map((observation) => observation.text).filter((text) => text.includes("有人吗")),
+          );
+          return idleDecision(input);
+        },
+      },
+    });
+    try {
+      await simulation.runner.runTickToPublication();
+      await simulation.runner.runTickToPublication({
+        plans: [commandPlan("player-hello", PLAYER, "agentlife.demo/say", { inputs: { utterance: "有人吗" } })],
+      });
+      for (let tick = 0; tick < 4; tick += 1) await simulation.runner.runTickToPublication();
+      expect(heard).toEqual([expect.stringContaining("有人吗")]);
+    } finally {
+      dispose(simulation);
+    }
+  }, 40_000);
+
+  it("shows short action names and maps a decision back to its configured action", async () => {
+    const simulation = await phase4Simulation({
+      script: {
+        draft: (input: CognitionInput) => {
+          expect(input.actions.map((action) => action.action)).toContain("wave");
+          expect(input.actions.every((action) => !action.action.includes("/"))).toBe(true);
+          return {
+            ...(idleDecision(input) as Record<string, unknown>),
+            steps: [{ action: "wave" }],
+            idle: null,
+          };
+        },
+      },
+    });
+    try {
+      const result = await simulation.runner.runTickToPublication();
+      expect(result.status).toBe("completed");
+      expect(
+        simulation.runner
+          .state()
+          .actions.some((action) => action.entityId === COMPANION && action.action === "agentlife.demo/wave"),
+      ).toBe(true);
+    } finally {
+      dispose(simulation);
+    }
+  }, 40_000);
+
+  it("uses full names only when two allowed actions share a short name", () => {
+    expect([...cognitionActionNames(["agentlife.demo/wave", "agentlife.other/wave", "agentlife.demo/walk"])]).toEqual([
+      ["agentlife.demo/wave", "agentlife.demo/wave"],
+      ["agentlife.other/wave", "agentlife.other/wave"],
+      ["walk", "agentlife.demo/walk"],
+    ]);
+  });
+
   it("keeps only what fits, in a deterministic order", async () => {
     const overrides = { "cognitionSettings/cognition-settings.yaml": settingsFile({ observationCapacity: 2 }) };
     const first = await phase4Simulation({ overrides, script: { draft: idleDecision } });
@@ -42,7 +124,7 @@ describe("working memory and the cognition barrier", () => {
       await second.runner.runTickToPublication();
       const held = first.runner.state().memory.records[PLAYER]?.entries ?? [];
       const pending = first.runner.state().perception.observers[PLAYER]?.pending ?? [];
-      expect(pending.length).toBeGreaterThan(2);
+      expect(pending.length).toBe(2);
       expect(held.length).toBe(2);
       // The same content produces the same admission, entry identity included.
       expect(held.map((entry) => entry.sourceId)).toEqual(

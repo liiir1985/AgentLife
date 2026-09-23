@@ -124,6 +124,7 @@ export class CognitionService {
         (observation) =>
           observation.kind !== "event" &&
           observation.kind !== "outcome" &&
+          observation.kind !== "continuing" &&
           observation.salience >= (perceptionSettings(this.config)?.changeSalience ?? 0),
       );
       const reasons: CognitionDemandReason[] = [];

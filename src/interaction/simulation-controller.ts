@@ -1,4 +1,5 @@
 import type { RuntimeConfig } from "../config/config-builder.js";
+import type { SessionTrace } from "../diagnostics/session-trace.js";
 import { cognitionSettings } from "../simulation/config-view.js";
 import { stateVersionOf, type ActionPlan, type CognitionRound, type SimulationState } from "../simulation/types.js";
 import { SimulationRunner, type TickResult } from "../simulation/runner.js";
@@ -93,6 +94,7 @@ export interface ControllerOptions {
   readonly playerId: string;
   readonly intervalMs?: number;
   readonly timer?: TimerPort;
+  readonly trace?: SessionTrace;
 }
 
 export class ActionParameterSession {
@@ -490,6 +492,7 @@ export class SimulationController {
     if (this.pending.length > 0) return { ok: false, message: "仍有未接纳动作，请先推进 Tick" };
     if (this.mode === "running") return { ok: false, message: "请先暂停再保存" };
     const outcome: SaveResult = this.commitSave(saveId);
+    this.options.trace?.record("simulation-save", { saveId, tick: state.tick, outcome });
     this.changed();
     return { ok: true, message: outcome === "duplicate" ? `已覆盖存档 ${saveId}` : `已保存 ${saveId}` };
   }
@@ -513,6 +516,7 @@ export class SimulationController {
     if (this.runner.state().phase !== "publish") return null;
     this.pendingSaveId = null;
     const outcome = this.commitSave(saveId);
+    this.options.trace?.record("simulation-save", { saveId, tick: this.runner.state().tick, outcome });
     return `已保存 ${saveId}${outcome === "duplicate" ? "（覆盖）" : ""}（屏障后执行）`;
   }
 
@@ -535,10 +539,12 @@ export class SimulationController {
     this.pendingSaveId = null;
     this.runRemaining = null;
     this.loadSequence += 1;
+    const previousTimelineId = this.runner.state().timelineId;
     this.runner.load({
       ...decoded.snapshot.state,
       timelineId: `${decoded.snapshot.timelineId}/load-${this.loadSequence}`,
     });
+    this.options.trace?.timelineChanged(previousTimelineId, this.runner.state().timelineId, saveId);
     this.mode = "ready";
     this.detail = `已加载 ${saveId}`;
     this.changed();

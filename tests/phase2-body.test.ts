@@ -71,8 +71,7 @@ describe("BodyService", () => {
     expect(accepted?.stageTicks).toBe(0);
 
     await runPublishedTick(runner);
-    expect(lastAction(runner, "p-say")?.status).toBe("running");
-    expect(lastAction(runner, "p-say")?.stageTicks).toBe(1);
+    expect(lastAction(runner, "p-say")?.status).toBe("completed");
   });
 
   it("runs speaking and moving in parallel for one entity", async () => {

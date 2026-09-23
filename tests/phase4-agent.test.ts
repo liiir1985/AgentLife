@@ -21,10 +21,16 @@ function cognitionInput(changes: Partial<CognitionInput> = {}): CognitionInput {
     attention: ["the lamp"],
     idle: null,
     observations: [
-      { observationId: "observation-1", reference: "the lamp", text: "a lamp stands on the table", role: "item" },
+      {
+        observationId: "observation-1",
+        tick: 40,
+        reference: "the lamp",
+        text: "a lamp stands on the table",
+        role: "item",
+      },
     ],
     intentions: [{ intentionId: "intention-1", content: "find the key", status: "active" }],
-    actions: [{ action: "agentlife.demo/walk", name: "walk", description: "walk to a place" }],
+    actions: [{ action: "walk", name: "walk", description: "walk to a place" }],
     maxSteps: 3,
     idleWaitLimitTicks: 12,
     attempt: 1,
@@ -44,7 +50,7 @@ function draftedDecision(): Record<string, unknown> {
     persistence: "the search continues while the light holds",
     intentionChanges: [{ intentionId: null, content: "search the room", status: "active" }],
     speech: "hello",
-    steps: [{ action: "agentlife.demo/walk", destination: "the lamp", inputs: { pace: "slow" } }],
+    steps: [{ action: "walk", destination: "the lamp", inputs: { pace: "slow" } }],
     idle: { kind: "review-condition", detail: "listen for the noise", event: null, waitTicks: 5, reviewInTicks: 2 },
     consumedObservations: ["observation-1"],
     consideredIntentions: ["intention-1"],
@@ -80,7 +86,7 @@ describe("PiCognitionAgent", () => {
       questions: ["where is the key?"],
       persistence: "the search continues while the light holds",
       speech: "hello",
-      steps: [{ action: "agentlife.demo/walk", destination: "the lamp", inputs: { pace: "slow" } }],
+      steps: [{ action: "walk", destination: "the lamp", inputs: { pace: "slow" } }],
       idle: {
         kind: "review-condition",
         detail: "listen for the noise",
@@ -112,14 +118,15 @@ describe("PiCognitionAgent", () => {
       }),
     );
 
-    expect(message).toContain("- the lamp（物品）：a lamp stands on the table");
+    expect(message).toContain("- the lamp（物品）（第 40 Tick）：a lamp stands on the table");
     // The internal observation identity stays out of the prompt: every reference the
     // decision may carry is the observer-local name on the line, and a model that
     // copies anything else has its submission refused.
     expect(message).not.toContain("observation-1");
     expect(message).toContain("注意：the lamp");
     expect(message).toContain("intention-1（进行中）：find the key");
-    expect(message).toContain("agentlife.demo/walk：walk：walk to a place");
+    expect(message).toContain("walk：walk：walk to a place");
+    expect(message).not.toContain("agentlife.demo/walk");
     expect(message).toContain("当前空闲承诺：listen for the noise");
     // The wait is briefed from now, not as absolute tick numbers: a model that reads
     // them as tick numbers submits a wait that ends before it starts.
@@ -179,7 +186,7 @@ describe("PiCognitionAgent", () => {
     expect(currentResult.status).toBe("decided");
     expect(currentResult.decision?.requestId).toBe("request-2");
     expect(currentResult.decision?.steps).toEqual([
-      { action: "agentlife.demo/walk", destination: "the lamp", inputs: { pace: "slow" } },
+      { action: "walk", destination: "the lamp", inputs: { pace: "slow" } },
     ]);
   });
 

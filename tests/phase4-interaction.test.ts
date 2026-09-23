@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { SimulationController, type TimerPort } from "../src/interaction/simulation-controller.js";
 import { RuntimeStore } from "../src/storage/runtime-store.js";
 import { DEMO_PLAYER, DEMO_ROPE, DEMO_SQUARE } from "./helpers/phase2.js";
-import { companionCharacter, dispose, phase4Simulation } from "./helpers/phase4.js";
+import { companionCharacter, dispose, phase4Simulation, runUntil } from "./helpers/phase4.js";
 
 /**
  * Phase 4 acceptance: the authorized player interface.
@@ -63,6 +63,28 @@ describe("the authorized player interface", () => {
         expect(choice.reference).toMatch(/^o\d+$/);
         expect(choice.name.length).toBeGreaterThan(0);
       }
+    } finally {
+      app.close();
+    }
+  }, 40_000);
+
+  it("does not offer an item already held by the player for taking again", async () => {
+    const simulation = await phase4Simulation();
+    const app = await application(simulation);
+    try {
+      await simulation.runner.runTickToPublication();
+      const take = app.beginAction("agentlife.demo/command-take");
+      expect(take?.choices().map((choice) => choice.anchor)).toContain(DEMO_ROPE);
+      if (take === undefined) return;
+      expect(take.acceptEntity(take.choices()[0]?.reference ?? "").done).toBe(true);
+      expect(app.queueAction(take).ok).toBe(true);
+      app.step();
+      await settled(app, 2);
+      await runUntil(simulation.runner, (state) => state.world.entities[DEMO_ROPE]?.heldBy === DEMO_PLAYER, 8);
+      expect(app.view().heldItems.map((item) => item.anchor)).toContain(DEMO_ROPE);
+      expect(
+        app.availableActions().find((entry) => entry.command.ref === "agentlife.demo/command-take"),
+      ).toBeUndefined();
     } finally {
       app.close();
     }

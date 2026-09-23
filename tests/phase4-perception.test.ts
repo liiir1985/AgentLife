@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { perceivedView } from "../src/interaction/context-actions.js";
 import { perceptionSettings } from "../src/simulation/config-view.js";
 import type { Observation, SimulationState } from "../src/simulation/types.js";
-import { walkingFrom } from "../src/agent/scripted-cognition.js";
+import { idleDecision, walkingFrom } from "../src/agent/scripted-cognition.js";
+import type { CognitionInput } from "../src/simulation/types.js";
 import { companionCharacter, commandPlan, dispose, lightFact, phase4Simulation, runUntil } from "./helpers/phase4.js";
 
 /**
@@ -174,8 +175,15 @@ fields:
   }, 40_000);
 
   it("makes an utterance audible only once it is finished, and only at that place", async () => {
+    const heardByCompanion: string[] = [];
     const simulation = await phase4Simulation({
       overrides: { "characters/companion.yaml": companionCharacter(SQUARE) },
+      script: {
+        draft: (input: CognitionInput) => {
+          heardByCompanion.push(...input.observations.map((observation) => observation.text));
+          return idleDecision(input);
+        },
+      },
     });
     try {
       await simulation.runner.runTickToPublication();
@@ -190,10 +198,7 @@ fields:
         8,
       );
       expect(heard.status).toBe("completed");
-      const spoken = observationsOf(simulation.runner.state(), COMPANION).find(
-        (observation) => observation.kind === "event",
-      );
-      expect(spoken?.text).toContain("说：有人吗？");
+      expect(heardByCompanion.some((text) => text.includes("说：有人吗？"))).toBe(true);
       // The speaker sees its own words as its own, never as another person.
       const own = observationsOf(simulation.runner.state(), PLAYER).find((observation) => observation.kind === "event");
       expect(own?.text).toBe("你说：有人吗？");

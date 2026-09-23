@@ -13,6 +13,8 @@ import {
   type Static,
 } from "@earendil-works/pi-ai";
 import { Value } from "typebox/value";
+import type { SessionTrace } from "../diagnostics/session-trace.js";
+import type { SessionCost } from "../diagnostics/session-cost.js";
 import type {
   CognitiveDecision,
   CognitionInput,
@@ -35,6 +37,8 @@ export interface PiCognitionAgentOptions {
   /** Used only when the provider is "faux": the tool arguments the scripted model returns. */
   readonly draft?: (input: CognitionInput) => unknown;
   readonly tokensPerSecond?: number;
+  readonly trace?: SessionTrace;
+  readonly sessionCost?: SessionCost;
 }
 
 /** One refused or discarded model response, kept for the diagnostics panel. */
@@ -212,6 +216,7 @@ export class PiCognitionAgent implements CognitionModelPort {
       refused: false,
     };
     this.active = request;
+    const identity = { entityId: input.characterId, roundId: input.roundId, requestId: input.requestId };
 
     const tool: AgentTool<typeof DecisionParameters> = {
       name: SUBMIT_TOOL_NAME,
@@ -238,7 +243,10 @@ export class PiCognitionAgent implements CognitionModelPort {
         systemPrompt: input.systemPrompt,
         tools: [tool],
       },
-      streamFn: target.models.streamSimple.bind(target.models),
+      streamFn: (model, context, options) => {
+        this.options.trace?.record("llm-request", { model: model.id, messages: context.messages }, identity);
+        return target.models.streamSimple(model, context, options);
+      },
       // Pi's own preflight coerces primitives and only rejects undeclared tools, so
       // the raw tool-call arguments are validated strictly here: a coerced or
       // over-specified call is blocked instead of becoming a decision.
@@ -260,6 +268,30 @@ export class PiCognitionAgent implements CognitionModelPort {
       },
     });
     request.agent = agent;
+    agent.subscribe((event) => {
+      if (event.type === "message_end") {
+        this.options.trace?.record("llm-message", { message: event.message }, identity);
+        if (event.message.role === "assistant" && this.options.sessionCost !== undefined) {
+          const charged = this.options.sessionCost.record(target.model, event.message.usage);
+          this.options.trace?.record(
+            "llm-usage",
+            { model: target.model.id, usage: event.message.usage, ...charged },
+            identity,
+          );
+        }
+      } else if (event.type === "tool_execution_start")
+        this.options.trace?.record(
+          "llm-tool-start",
+          { toolCallId: event.toolCallId, toolName: event.toolName, args: event.args },
+          identity,
+        );
+      else if (event.type === "tool_execution_end")
+        this.options.trace?.record(
+          "llm-tool-end",
+          { toolCallId: event.toolCallId, toolName: event.toolName, result: event.result, isError: event.isError },
+          identity,
+        );
+    });
 
     const timer = setTimeout(() => this.abort(request, "timed-out"), Math.max(0, input.timeoutMs));
     let failure: unknown;
@@ -275,6 +307,15 @@ export class PiCognitionAgent implements CognitionModelPort {
 
     const status: CognitionModelResult["status"] =
       request.abortReason ?? (request.decision === undefined ? "failed" : "decided");
+    this.options.trace?.record(
+      "llm-transcript",
+      {
+        status,
+        messages: agent.state.messages,
+        failure: failure instanceof Error ? failure.message : failure === undefined ? null : String(failure),
+      },
+      identity,
+    );
     return {
       status,
       detail: resultDetail(request, failure),
@@ -401,7 +442,7 @@ export function cognitionRequestMessage(input: CognitionInput): string {
           (observation) =>
             `- ${observation.reference ?? NO_REFERENCE}` +
             `${observation.role === null ? "" : `（${OBSERVATION_ROLE_LABELS[observation.role]}）`}` +
-            `：${observation.text}`,
+            `（第 ${observation.tick} Tick）：${observation.text}`,
         ),
       ].join("\n"),
     );
@@ -420,7 +461,7 @@ export function cognitionRequestMessage(input: CognitionInput): string {
   if (input.actions.length > 0) {
     lines.push(
       [
-        "可执行动作：",
+        "可执行动作（steps[].action 填写冒号前的动作名；仅同名动作需要使用完整名称）：",
         ...input.actions.map((action) => `- ${action.action}：${action.name}：${action.description}`),
       ].join("\n"),
     );

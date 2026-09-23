@@ -10,5 +10,5 @@ fields:
     field: utterance
   stages:
     - name: 开口
-      ticks: 2
+      ticks: 1
       resource: agentlife.demo/speech

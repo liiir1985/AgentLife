@@ -29,11 +29,20 @@ export interface ModelsSection {
   readonly defaultModel: string;
 }
 
+/** Explicit USD per million tokens for the chosen model. */
+export interface ModelCostOverride {
+  readonly input: number;
+  readonly output: number;
+  readonly cacheRead: number;
+  readonly cacheWrite: number;
+}
+
 /** One resolved `provider/model-name`: the reference as written plus its two parts. */
 export interface ModelTarget {
   readonly reference: string;
   readonly provider: string;
   readonly model: string;
+  readonly cost?: ModelCostOverride;
 }
 
 export interface SystemConfig {
@@ -74,6 +83,22 @@ function isMapping(value: unknown): value is Record<string, unknown> {
 /** The text a malformed value is reported with; anything but a string is reported as empty. */
 function textOf(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+function costOf(value: unknown, label: string, fail: (message: string) => never): ModelCostOverride {
+  if (!isMapping(value)) return fail(`${label}.cost 必须是映射`);
+  const names = ["input", "output", "cacheRead", "cacheWrite"] as const;
+  for (const key of Object.keys(value))
+    if (!names.includes(key as (typeof names)[number])) return fail(`${label}.cost 有未声明的字段 ${key}`);
+  for (const name of names)
+    if (typeof value[name] !== "number" || !Number.isFinite(value[name]) || value[name] < 0)
+      return fail(`${label}.cost.${name} 必须是非负有限数字`);
+  return {
+    input: value.input as number,
+    output: value.output as number,
+    cacheRead: value.cacheRead as number,
+    cacheWrite: value.cacheWrite as number,
+  };
 }
 
 /**
@@ -160,10 +185,14 @@ export function parseSystemConfig(document: string, subject: string = SYSTEM_CON
     if (section === undefined) continue;
     if (!isMapping(section)) return fail(`系统配置的 ${consumer} 段必须是映射`);
     for (const key of Object.keys(section))
-      if (key !== "model") return fail(`系统配置的 ${consumer} 段有未声明的字段 ${key}`);
+      if (key !== "model" && key !== "cost") return fail(`系统配置的 ${consumer} 段有未声明的字段 ${key}`);
     const reference = textOf(section.model);
     if (reference === "") return fail(`系统配置的 ${consumer} 段必须声明 model`);
-    consumers[consumer] = target(reference, `系统配置的 ${consumer}.model "${reference}"`);
+    const selected = target(reference, `系统配置的 ${consumer}.model "${reference}"`);
+    consumers[consumer] =
+      section.cost === undefined
+        ? selected
+        : { ...selected, cost: costOf(section.cost, `系统配置的 ${consumer}`, fail) };
   }
 
   return { models: { providers, defaultModel: fallback }, defaultTarget, consumers };
