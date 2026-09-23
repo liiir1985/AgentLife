@@ -9,8 +9,11 @@ import type { SystemCheck, SystemItem, SystemSpec } from "../config/system-spec.
  * how long it may wait. Its content is a single settings item plus the authored
  * prompt the model is called with: the settings item fixes the bounded sizes the
  * runtime must respect (short plan length, bounded idle wait, model attempts,
- * request timeout), names the actions a decision may request, and carries the
- * provider and model the runtime starts with.
+ * request timeout) and names the actions a decision may request.
+ *
+ * Which provider and model answer that call is decided by the system-level
+ * configuration, not by any pack: content says what may be decided, never who
+ * thinks.
  *
  * Nothing here describes what a character should think. A prompt is text handed
  * to the model; it never becomes a rule, and no field of this system can form or
@@ -40,8 +43,6 @@ const COGNITION_SCHEMA = Type.Object(
     idleReviewTicks: Type.Integer({ minimum: 1 }),
     /** Hard bound on how long an idle commitment may wait for an external event. */
     idleWaitLimitTicks: Type.Integer({ minimum: 1 }),
-    provider: Type.String(),
-    model: Type.String(),
     /** The body actions a decision may request. */
     allowedActions: Type.Array(Type.String()),
   },
@@ -65,10 +66,6 @@ function settingsProblems(item: SystemItem, report: (message: string) => void): 
   const limit = item.values.idleWaitLimitTicks;
   if (typeof review === "number" && typeof limit === "number" && review > limit)
     report(`${item.ref} reviews an idle commitment after its wait limit has already expired`);
-  for (const field of ["provider", "model"] as const) {
-    const value = item.values[field];
-    if (typeof value !== "string" || value.trim() === "") report(`${item.ref} declares no ${field}`);
-  }
   const actions = Array.isArray(item.values.allowedActions) ? item.values.allowedActions : [];
   if (actions.length === 0) report(`${item.ref} allows no action, so no decision could ever act`);
 }
@@ -77,7 +74,7 @@ export function createCognitionSpec(): SystemSpec {
   return {
     name: "cognition",
     namespace: "agentlife.cognition",
-    version: "1.0.0",
+    version: "1.1.0",
     kernel: ">=1.0.0 <2.0.0",
     requires: ["agentlife.perception", "agentlife.body"],
     items: [
@@ -96,8 +93,6 @@ export function createCognitionSpec(): SystemSpec {
           "requestTimeoutSeconds",
           "idleReviewTicks",
           "idleWaitLimitTicks",
-          "provider",
-          "model",
           "allowedActions",
         ],
         merge: {
@@ -111,8 +106,6 @@ export function createCognitionSpec(): SystemSpec {
           requestTimeoutSeconds: "replace",
           idleReviewTicks: "replace",
           idleWaitLimitTicks: "replace",
-          provider: "replace",
-          model: "replace",
           allowedActions: "replace",
         },
       },

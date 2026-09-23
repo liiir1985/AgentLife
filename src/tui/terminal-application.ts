@@ -16,7 +16,11 @@ import {
   type Terminal,
   type TuiInputListenerResult,
 } from "@earendil-works/pi-tui";
-import type { ActionParameterSession, SimulationController } from "../interaction/simulation-controller.js";
+import type {
+  ActionParameterSession,
+  ControllerMode,
+  SimulationController,
+} from "../interaction/simulation-controller.js";
 import type { PerceivedSubject } from "../interaction/context-actions.js";
 import type { CognitionRound } from "../simulation/types.js";
 import { ContextActionBar } from "./context-action-bar.js";
@@ -25,8 +29,6 @@ const WIDE_WIDTH = 120;
 const LOG_LIMIT = 500;
 const NOTIFICATION_MS = 2_000;
 const SHORTCUTS = "←/→ 选择  Enter 确认  Space 运行/暂停  / 管理  F2 监视";
-/** A barrier holds the tick: the player may still decide, but the clock must not be restarted. */
-const BARRIER_HOLD = "认知屏障未解除，世界冻结在等待决定，之后才能继续运行";
 
 type FocusMode = "action-bar" | "entity-parameter" | "text-parameter" | "management-input" | "monitor";
 type NarrowTab = "location" | "entities" | "log";
@@ -82,6 +84,8 @@ const SELECT_THEME = {
 
 export interface TerminalApplicationOptions {
   readonly mouse?: boolean;
+  /** The model the AI characters think with, shown in the monitor panel. */
+  readonly model?: string;
   readonly onExit?: () => void;
 }
 
@@ -103,6 +107,8 @@ export class TerminalApplication {
   private historyIndex = 0;
   private unsubscribeInput: (() => void) | undefined;
   private unsubscribeController: (() => void) | undefined;
+  /** The mode the last notice was based on, so a stop is reported once. */
+  private lastMode: ControllerMode | undefined;
 
   constructor(
     terminal: Terminal,
@@ -173,6 +179,7 @@ export class TerminalApplication {
     this.unsubscribeInput = this.tui.addInputListener((data) => this.handleGlobal(data));
     this.unsubscribeController = this.controller.subscribe(() => {
       this.appendPerceivedObservations();
+      this.noticeStall();
       this.tui.requestRender(true);
     });
     this.appendPerceivedObservations();
@@ -180,6 +187,17 @@ export class TerminalApplication {
     this.tui.setFocus(this.actionBar);
     this.notify("左右选择动作，空格运行/暂停，/ 打开管理命令");
     this.tui.renderNow(true);
+  }
+
+  /**
+   * Tells the player, once per stop, that a decision could not be made and what may be
+   * done about it. The words stay in the player's own terms: what stopped, and the way on.
+   */
+  private noticeStall(): void {
+    const mode = this.controller.status().mode;
+    if (mode === this.lastMode) return;
+    this.lastMode = mode;
+    if (mode === "failed") this.notify("AI 这一轮没有给出可用的决定：按空格再试一次，或 /load 载入存档");
   }
 
   stop(): void {
@@ -215,37 +233,23 @@ export class TerminalApplication {
   /**
    * What the simulation is waiting for, in the player's own terms.
    *
-   * The header never names a character, a control source or a request: it says which
-   * side of the barrier the world is held on, so the player knows whether the wait is
-   * theirs.
+   * The header names no character, no control source and no barrier: something being
+   * worked out reads as waiting for it, everything else as whose turn it is.
    */
   private waitState(): string {
     const status = this.controller.status();
-    if (status.mode === "cognition") return this.barrierState();
+    if (status.mode === "cognition") return "等待 AI";
     if (status.mode === "failed") return "认知失败";
-    if (status.mode === "barrier") return "规则屏障";
+    if (status.mode === "barrier") return "运行中";
     if (status.mode === "running") return "连续运行中";
     return "等待玩家选择";
-  }
-
-  private barrierState(): string {
-    const round = this.controller.runner.state().round;
-    if (round === null) return "等待 AI";
-    if (round.status === "failed") return "认知失败";
-    const unsettled = round.participants.filter(
-      (participant) => participant.state === "waiting" || participant.state === "requested",
-    );
-    if (unsettled.length === 0) return "计划统一交接中";
-    const deciding = unsettled.filter((participant) => participant.control === "cognition");
-    if (deciding.some((participant) => participant.attempts > 1)) return "AI 决定验证中";
-    return deciding.length > 0 ? "等待 AI" : "等待玩家选择";
   }
 
   private headerText(): string {
     const view = this.controller.view();
     const status = this.controller.status();
     const save = status.pendingSave === null ? "" : ` · 保存待处理 ${status.pendingSave}`;
-    return `AgentLife │ ${view.simSeconds}s · Tick ${view.tick} · ${status.mode} · ${view.configId.slice(0, 12)} · ${this.waitState()}${save}`;
+    return `AgentLife │ ${view.simSeconds}s · Tick ${view.tick} · ${this.waitState()} · ${view.configId.slice(0, 12)}${save}`;
   }
 
   private locationText(): string {
@@ -316,13 +320,9 @@ export class TerminalApplication {
       return { consume: true };
     }
     if (matchesKey(data, "space")) {
-      // The barrier owns the clock while it is open: space reports the wait instead
-      // of restarting a run the barrier would hold anyway.
-      if (this.controller.status().mode === "cognition") this.notify(`${this.barrierState()}：${BARRIER_HOLD}`);
-      else {
-        this.controller.toggleRunning();
-        this.notify(this.controller.status().mode === "paused" ? "已暂停" : this.runState());
-      }
+      // Asked for before a decision is reached, applied by the tick that reaches it.
+      this.controller.toggleRunning();
+      this.notify(this.controller.status().running ? this.runState() : "已暂停");
       return { consume: true };
     }
     if (data === "/") {
@@ -349,7 +349,7 @@ export class TerminalApplication {
   private confirmAction(): void {
     const selected = this.actionBar.current();
     if (selected === undefined) return;
-    const wasRunning = this.controller.status().mode === "running";
+    const wasRunning = this.controller.status().running;
     const session = this.controller.beginAction(selected.command.ref);
     if (session === undefined) {
       this.notify("上下文已经变化，该动作不再可用");
@@ -470,9 +470,7 @@ export class TerminalApplication {
       if (command === "/step") {
         const result = this.controller.step();
         this.notify(
-          result.status === "cognitive-barrier"
-            ? `等待决定：${this.barrierState()}`
-            : `Tick ${result.summary.tick}: ${result.status}`,
+          result.status === "cognitive-barrier" ? this.waitState() : `Tick ${result.summary.tick}: ${result.status}`,
         );
       } else if (command === "/run") {
         this.controller.run(argument === undefined ? undefined : Number(argument));
@@ -501,7 +499,7 @@ export class TerminalApplication {
     const status = this.controller.status();
     const run = status.runLimitRemaining === null ? "不限" : `剩余 ${status.runLimitRemaining}`;
     const save = status.pendingSave === null ? "" : ` · 保存待处理 ${status.pendingSave}`;
-    return `Tick ${status.tick} · ${status.mode} · ${this.waitState()} · 待交计划 ${status.pendingPlans} · 运行 ${run}${save}`;
+    return `Tick ${status.tick} · ${this.waitState()} · 待交计划 ${status.pendingPlans} · 运行 ${run}${save}`;
   }
 
   private toggleMonitor(): void {
@@ -533,6 +531,7 @@ export class TerminalApplication {
       `Entities: ${Object.keys(state.world.entities).length} · Bodies: ${Object.keys(state.body.bodies).length}`,
       `World: ${state.world.processes.length} process · ${state.world.events.length} events`,
       `Scheduler: ${status.mode} · Tick ${state.tick} · pending ${snapshot.pendingPlans.length}${status.pendingSave === null ? "" : ` · save ${status.pendingSave}`}`,
+      `Model: ${this.options.model ?? "未设置"}`,
       `Barrier: ${state.barrier?.detail ?? "none"} · Failure: ${state.failure?.detail ?? "none"}`,
       "",
       `Perception（${snapshot.perception.length} 观察者）`,

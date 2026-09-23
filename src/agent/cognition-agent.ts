@@ -71,25 +71,36 @@ const IntentionChangeParameters = Type.Object(
 const StepParameters = Type.Object(
   {
     action: Type.String(),
-    target: Type.Optional(Type.String()),
-    destination: Type.Optional(Type.String()),
+    target: Type.Optional(Type.String({ description: "要操作的对象引用名，取自观察行行首（如 o2）" })),
+    destination: Type.Optional(Type.String({ description: "要前往的出口或地点引用名，取自观察行行首（如 o2）" })),
     inputs: Type.Optional(Type.Record(Type.String(), Type.String())),
   },
   { additionalProperties: false },
 );
 
-/** What an entity with nothing to do right now wants to wait for; both bounds count from `input.tick`. */
+/**
+ * What an entity with nothing to do right now wants to wait for.
+ *
+ * Both bounds count from `input.tick`, and the description says so: a model that
+ * reads them as absolute tick numbers submits a wait that ends before it starts,
+ * and the round is refused.
+ */
 const IdleParameters = Type.Object(
   {
-    kind: Type.Union([
-      Type.Literal("external-event"),
-      Type.Literal("review-condition"),
-      Type.Literal("ongoing-activity"),
-    ]),
-    detail: Type.String(),
-    event: Type.Union([Type.String(), Type.Null()]),
-    waitTicks: Type.Number(),
-    reviewInTicks: Type.Number(),
+    kind: Type.Union(
+      [Type.Literal("external-event"), Type.Literal("review-condition"), Type.Literal("ongoing-activity")],
+      { description: "等待的种类：外部事件、重审条件或持续活动" },
+    ),
+    detail: Type.String({ description: "这次等待或持续活动在做什么，一句话" }),
+    event: Type.Union([Type.String(), Type.Null()], {
+      description: "kind 为 external-event 时必填：可被观察到的事件名（如 utterance）",
+    }),
+    waitTicks: Type.Number({
+      description: "从现在起最多等多少 tick（相对值，必须大于 0；不是 tick 号）",
+    }),
+    reviewInTicks: Type.Number({
+      description: "从现在起过多少 tick 重新审视这次等待（相对值，必须大于 0 且不超过 waitTicks）",
+    }),
   },
   { additionalProperties: false },
 );
@@ -100,7 +111,9 @@ const IdleParameters = Type.Object(
  */
 const DecisionParameters = Type.Object(
   {
-    attention: Type.Array(Type.String()),
+    attention: Type.Array(
+      Type.String({ description: "当前主要关注的对象引用名，取自观察行行首（如 o2）；没有则留空数组" }),
+    ),
     understanding: Type.String(),
     questions: Type.Array(Type.String()),
     persistence: Type.String(),
@@ -108,7 +121,9 @@ const DecisionParameters = Type.Object(
     speech: Type.Union([Type.String(), Type.Null()]),
     steps: Type.Array(StepParameters),
     idle: Type.Union([IdleParameters, Type.Null()]),
-    consumedObservations: Type.Array(Type.String()),
+    consumedObservations: Type.Array(
+      Type.String({ description: "本次决定实际用到的观察引用名，取自观察行行首（如 o2）" }),
+    ),
     consideredIntentions: Type.Array(Type.String()),
   },
   { additionalProperties: false },
@@ -381,12 +396,12 @@ export function cognitionRequestMessage(input: CognitionInput): string {
   if (input.observations.length > 0) {
     lines.push(
       [
-        "观察：",
+        "观察（用行首的引用名指代对象）：",
         ...input.observations.map(
           (observation) =>
-            `- ${observation.observationId}` +
+            `- ${observation.reference ?? NO_REFERENCE}` +
             `${observation.role === null ? "" : `（${OBSERVATION_ROLE_LABELS[observation.role]}）`}` +
-            `：${observation.reference ?? NO_REFERENCE}：${observation.text}`,
+            `：${observation.text}`,
         ),
       ].join("\n"),
     );
@@ -412,11 +427,14 @@ export function cognitionRequestMessage(input: CognitionInput): string {
   }
   if (input.idle !== null) {
     lines.push(
-      `当前空闲承诺：${input.idle.detail}（${input.idle.kind}，重审于第 ${input.idle.reviewTick} tick，` +
-        `最晚第 ${input.idle.untilTick} tick）`,
+      `当前空闲承诺：${input.idle.detail}（${input.idle.kind}，` +
+        `${input.idle.reviewTick - input.tick} tick 后重审，最晚再等 ${input.idle.untilTick - input.tick} tick）`,
     );
   }
-  lines.push(`边界：最多 ${input.maxSteps} 个动作步骤；一次空闲等待不得超过 ${input.idleWaitLimitTicks} tick。`);
+  lines.push(
+    `边界：最多 ${input.maxSteps} 个动作步骤；一次空闲等待不得超过 ${input.idleWaitLimitTicks} tick。` +
+      `空闲承诺的 waitTicks 与 reviewInTicks 都从现在算起，是相对 tick 数，不是 tick 号。`,
+  );
   if (input.rejection !== null) {
     lines.push(`第 ${input.attempt} 次尝试：上一次提交被拒绝——${input.rejection}`);
   }

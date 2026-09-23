@@ -1,5 +1,6 @@
 import { PiCognitionAgent } from "../../src/agent/cognition-agent.js";
 import { idleDecision, type ScriptedDraft } from "../../src/agent/scripted-cognition.js";
+import { FAUX_MODEL_TARGET } from "../../src/config/system-config.js";
 
 /**
  * Test-side cognition.
@@ -18,8 +19,8 @@ export interface CognitionScript {
 /** A faux cognition model whose submissions are scripted by the test. */
 export function scriptedModel(script: CognitionScript = {}): PiCognitionAgent {
   return new PiCognitionAgent({
-    provider: "faux",
-    model: "faux-cognition",
+    provider: FAUX_MODEL_TARGET.provider,
+    model: FAUX_MODEL_TARGET.model,
     tokensPerSecond: script.tokensPerSecond ?? 100_000,
     draft: script.draft ?? idleDecision,
   });

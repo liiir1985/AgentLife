@@ -415,6 +415,7 @@ export class WorldService {
       { kind: "influence", actor: request.actor, subject: request.subject },
     );
     const accepted = committed.applied.length > 0 || applied.processChanges.length > 0;
+    const requested = applied.stateChanges.length;
     return {
       ...committed,
       outcome: accepted
@@ -424,7 +425,9 @@ export class WorldService {
             status: "rejected",
             reason:
               committed.rejected[0]?.reason ??
-              `no rule turned the accepted influence into a world change (rule run ${applied.status}, ${applied.stateChanges.length} requested)`,
+              (requested === 0
+                ? `no rule turned the accepted influence into a world change (rule run ${applied.status}, 0 requested)`
+                : `the accepted influence left the world unchanged (rule run ${applied.status}, ${requested} requested)`),
             changes: 0,
           },
       processRequests: applied.processChanges,
@@ -772,6 +775,10 @@ export class WorldService {
       if (state.entities[destination]?.kind !== "location")
         return { ok: false, reason: `${destination} is not a place` };
       const from = actor.locatedAt;
+      // Being at the destination already is not a premise problem: the action may
+      // start and the commit that follows refuses the identical relation, which is
+      // where the reason belongs. Refusing it here would also block a queued action
+      // forever, because waiting for a resource never moves the actor away.
       if (from !== null && from !== destination && !this.locationExits(from).includes(destination))
         return { ok: false, reason: `${destination} is not an exit of ${from}` };
       return { ok: true };
@@ -787,7 +794,8 @@ export class WorldService {
   /**
    * Generic preconditions of the relation vocabulary, independent of any content
    * attribute: an item can only be taken where it is, an item can only be placed
-   * by whoever carries it, and a character can only move along a declared exit.
+   * by whoever carries it, and a character can only move along a declared exit and
+   * never to the place it is already at.
    */
   private relationPrecondition(state: WorldState, change: StateChangeRequest): string | undefined {
     const entityId = change.entityId;
@@ -821,7 +829,11 @@ export class WorldService {
       if (destination === null) return undefined;
       if (state.entities[destination]?.kind !== "location") return `${destination} is not a place`;
       const from = entity.locatedAt;
-      if (from === null || from === destination) return undefined;
+      if (from === null) return undefined;
+      // Being there already is not a legal relation change: the world says so
+      // instead of silently dropping the change, which would leave the influence
+      // reported as "no rule turned it into a world change".
+      if (from === destination) return `${entityId} is already at ${destination}`;
       const exits = this.locationExits(from);
       if (!exits.includes(destination)) return `${destination} is not an exit of ${from}`;
       return undefined;

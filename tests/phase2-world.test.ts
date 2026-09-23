@@ -325,6 +325,25 @@ describe("WorldService", () => {
     expect(event?.to).toBe(DEMO_KILN);
   });
 
+  it("refuses a move to the place the actor is already at, naming it as the reason", async () => {
+    const sim = await createSimulation();
+    const world = sim.runner.world;
+    const initial = sim.runner.state().world;
+    expect(initial.entities[DEMO_PLAYER]?.locatedAt).toBe(DEMO_SQUARE);
+
+    const refused = world.adjudicate(
+      sourcesOf(sim, initial),
+      influenceAgainst(initial, "move-nowhere", RELOCATE, DEMO_PLAYER, DEMO_PLAYER, DEMO_SQUARE),
+      initial.version,
+    );
+
+    expect(refused.outcome.status).toBe("rejected");
+    expect(refused.outcome.reason).toBe(`${DEMO_PLAYER} is already at ${DEMO_SQUARE}`);
+    expect(refused.applied).toHaveLength(0);
+    expect(refused.events).toHaveLength(0);
+    expect(refused.state.version).toBe(initial.version);
+  });
+
   it("refuses a move whose destination is not an exit of the place the actor is in", async () => {
     const sim = await createSimulation();
     const world = sim.runner.world;

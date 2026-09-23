@@ -112,11 +112,19 @@ describe("PiCognitionAgent", () => {
       }),
     );
 
-    expect(message).toContain("observation-1（物品）：the lamp：a lamp stands on the table");
+    expect(message).toContain("- the lamp（物品）：a lamp stands on the table");
+    // The internal observation identity stays out of the prompt: every reference the
+    // decision may carry is the observer-local name on the line, and a model that
+    // copies anything else has its submission refused.
+    expect(message).not.toContain("observation-1");
     expect(message).toContain("注意：the lamp");
     expect(message).toContain("intention-1（进行中）：find the key");
     expect(message).toContain("agentlife.demo/walk：walk：walk to a place");
     expect(message).toContain("当前空闲承诺：listen for the noise");
+    // The wait is briefed from now, not as absolute tick numbers: a model that reads
+    // them as tick numbers submits a wait that ends before it starts.
+    expect(message).toContain("tick 后重审，最晚再等");
+    expect(message).toContain("是相对 tick 数，不是 tick 号");
     expect(message).toContain("最多 3 个动作步骤；一次空闲等待不得超过 12 tick");
     expect(message).toContain(
       "第 2 次尝试：上一次提交被拒绝——the walk step named a destination that is not observable",

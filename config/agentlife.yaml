@@ -1,0 +1,20 @@
+# 系统级配置：模型供应商与各自可用的模型、子系统没有指定时使用的默认模型，以及各子系统自己的模型选择。
+# 引用格式一律是 provider/model-name。密钥与 base URL 由 pi-ai 从环境变量解析
+# （ANTHROPIC_API_KEY、ANTHROPIC_AUTH_TOKEN、ANTHROPIC_BASE_URL 等），本文件不保存任何秘密。
+# 无凭据或自动化运行用脚本化模型：pnpm start -- --use_faux（此时本文件不会被读取）。
+models:
+  providers:
+    - provider: anthropic
+      models:
+        - claude-haiku-4-5
+        - claude-opus-4-5
+    - provider: deepseek
+      models:
+        - deepseek-flash
+        - deepseek-v4-pro
+  default-model: deepseek/deepseek-flash
+
+# 子系统模型选择：取消注释即可让该子系统覆盖 models.default-model。
+# 子系统名必须是代码里已声明的消费者（当前只有 cognition），拼错会按未声明顶层字段报错。
+# cognition:
+#   model: anthropic/claude-opus-4-5

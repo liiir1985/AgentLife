@@ -517,7 +517,7 @@ export function perceptionSettings(config: RuntimeConfig): PerceptionSettingsSpe
   };
 }
 
-/** Bounds and model choice one cognition settings item declares. */
+/** Bounds one cognition settings item declares. */
 export interface CognitionSettingsSpec {
   readonly ref: string;
   readonly observationCapacity: number;
@@ -528,8 +528,6 @@ export interface CognitionSettingsSpec {
   readonly requestTimeoutSeconds: number;
   readonly idleReviewTicks: number;
   readonly idleWaitLimitTicks: number;
-  readonly provider: string;
-  readonly model: string;
   readonly allowedActions: readonly string[];
 }
 
@@ -546,8 +544,6 @@ export function cognitionSettings(config: RuntimeConfig): CognitionSettingsSpec 
     requestTimeoutSeconds: asNumber(item.values["requestTimeoutSeconds"]) ?? 0,
     idleReviewTicks: asNumber(item.values["idleReviewTicks"]) ?? 0,
     idleWaitLimitTicks: asNumber(item.values["idleWaitLimitTicks"]) ?? 0,
-    provider: asString(item.values.provider) ?? "",
-    model: asString(item.values.model) ?? "",
     allowedActions: asStrings(item.values.allowedActions),
   };
 }

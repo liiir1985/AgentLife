@@ -228,8 +228,6 @@ export function cognitionSettings(fields: Readonly<Record<string, SimpleValue>>)
     requestTimeoutSeconds: 60,
     idleReviewTicks: 3,
     idleWaitLimitTicks: 12,
-    provider: "faux",
-    model: "faux-cognition",
   };
   const merged = { ...base, ...fields };
   const lines = Object.entries(merged).map(([key, value]) => `${key}: ${String(value)}`);

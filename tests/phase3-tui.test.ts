@@ -1,6 +1,7 @@
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SimulationController, type TimerPort } from "../src/interaction/simulation-controller.js";
+import { walkingDecision } from "../src/agent/scripted-cognition.js";
 import { RuntimeStore } from "../src/storage/runtime-store.js";
 import { TerminalApplication } from "../src/tui/terminal-application.js";
 import { VirtualTerminal } from "../src/tui/virtual-terminal.js";
@@ -123,7 +124,7 @@ describe("phase 4 terminal application", () => {
     app.stop();
   });
 
-  it("reports the barrier wait and never lets space bypass it", async () => {
+  it("starts a run asked for while a decision is still being made, once it lands", async () => {
     const gate = gatedModel();
     const { terminal, controller, app } = startTui(await phase4Simulation({ models: gate.port }));
     const screen = (): string => terminal.screen().join("\n");
@@ -135,10 +136,38 @@ describe("phase 4 terminal application", () => {
     const held = controller.status().tick;
     expect(screen()).toContain("等待 AI");
 
+    // Space is the player's clock, not the round's: it is remembered, never refused,
+    // and the world does not move while the decision is still open.
     terminal.sendInput(" ");
-    expect(screen()).toContain("认知屏障未解除");
-    expect(controller.status().mode).toBe("cognition");
+    expect(controller.status().running).toBe(true);
     expect(controller.status().tick).toBe(held);
+    expect(screen()).not.toContain("屏障");
+
+    gate.release();
+    await published(controller, held);
+    // The remembered request was applied by the tick that closed the round.
+    expect(controller.status().mode).toBe("running");
+    expect(controller.status().tick).toBe(held);
+
+    app.stop();
+  });
+
+  it("applies a pause asked for during a decision when the tick lands", async () => {
+    const gate = gatedModel();
+    const { terminal, controller, app } = startTui(await phase4Simulation({ models: gate.port }));
+    const screen = (): string => terminal.screen().join("\n");
+
+    controller.run();
+    controller.step();
+    await rendered();
+    const held = controller.status().tick;
+    expect(controller.status().mode).toBe("cognition");
+    expect(controller.status().running).toBe(true);
+
+    terminal.sendInput(" ");
+    expect(controller.status().running).toBe(false);
+    expect(screen()).toContain("已暂停");
+    expect(screen()).not.toContain("屏障");
 
     // The player may still decide inside the round; Esc leaves the form only.
     terminal.sendInput("\r");
@@ -152,6 +181,39 @@ describe("phase 4 terminal application", () => {
     expect(screen()).toContain("本轮");
     expect(controller.status().mode).toBe("cognition");
     expect(controller.status().tick).toBe(held);
+
+    gate.release();
+    await published(controller, held);
+    expect(controller.status().mode).toBe("ready");
+    expect(controller.status().tick).toBe(held);
+
+    app.stop();
+  });
+
+  it("keeps a run going while the player chooses an action for a decision still being made", async () => {
+    const gate = gatedModel();
+    const { terminal, controller, app } = startTui(await phase4Simulation({ models: gate.port }));
+    const screen = (): string => terminal.screen().join("\n");
+
+    controller.run();
+    controller.step();
+    await rendered();
+    expect(controller.status().mode).toBe("cognition");
+    const held = controller.status().tick;
+
+    // Choosing an action inside the round must not consume the request to run: the
+    // parameter wizard pauses the clock, and filling it in hands the request back.
+    terminal.sendInput("\r");
+    expect(screen()).toContain("选择要前往的地点");
+    // Opening the wizard stands the requested run down, and filling it in hands the
+    // request back.
+    expect(controller.status().running).toBe(false);
+    terminal.sendInput("\r");
+    expect(controller.status().running).toBe(true);
+
+    gate.release();
+    await published(controller, held);
+    expect(controller.status().mode).toBe("running");
 
     app.stop();
   });
@@ -199,6 +261,36 @@ describe("phase 4 terminal application", () => {
     app.stop();
   });
 
+  it("keeps the place and its exits usable after a decision fails", async () => {
+    const { terminal, controller, app } = startTui(
+      await phase4Simulation({
+        script: { tokensPerSecond: 0, draft: (input) => (input.tick >= 3 ? null : walkingDecision(input)) },
+      }),
+    );
+    const screen = (): string => terminal.screen().join("\n");
+
+    for (let tick = 0; tick < 6 && controller.status().mode !== "failed"; tick += 1) {
+      controller.step();
+      for (let turn = 0; turn < 200; turn += 1) {
+        await nextTurn();
+        if (controller.status().mode === "failed") break;
+        if (controller.runner.state().phase === "publish") break;
+      }
+      await rendered();
+    }
+    expect(controller.status().mode).toBe("failed");
+
+    // A failed tick is not published: the world stays where the barrier found it, so
+    // what the player may act on is still the last consistent state.
+    expect(screen()).toContain("[移动]");
+    terminal.sendInput("\r");
+    expect(screen()).toContain("选择要前往的地点");
+    terminal.sendInput("\r");
+    expect(screen()).toContain("已排入下一 Tick");
+
+    app.stop();
+  });
+
   it("reports a cognition failure without leaking the model's own words into the ordinary view", async () => {
     const { terminal, controller, app } = startTui(
       await phase4Simulation({ script: { tokensPerSecond: 0, draft: () => null } }),
@@ -211,6 +303,10 @@ describe("phase 4 terminal application", () => {
 
     expect(controller.status().mode).toBe("failed");
     expect(screen()).toContain("认知失败");
+    // The player is told what to do about it, in their own terms, and the ordinary view
+    // never carries the words of the barrier machinery.
+    expect(screen()).toContain("按空格再试一次");
+    expect(screen()).not.toContain("屏障");
     const failure = controller.managementSnapshot().state.failure?.detail ?? "";
     expect(failure.length).toBeGreaterThan(0);
     expect(screen()).not.toContain(failure.slice(0, 30));

@@ -8,26 +8,18 @@
     "node": ">=24.14.0"
   },
   "scripts": {
+    "start": "tsx src/tui/app.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "check:format": "prettier --check .",
+    "verify": "tsc --noEmit && prettier --check . && vitest run",
     "spike:agent": "vitest run tests/agent-runtime-probe.test.ts",
     "spike:tui": "vitest run tests/tui-spike.test.ts",
     "spike:content": "vitest run tests/content-pack-loader.test.ts",
     "spike:storage": "vitest run tests/runtime-store-probe.test.ts",
     "spike:behavior": "vitest run tests/behavior-tree-adapter.test.ts",
     "config:verify": "vitest run tests/rule-kernel.test.ts tests/configuration-validation.test.ts",
-    "config:demo": "tsx src/config/demo-runner.ts",
-    "store:verify": "vitest run tests/runtime-store.test.ts",
-    "tui:manual": "tsx src/tui/manual-spike.ts",
-    "phase0:verify": "tsc --noEmit && prettier --check . && vitest run",
-    "phase1:verify": "tsc --noEmit && prettier --check . && vitest run",
-    "phase2:verify": "tsc --noEmit && prettier --check . && vitest run",
-    "phase2:demo": "tsx src/simulation/phase2-demo.ts",
-    "phase3:verify": "tsc --noEmit && prettier --check . && vitest run",
-    "phase4:tui": "tsx src/tui/phase4-app.ts",
-    "phase4:demo": "tsx src/interaction/phase4-demo.ts",
-    "phase4:verify": "tsc --noEmit && prettier --check . && vitest run"
+    "store:verify": "vitest run tests/runtime-store.test.ts"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.86.1",

@@ -28,6 +28,8 @@ export interface SimulationControlStatus {
   readonly simSeconds: number;
   readonly pendingPlans: number;
   readonly runLimitRemaining: number | null;
+  /** Whether the player asked the clock to keep running; a settling round never changes it. */
+  readonly running: boolean;
   /** What the open cognition barrier is waiting for, in readable terms. */
   readonly round: string | null;
   /** A save that will run once the tick in progress is published. */
@@ -213,7 +215,9 @@ export class SimulationController {
   }
 
   beginAction(commandRef: string): ActionParameterSession | undefined {
-    if (this.mode === "running") this.pause();
+    // The wizard takes the clock from the player's run, wherever that run stands: a
+    // round still settling holds the tick, so the request is what has to stand down.
+    if (this.continuous) this.pause();
     const action = this.availableActions().find((entry) => entry.command.ref === commandRef);
     if (action === undefined) return undefined;
     return new ActionParameterSession(action.command, this.config, () => this.runner.state(), this.options.playerId);
@@ -276,29 +280,41 @@ export class SimulationController {
     return result;
   }
 
+  /**
+   * Starts or continues a run. A round that is still settling owns the clock, so the
+   * request is remembered and applied by the tick that closes it: the player never
+   * has to wait for a decision in order to ask for one.
+   */
   run(limit?: number): void {
     if (limit !== undefined && (!Number.isInteger(limit) || limit < 1)) throw new Error("运行 Tick 数必须是正整数");
-    if (this.runner.openRound() !== null) throw new Error("认知屏障未解除，暂时不能连续运行");
     this.clearTimer();
     this.continuous = true;
-    this.mode = "running";
     this.runRemaining = limit ?? null;
     this.detail = limit === undefined ? "连续运行中" : `连续运行，剩余 ${limit} Tick`;
+    if (this.runner.openRound() === null) {
+      this.mode = "running";
+      this.changed();
+      this.scheduleNext(0);
+      return;
+    }
     this.changed();
-    this.scheduleNext(0);
   }
 
+  /**
+   * Stops a run. A round that is still settling accepts this too: the intention is
+   * recorded, and the tick that closes the round publishes without starting another.
+   */
   pause(): void {
     this.clearTimer();
     this.continuous = false;
-    this.mode = "paused";
     this.runRemaining = null;
     this.detail = "已暂停";
+    if (this.runner.openRound() === null) this.mode = "paused";
     this.changed();
   }
 
   toggleRunning(): void {
-    if (this.mode === "running") this.pause();
+    if (this.continuous) this.pause();
     else this.run();
   }
 
@@ -386,6 +402,7 @@ export class SimulationController {
       simSeconds: state.simTime.seconds,
       pendingPlans: this.pending.length,
       runLimitRemaining: this.runRemaining,
+      running: this.continuous,
       round:
         round === null
           ? null

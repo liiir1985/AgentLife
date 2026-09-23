@@ -399,11 +399,19 @@ export class CognitionCoordinator {
       if (!observableEvents(this.config).includes(idle.event))
         return { ok: false, reason: `${idle.event} is not an event anything can observe` };
     }
-    if (idle.untilTick <= tick) return { ok: false, reason: "the wait ends before it starts" };
+    if (idle.untilTick <= tick)
+      return {
+        ok: false,
+        reason: `the wait ends before it starts (from tick ${tick}, waitTicks must be greater than 0)`,
+      };
     if (idle.untilTick - tick > waitLimit)
       return { ok: false, reason: `the wait runs ${idle.untilTick - tick} ticks, the bound is ${waitLimit}` };
     if (idle.reviewTick <= tick || idle.reviewTick > idle.untilTick)
-      return { ok: false, reason: "the re-review moment lies outside the wait" };
+      return {
+        ok: false,
+        reason:
+          "the re-review moment lies outside the wait (reviewInTicks must be greater than 0 and at most waitTicks)",
+      };
     return { ok: true };
   }
 
