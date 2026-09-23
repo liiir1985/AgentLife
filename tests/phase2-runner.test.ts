@@ -8,6 +8,7 @@ import {
   DEMO_SQUARE,
   createSimulation,
   createSimulationWith,
+  removeDirectory,
   runPublishedTick,
   testPlan,
 } from "./helpers/phase2.js";
@@ -38,6 +39,92 @@ const COGNITION_STAGES: readonly string[] = ["perception", "cognitive-demand", "
 const OPERATE_LAMP = testPlan("player-operate", DEMO_PLAYER, "parallel", [
   { action: "agentlife.demo/use", target: DEMO_LAMP },
 ]);
+
+/**
+ * A body rule that can never reach a fixpoint once it wakes.
+ *
+ * Every round it flips the value it reads, so no round ever confirms the previous
+ * one and the state keeps changing forever. Its condition keeps it out of
+ * initialization - which has to settle for any simulation to start at all - and
+ * lets it in on the first tick.
+ */
+const DIVERGENT_INTEGRITY = `kind: rule
+id: divergent-integrity
+system: agentlife.body
+triggers:
+  - agentlife.body/value-changed
+inputs:
+  - name: integrity
+    state: agentlife.body/values.integrity
+condition:
+  op: simulation-time
+  operator: at-or-after
+  tick: 1
+changes:
+  - state: agentlife.body/values.integrity
+    combine: priority
+    priority: 1
+    value:
+      kind: select
+      left:
+        kind: read
+        name: integrity
+      right:
+        kind: literal
+        value: 1
+        unit: ratio
+      operator: eq
+      then:
+        kind: literal
+        value: 0
+        unit: ratio
+      otherwise:
+        kind: literal
+        value: 1
+        unit: ratio
+`;
+
+/**
+ * A body rule that never settles, awake from the very first propagation.
+ *
+ * Its condition ignores the clock, so initialization selects it too: the value it
+ * reads is the value it rewrites, and no round ever confirms the previous one. A
+ * timeline whose initial state cannot be settled has no defined start, so creating
+ * it fails rather than letting the simulation run on an undecided world.
+ */
+const UNSETTLED_INTEGRITY = `kind: rule
+id: divergent-integrity
+system: agentlife.body
+triggers:
+  - agentlife.body/value-changed
+inputs:
+  - name: integrity
+    state: agentlife.body/values.integrity
+condition:
+  op: always
+changes:
+  - state: agentlife.body/values.integrity
+    combine: priority
+    priority: 1
+    value:
+      kind: select
+      left:
+        kind: read
+        name: integrity
+      right:
+        kind: literal
+        value: 1
+        unit: ratio
+      operator: eq
+      then:
+        kind: literal
+        value: 0
+        unit: ratio
+      otherwise:
+        kind: literal
+        value: 1
+        unit: ratio
+`;
 
 /** Stage records collapsed to the phase order they were recorded in. */
 function recordedPhases(stages: readonly StageRecord[]): readonly string[] {
@@ -120,27 +207,48 @@ describe("phase 2 simulation runner", () => {
   });
 
   it("fails the tick when propagation exceeds the configured round limit and publishes no stable tick", async () => {
-    const limited = await createSimulation({ timelineId: "timeline-limited", settings: { maxPropagationRounds: 1 } });
-    const failed = limited.runner.runTick();
+    // Initialization has to settle before a tick can even be attempted, so a rule
+    // that diverges has to stay out of it: this one only wakes inside a tick, and
+    // once it wakes it never stops, because each round changes the value again.
+    const limited = await createSimulationWith(
+      { "rules/divergent-integrity.yaml": DIVERGENT_INTEGRITY },
+      { timelineId: "timeline-limited", settings: { maxPropagationRounds: 3 } },
+    );
+    try {
+      const failed = limited.runner.runTick();
 
-    expect(failed.status).toBe("failed");
-    if (failed.status !== "failed") return;
-    expect(failed.summary.tick).toBe(0);
-    expect(failed.summary.stages.find((stage) => stage.stage === "stability")?.status).toBe("failed");
-    expect(limited.runner.state().failure).toEqual({
-      stage: "stability",
-      code: "propagation-limit",
-      detail: expect.any(String),
-    });
-    expect(limited.runner.state().tick).toBe(0);
-    expect(limited.runner.state().runMode).toBe("failed");
-    expect(limited.runner.state().summary?.tick).toBe(0);
+      expect(failed.status).toBe("failed");
+      if (failed.status !== "failed") return;
+      expect(failed.summary.tick).toBe(0);
+      expect(failed.summary.stages.find((stage) => stage.stage === "stability")?.status).toBe("failed");
+      expect(limited.runner.state().failure).toEqual({
+        stage: "stability",
+        code: "propagation-limit",
+        detail: expect.any(String),
+      });
+      expect(limited.runner.state().tick).toBe(0);
+      expect(limited.runner.state().runMode).toBe("failed");
+      expect(limited.runner.state().summary?.tick).toBe(0);
+    } finally {
+      removeDirectory(limited.directory);
+    }
 
     // The same first tick settles when the tick is allowed enough rounds.
     const settled = await createSimulation({ timelineId: "timeline-limited" });
     await runPublishedTick(settled.runner);
     expect(settled.runner.state().tick).toBe(1);
     expect(settled.runner.state().failure).toBeNull();
+  });
+
+  it("refuses to start when the initial state cannot be settled", async () => {
+    // The rule is awake during initialization and never reaches a fixpoint, so the
+    // run has no defined start: the constructor says so instead of starting anyway.
+    await expect(
+      createSimulationWith(
+        { "rules/divergent-integrity.yaml": UNSETTLED_INTEGRITY },
+        { timelineId: "timeline-unsettled" },
+      ),
+    ).rejects.toThrow(/Initialization did not settle: propagation exceeded \d+ rounds/);
   });
 
   it("records a barrier for an unindexed trigger without asking for anything outside the declared vocabulary", async () => {

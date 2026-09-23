@@ -4,6 +4,9 @@ public: true
 fields:
   name: 视觉
   available: true
+  # 种子，不是真值：视觉的可用与效率由 vision-availability 与 vision-efficiency
+  # 按光照和雾气算出来，初始化的那一轮传播之后才是真值（当前的 demo 里是 0.28）。
+  # 故意留一个不同的数字——它证明初始化确实把规则跑过一遍了。
   efficiency: 0.8
   unit: ratio
   policy:

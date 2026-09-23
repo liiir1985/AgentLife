@@ -23,6 +23,93 @@ function entityTrace(result: RuleResult, entityId = "agentlife.demo/companion"):
   return trace;
 }
 
+/**
+ * The lamp's two reactions as one rule, each half its own branch.
+ *
+ * The second branch does not test the lamp's state: with the first branch written
+ * before it, it answers everything the first one does not, so which half applies is
+ * decided by the order they are written in.
+ */
+const BRANCHED_LAMP = `kind: rule
+id: operate-influence
+system: agentlife.world
+triggers:
+  - agentlife.world/influence-accepted
+inputs:
+  - name: kind
+    state: agentlife.world/influence.kind
+  - name: accepted
+    state: agentlife.world/influence.accepted
+  - name: lamp
+    state: agentlife.world/environment.lamp-state
+branches:
+  - when:
+      op: all
+      operands:
+        - op: compare
+          left:
+            kind: read
+            name: kind
+          right:
+            kind: literal
+            value: agentlife.demo/operate-item
+          operator: eq
+        - op: compare
+          left:
+            kind: read
+            name: accepted
+          right:
+            kind: literal
+            value: true
+          operator: eq
+        - op: compare
+          left:
+            kind: read
+            name: lamp
+          right:
+            kind: literal
+            value: 0
+            unit: state
+          operator: eq
+    changes:
+      - state: agentlife.world/environment.lamp-state
+        combine: priority
+        priority: 1
+        value:
+          kind: literal
+          value: 1
+          unit: state
+    notice: 灯亮了起来
+  - when:
+      op: all
+      operands:
+        - op: compare
+          left:
+            kind: read
+            name: kind
+          right:
+            kind: literal
+            value: agentlife.demo/operate-item
+          operator: eq
+        - op: compare
+          left:
+            kind: read
+            name: accepted
+          right:
+            kind: literal
+            value: true
+          operator: eq
+    changes:
+      - state: agentlife.world/environment.lamp-state
+        combine: priority
+        priority: 1
+        value:
+          kind: literal
+          value: 0
+          unit: state
+    notice: 灯灭了
+`;
+
 /** A system that still declares one process, used to exercise the runtime path. */
 const FIXTURE_PROCESS: SystemSpec = {
   name: "system",
@@ -126,6 +213,47 @@ describe("deterministic evaluation", () => {
       expect(entities.trace.shared.selectedRules).toEqual([]);
       expect(entities.trace.entities).toHaveLength(2);
       expect(entities.trace.entities.every((trace) => trace.rules.length === 3)).toBe(true);
+    } finally {
+      removeDirectory(directory);
+    }
+  });
+
+  it("answers an influence with the first branch whose condition holds", async () => {
+    const registry = createRegistry();
+    const { result, directory } = await applyDemoPack(registry, { "rules/operate-influence.yaml": BRANCHED_LAMP });
+    try {
+      expect(result.status).toBe("valid");
+      const base = demoRequest("agentlife.world/influence-accepted", "branches");
+      const environment = DEMO_SHARED["agentlife.world/environment"] as Record<string, unknown>;
+      const influence = DEMO_SHARED["agentlife.world/influence"] as Record<string, unknown>;
+      const withLamp = (lampState: number) => ({
+        ...base,
+        input: {
+          ...base.input,
+          shared: {
+            ...DEMO_SHARED,
+            "agentlife.world/environment": { ...environment, "lamp-state": lampState },
+            // The rule answers operations, so the request has to be one.
+            "agentlife.world/influence": { ...influence, kind: "agentlife.demo/operate-item" },
+          },
+        },
+      });
+
+      const written = (run: RuleResult): unknown =>
+        run.trace.shared.stateChanges.find((change) => change.stateRef === "agentlife.world/environment.lamp-state")
+          ?.newValue;
+      // The lamp is off, so the first branch answers. The branch written after it holds
+      // for this state as well - it is the lamp's other half, not a state test - and is
+      // never consulted, which is what makes the order of the branches the precedence.
+      const dark = registry.runRules(withLamp(0));
+      expect(written(dark)).toBe(1);
+      expect(dark.trace.shared.rules[0]?.branch).toBe(0);
+      expect(dark.trace.shared.rules[0]?.notice).toBe("灯亮了起来");
+      // The lamp is on: the first branch does not hold and the second one answers.
+      const lit = registry.runRules(withLamp(1));
+      expect(written(lit)).toBe(0);
+      expect(lit.trace.shared.rules[0]?.branch).toBe(1);
+      expect(lit.trace.shared.rules[0]?.notice).toBe("灯灭了");
     } finally {
       removeDirectory(directory);
     }

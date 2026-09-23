@@ -1,5 +1,5 @@
 import { runCondition, conditionUsesSimulationTime } from "./conditions.js";
-import type { RuntimeFormula, RuntimeRule, RuntimeConfig, CombinePlan } from "./config-builder.js";
+import type { RuntimeBranch, RuntimeFormula, RuntimeRule, RuntimeConfig, CombinePlan } from "./config-builder.js";
 import { strongestStatus, type ResultStatus } from "./diagnostics.js";
 import type { CombineMode } from "./numeric.js";
 import { applyNumberPolicy } from "./numeric.js";
@@ -47,6 +47,10 @@ export interface RuleTrace {
   readonly ruleId: string;
   readonly status: RuleStatus;
   readonly inputs: readonly InputTrace[];
+  /** Index of the branch that answered, or `null` when none did. */
+  readonly branch: number | null;
+  /** The answering branch's declared effect in words; `null` when it declares none. */
+  readonly notice: string | null;
   readonly message?: string;
 }
 
@@ -229,6 +233,7 @@ function buildScope(
 
 function runChanges(
   rule: RuntimeRule,
+  declared: RuntimeBranch["changes"],
   scope: ValueContext,
   entityId: string | null,
 ): {
@@ -238,7 +243,7 @@ function runChanges(
 } {
   const stateValues: RuleRun["stateValues"][number][] = [];
   const processChanges: ProcessChangeRequest[] = [];
-  for (const change of rule.changes) {
+  for (const change of declared) {
     if (change.kind === "state") {
       const value = runExpr(change.value, scope);
       if (!value.ok) return { changes: stateValues, processChanges, failure: value };
@@ -276,65 +281,45 @@ function runRule(
   missingEntity: boolean,
 ): RuleRun {
   const inputs = inputTraces(rule, request.input, entityId);
-  if (missingEntity)
-    return {
-      trace: { entityId, ruleId: rule.ref, status: "input-missing", inputs, message: `Missing entity ${entityId}` },
-      stateValues: [],
-      processChanges: [],
-    };
+  const unanswered = (status: RuleStatus, message?: string): RuleRun => ({
+    trace: {
+      entityId,
+      ruleId: rule.ref,
+      status,
+      inputs,
+      branch: null,
+      notice: null,
+      ...(message === undefined ? {} : { message }),
+    },
+    stateValues: [],
+    processChanges: [],
+  });
+  if (missingEntity) return unanswered("input-missing", `Missing entity ${entityId}`);
   const missing = inputs.filter((read) => !read.present);
   if (missing.length > 0)
-    return {
-      trace: {
-        entityId,
-        ruleId: rule.ref,
-        status: "input-missing",
-        inputs,
-        message: `Missing declared inputs: ${missing.map((read) => read.name).join(", ")}`,
-      },
-      stateValues: [],
-      processChanges: [],
-    };
+    return unanswered("input-missing", `Missing declared inputs: ${missing.map((read) => read.name).join(", ")}`);
 
   const scope = buildScope(config, request.input, rule.usedInputs, entityId);
-  const condition = runCondition(rule.condition, scope);
-  if (!condition.ok)
-    return {
-      trace: {
-        entityId,
-        ruleId: rule.ref,
-        status: failureReason(condition.reason),
-        inputs,
-        message: condition.message,
-      },
-      stateValues: [],
-      processChanges: [],
-    };
-  if (!condition.value)
-    return {
-      trace: { entityId, ruleId: rule.ref, status: "condition-false", inputs },
-      stateValues: [],
-      processChanges: [],
-    };
+  // Branches answer in the order they are written: the first one that holds is the
+  // rule's effect, and the ones after it are not considered. A condition that cannot
+  // be decided stops the rule rather than being skipped, because skipping it would
+  // let content that the state cannot answer for quietly fall through to a later
+  // branch and report an effect the world never chose.
+  for (const [index, branch] of rule.branches.entries()) {
+    const condition = runCondition(branch.condition, scope);
+    if (!condition.ok) return unanswered(failureReason(condition.reason), condition.message);
+    if (!condition.value) continue;
 
-  const evaluated = runChanges(rule, scope, entityId);
-  if (evaluated.failure !== undefined)
+    const evaluated = runChanges(rule, branch.changes, scope, entityId);
+    if (evaluated.failure !== undefined)
+      return unanswered(failureReason(evaluated.failure.reason), evaluated.failure.message);
     return {
-      trace: {
-        entityId,
-        ruleId: rule.ref,
-        status: failureReason(evaluated.failure.reason),
-        inputs,
-        message: evaluated.failure.message,
-      },
-      stateValues: [],
-      processChanges: [],
+      trace: { entityId, ruleId: rule.ref, status: "evaluated", inputs, branch: index, notice: branch.notice },
+      stateValues: evaluated.changes,
+      processChanges: evaluated.processChanges,
     };
-  return {
-    trace: { entityId, ruleId: rule.ref, status: "evaluated", inputs },
-    stateValues: evaluated.changes,
-    processChanges: evaluated.processChanges,
-  };
+  }
+  return unanswered("condition-false");
 }
 
 function combineValues(plan: CombinePlan, entityId: string | null, ruleValues: readonly ValueTrace[]): CombineTrace {
@@ -540,5 +525,7 @@ export function runRules(config: RuntimeConfig, request: RuleRequest): RuleResul
 
 /** Rules that need the explicit simulated time; used by callers to prove inputs. */
 export function timedRules(config: RuntimeConfig): readonly string[] {
-  return config.rules.filter((rule) => conditionUsesSimulationTime(rule.condition)).map((rule) => rule.ref);
+  return config.rules
+    .filter((rule) => rule.branches.some((branch) => conditionUsesSimulationTime(branch.condition)))
+    .map((rule) => rule.ref);
 }

@@ -141,6 +141,9 @@ export class BodyService {
             action: action.action,
             status: action.status,
             reason: action.outcome?.reason ?? action.status,
+            // What the world said the action meant, in the pack's own words. The
+            // reason is the engine talking to itself; only the notice is for a player.
+            notice: action.outcome?.notice ?? null,
           }),
         );
     return Object.freeze({
@@ -328,6 +331,7 @@ export class BodyService {
               outcome: {
                 status: "interrupted" as ActionStatus,
                 reason: `replaced by ${plan.planId}`,
+                notice: null,
                 tick: context.tick,
                 changes: [],
               },
@@ -527,6 +531,7 @@ export class BodyService {
               outcome: {
                 status: "completed" as ActionStatus,
                 reason: "all stages done",
+                notice: null,
                 tick: context.tick,
                 changes: [],
               },
@@ -559,6 +564,7 @@ export class BodyService {
           outcome: {
             status: "failed",
             reason: `world ${outcome.status}: ${outcome.reason}`,
+            notice: null,
             tick: context.tick,
             changes: [],
           },
@@ -590,7 +596,16 @@ export class BodyService {
       actions: bumpAction(runtime.actions, action.actionId, (entry) => ({
         ...entry,
         status: "completed",
-        outcome: { status: "completed", reason: "world applied", tick: context.tick, changes: [] },
+        // The world applied what the rules declared. What that meant travels with the
+        // outcome as the pack's own words: an influence that changed nothing still
+        // completed, and its notice is the only thing there is to say about it.
+        outcome: {
+          status: "completed",
+          reason: "world applied",
+          notice: outcome.notice,
+          tick: context.tick,
+          changes: [],
+        },
       })),
     };
   }
@@ -602,7 +617,7 @@ export class BodyService {
       actions: bumpAction(runtime.actions, actionId, (entry) => ({
         ...entry,
         status,
-        outcome: { status, reason, tick, changes: [] },
+        outcome: { status, reason, notice: null, tick, changes: [] },
       })),
     };
   }

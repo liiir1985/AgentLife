@@ -27,36 +27,46 @@ function observationsOf(state: SimulationState, observer: string): readonly Obse
 
 describe("perception", () => {
   it("describes an unrecognised person without any name and names a recognised one", async () => {
-    const lit = await phase4Simulation();
-    const dark = await phase4Simulation({
-      overrides: { "environment/light-level.yaml": lightFact(20) },
-    });
+    // The demo starts dark enough to lose detail; a bright override is how a case
+    // asks for the finest level, exactly as the light fact would supply it in play.
+    const lit = await phase4Simulation({ overrides: { "environment/light-level.yaml": lightFact(400) } });
+    // 45 lux costs two levels (below the dark threshold and below the dim
+    // efficiency) and still carries something: the coarsest level, with no identity.
+    const dim = await phase4Simulation({ overrides: { "environment/light-level.yaml": lightFact(45) } });
+    // Below the declared faint threshold the channel carries nothing at all, so the
+    // person is not merely unrecognised: nothing of him reaches the observer.
+    const blind = await phase4Simulation({ overrides: { "environment/light-level.yaml": lightFact(20) } });
     try {
       await lit.runner.runTickToPublication();
-      await dark.runner.runTickToPublication();
-      const seenLit = perceivedView(lit.config, lit.runner.state(), PLAYER).entities.find(
-        (entity) => entity.anchor === WARDEN,
-      );
-      const seenDark = perceivedView(dark.config, dark.runner.state(), PLAYER).entities.find(
-        (entity) => entity.anchor === WARDEN,
-      );
-      // The default demo light reaches the finest declared level, so the warden's
-      // projected identity is what the observer names him by.
-      expect(seenLit?.recognisable).toBe(true);
-      expect(seenLit?.name).toBe("门口的护卫");
-      // Below the declared dark threshold one level of detail is lost, and the
-      // projection for that level carries no identity at all.
-      expect(seenDark?.recognisable).toBe(false);
-      expect(seenDark?.name).toBe("一个一动不动的人影");
+      await dim.runner.runTickToPublication();
+      await blind.runner.runTickToPublication();
+      const seen = (simulation: Awaited<ReturnType<typeof phase4Simulation>>) =>
+        perceivedView(simulation.config, simulation.runner.state(), PLAYER).entities.find(
+          (entity) => entity.anchor === WARDEN,
+        );
+      // Enough light reaches the finest declared level, so the warden's projected
+      // identity is what the observer names him by.
+      expect(seen(lit)?.recognisable).toBe(true);
+      expect(seen(lit)?.name).toBe("门口的护卫");
+      // Two levels down, the projection for that level carries no identity at all.
+      expect(seen(dim)?.recognisable).toBe(false);
+      expect(seen(dim)?.name).toBe("一个立在路口的人影");
+      expect(seen(blind)).toBeUndefined();
+      // Nothing arrives through the sight channel, so not even the place is left.
+      expect(perceivedView(blind.config, blind.runner.state(), PLAYER).place).toBeNull();
     } finally {
       dispose(lit);
-      dispose(dark);
+      dispose(dim);
+      dispose(blind);
     }
   });
 
   it("never lets an observer see a character's declared name, background or classification", async () => {
     const simulation = await phase4Simulation({
       overrides: {
+        // Bright enough to reach the level the appearance declares as recognisable:
+        // this case is about which name may be shown, not about how dark it is.
+        "environment/light-level.yaml": lightFact(400),
         "characters/companion.yaml": companionCharacter(SQUARE, "秘密姓名", "一段秘密身世"),
         // Put the companion where the player stands, so she is in view at all.
         "characters/player.yaml": `id: player

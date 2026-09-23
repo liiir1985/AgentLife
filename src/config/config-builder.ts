@@ -20,6 +20,13 @@ import type { CheckedFormula, CheckedChange, CheckedInput, CheckedRule, CheckedC
  * and the same content always gets the same version.
  */
 
+export interface RuntimeBranch {
+  readonly condition: Condition;
+  readonly changes: readonly CheckedChange[];
+  /** What this branch's effect means, in the pack's own words; `null` when it says nothing. */
+  readonly notice: string | null;
+}
+
 export interface RuntimeRule {
   readonly ref: string;
   readonly system: string;
@@ -27,8 +34,8 @@ export interface RuntimeRule {
   readonly inputs: readonly CheckedInput[];
   /** Reads the rule actually resolves, in declaration order. */
   readonly usedInputs: readonly CheckedInput[];
-  readonly condition: Condition;
-  readonly changes: readonly CheckedChange[];
+  /** The rule's branches in source order; the first whose condition holds answers. */
+  readonly branches: readonly RuntimeBranch[];
   readonly dependsOn: readonly string[];
   readonly order: number;
   readonly evaluationScope: StateScope;
@@ -87,10 +94,13 @@ function usedInputs(inputs: readonly CheckedInput[], aliases: ReadonlySet<string
 }
 
 function ruleInputs(rule: CheckedRule): Set<string> {
-  const aliases = new Set<string>(conditionInputs(rule.condition));
-  for (const change of rule.changes) {
-    const sources = change.kind === "process" ? change.params.map((parameter) => parameter.value) : [change.value];
-    for (const source of sources) for (const name of inputNames(source)) aliases.add(name);
+  const aliases = new Set<string>();
+  for (const branch of rule.branches) {
+    for (const name of conditionInputs(branch.condition)) aliases.add(name);
+    for (const change of branch.changes) {
+      const sources = change.kind === "process" ? change.params.map((parameter) => parameter.value) : [change.value];
+      for (const source of sources) for (const name of inputNames(source)) aliases.add(name);
+    }
   }
   return aliases;
 }
@@ -101,10 +111,12 @@ function formulaInputs(formula: CheckedFormula): Set<string> {
 
 function dependencyRefs(rule: CheckedRule): readonly string[] {
   const refs = new Set<string>(rule.dependsOn);
-  for (const ref of conditionFormulas(rule.condition)) refs.add(ref);
-  for (const change of rule.changes) {
-    const sources = change.kind === "process" ? change.params.map((parameter) => parameter.value) : [change.value];
-    for (const source of sources) for (const ref of formulaRefs(source)) refs.add(ref);
+  for (const branch of rule.branches) {
+    for (const ref of conditionFormulas(branch.condition)) refs.add(ref);
+    for (const change of branch.changes) {
+      const sources = change.kind === "process" ? change.params.map((parameter) => parameter.value) : [change.value];
+      for (const source of sources) for (const ref of formulaRefs(source)) refs.add(ref);
+    }
   }
   return [...refs].sort();
 }
@@ -144,8 +156,11 @@ export function buildConfig(validation: CheckedConfig): RuntimeConfig {
       triggers: [...rule.triggers].sort(),
       inputs: rule.inputs,
       usedInputs: usedInputs(rule.inputs, aliases),
-      condition: rule.condition,
-      changes: rule.changes,
+      branches: rule.branches.map((branch) => ({
+        condition: branch.condition,
+        changes: branch.changes,
+        notice: branch.notice,
+      })),
       dependsOn: dependencyRefs(rule),
       order,
       evaluationScope: rule.evaluationScope,
@@ -174,7 +189,7 @@ export function buildConfig(validation: CheckedConfig): RuntimeConfig {
 
   const combinePlans: Record<string, CombinePlan> = {};
   for (const rule of runtimeRules) {
-    for (const change of rule.changes) {
+    for (const change of rule.branches.flatMap((branch) => branch.changes)) {
       if (change.kind !== "state") continue;
       const stateRef = validation.catalog.output(change.stateRef);
       const existing = combinePlans[change.stateRef];

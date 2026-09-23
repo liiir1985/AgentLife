@@ -4,6 +4,9 @@ public: true
 fields:
   name: 可辨识度
   type: number
+  # 种子，不是真值：这个事实由 darkness-visibility 与 fog-visibility 拥有，
+  # 真正的值由初始化的那一轮传播算出（当前的 demo 里是 0.24）。
+  # 故意留一个不同的数字——它证明初始化确实把规则跑过一遍了。
   initial: 1
   unit: ratio
   policy:

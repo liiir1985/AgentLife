@@ -209,7 +209,10 @@ export interface WorldInfluenceRequest {
 
 export interface ActionOutcome {
   readonly status: ActionStatus;
+  /** The engine's diagnostic account of the outcome; never player-facing text. */
   readonly reason: string;
+  /** What the world said this action meant, in the pack's words; `null` when it said nothing. */
+  readonly notice: string | null;
   readonly tick: number;
   readonly changes: readonly SimpleValue[];
 }
@@ -235,11 +238,20 @@ export interface ActionInstance {
   readonly outcome: ActionOutcome | null;
 }
 
-/** One influence the world rejected, kept for the tick trace. */
+/** What one accepted influence did to the world, kept for the tick trace. */
 export interface InfluenceOutcome {
   readonly influenceId: string;
   readonly status: "applied" | "rejected" | "stale";
   readonly reason: string;
+  /**
+   * What the world's rules say this influence meant, in the pack's own words.
+   *
+   * An influence whose rules deliberately change nothing still carries the notice
+   * that says so, which is how an operation on a state it cannot alter reports a
+   * result instead of a failure. `null` when the answering rule says nothing, or
+   * when no rule answered at all.
+   */
+  readonly notice: string | null;
   readonly changes: number;
 }
 

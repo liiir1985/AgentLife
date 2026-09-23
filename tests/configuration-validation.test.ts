@@ -466,6 +466,63 @@ changes: []
     message: "declares no state change",
   },
   {
+    name: "a branch that declares neither a change nor words",
+    overrides: {
+      "rules/lamp-stimulus.yaml": `kind: rule
+id: lamp-stimulus
+system: agentlife.body
+triggers:
+  - agentlife.body/tick-elapsed
+branches:
+  - when:
+      op: always
+    changes: []
+`,
+    },
+    code: "structure-invalid",
+    message: "declares no state change",
+  },
+  {
+    name: "a rule that declares its effect both flat and as branches",
+    overrides: {
+      "rules/lamp-stimulus.yaml": `kind: rule
+id: lamp-stimulus
+system: agentlife.body
+triggers:
+  - agentlife.body/tick-elapsed
+condition:
+  op: always
+changes: []
+notice: 什么也没有发生
+branches:
+  - when:
+      op: always
+    changes: []
+    notice: 什么也没有发生
+`,
+    },
+    code: "structure-invalid",
+    message: "declares both branches and condition",
+  },
+  {
+    name: "a branch whose guard is spelled condition",
+    overrides: {
+      "rules/lamp-stimulus.yaml": `kind: rule
+id: lamp-stimulus
+system: agentlife.body
+triggers:
+  - agentlife.body/tick-elapsed
+branches:
+  - condition:
+      op: always
+    changes: []
+    notice: 什么也没有发生
+`,
+    },
+    code: "structure-invalid",
+    message: "rules/lamp-stimulus.yaml.branches[0].condition is not a supported field",
+  },
+  {
     name: "a kernel version the pack cannot run against",
     overrides: {
       "manifest.yaml": demoManifest({ kernel: ">=3.0.0" }),
@@ -905,6 +962,113 @@ describe("configuration validation", () => {
       expect(causeCodes(result.diagnostics)).toContain(scenario.code);
       expect(messages(result.diagnostics)).toContain(scenario.message);
       expect(registry.current()).toBeUndefined();
+    } finally {
+      removeDirectory(directory);
+    }
+  });
+
+  it("accepts a rule whose declared effect is words instead of a state change", async () => {
+    const { result, directory } = await applyDemoPack(createRegistry(), {
+      // The answer an operation on a state that stays the same is entitled to. The
+      // notice is the effect; without one the same rule is still refused above.
+      "rules/exhaustion-move-cost-factor.yaml": `kind: rule
+id: exhaustion-move-cost-factor
+system: agentlife.body
+triggers:
+  - agentlife.body/value-changed
+inputs:
+  - name: stamina
+    state: agentlife.body/values.stamina
+condition:
+  op: compare
+  left:
+    kind: read
+    name: stamina
+  right:
+    kind: literal
+    value: 20
+    unit: points
+  operator: lt
+changes: []
+notice: 体力不济，走不动了
+`,
+    });
+    try {
+      expect(result.status, messages(result.diagnostics)).toBe("valid");
+      const rule = result.config?.rules.find(
+        (candidate) => candidate.ref === "agentlife.demo/exhaustion-move-cost-factor",
+      );
+      // Written flat, so the rule has exactly one branch: the same shape a rule with
+      // several branches is made of.
+      expect(rule?.branches).toHaveLength(1);
+      expect(rule?.branches[0]?.changes).toEqual([]);
+      expect(rule?.branches[0]?.notice).toBe("体力不济，走不动了");
+      // A notice about a body's own state belongs to that body: the scope comes
+      // from what the rule reads, exactly as the change it replaces would have.
+      expect(rule?.evaluationScope).toBe("entity");
+    } finally {
+      removeDirectory(directory);
+    }
+  });
+
+  it("accepts one rule whose branches declare the effect of each state", async () => {
+    const { result, directory } = await applyDemoPack(createRegistry(), {
+      // One rule, two branches: the same body value answers differently depending on
+      // what it is, and each branch says what that answer is. The rule still has one
+      // scope, taken from what its branches read.
+      "rules/exhaustion-move-cost-factor.yaml": `kind: rule
+id: exhaustion-move-cost-factor
+system: agentlife.body
+triggers:
+  - agentlife.body/value-changed
+inputs:
+  - name: stamina
+    state: agentlife.body/values.stamina
+dependsOn:
+  - agentlife.demo/exhaustion-factor
+branches:
+  - when:
+      op: compare
+      left:
+        kind: read
+        name: stamina
+      right:
+        kind: literal
+        value: 0
+        unit: points
+      operator: gt
+    changes:
+      - state: agentlife.body/values.move-cost-factor
+        combine: multiply
+        value:
+          kind: formula
+          formulaRef: agentlife.demo/exhaustion-factor
+  - when:
+      op: compare
+      left:
+        kind: read
+        name: stamina
+      right:
+        kind: literal
+        value: 0
+        unit: points
+      operator: eq
+    changes: []
+    notice: 一点力气也没有了
+`,
+    });
+    try {
+      expect(result.status, messages(result.diagnostics)).toBe("valid");
+      const rule = result.config?.rules.find(
+        (candidate) => candidate.ref === "agentlife.demo/exhaustion-move-cost-factor",
+      );
+      // Two branches, in source order, each with its own effect and its own words.
+      expect(rule?.branches).toHaveLength(2);
+      expect(rule?.branches[0]?.changes.map((change) => change.kind)).toEqual(["state"]);
+      expect(rule?.branches[0]?.notice).toBeNull();
+      expect(rule?.branches[1]?.changes).toEqual([]);
+      expect(rule?.branches[1]?.notice).toBe("一点力气也没有了");
+      expect(rule?.evaluationScope).toBe("entity");
     } finally {
       removeDirectory(directory);
     }

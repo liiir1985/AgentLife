@@ -4,7 +4,10 @@ public: true
 fields:
   name: 环境光照
   type: number
-  initial: 320
+  # 暗到只看得见轮廓：40 lux 下 darkness-visibility 给出 0.24、
+  # vision-efficiency 给出 0.28，都低于 sight 通道的 dimBelow，于是降到最粗一级。
+  # 点灯后的光照足以让同一批东西升到细节级，分级的差别因此看得见。
+  initial: 40
   unit: lux
   policy:
     rounding:

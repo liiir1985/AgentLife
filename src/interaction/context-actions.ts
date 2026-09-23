@@ -96,6 +96,10 @@ export interface PerceivedPlayerView {
   readonly playerActions: readonly {
     readonly action: string;
     readonly status: string;
+    /**
+     * What this action meant, for reading: the pack's own words when the world's
+     * rules had any, otherwise the engine's diagnostic. A view shows it as it is.
+     */
     readonly outcome: string | null;
   }[];
   readonly observations: readonly PerceivedObservation[];
@@ -208,7 +212,7 @@ export function perceivedView(config: RuntimeConfig, state: SimulationState, pla
         .map((action) => ({
           action: itemLabel(config, action.action),
           status: action.status,
-          outcome: action.outcome?.reason ?? null,
+          outcome: action.outcome?.notice ?? action.outcome?.reason ?? null,
         })),
     ),
     observations: Object.freeze(

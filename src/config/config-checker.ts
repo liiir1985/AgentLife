@@ -16,7 +16,7 @@ import { KERNEL_VERSION, satisfiesVersion } from "./identifiers.js";
 import { RATIO_UNIT, applyNumberPolicy, mapUnit, checkMap, type CombineMode } from "./numeric.js";
 import type { PackSet } from "./packs.js";
 import type { MergedItem } from "./config-merge.js";
-import type { ParsedFormula, ParsedPack, ParsedInput, ParsedRule } from "./source.js";
+import type { ParsedFormula, ParsedPack, ParsedInput, ParsedRule, RuleChange } from "./source.js";
 import { RuleCatalog, type RuleItem, type CatalogIssue, type ValueMember } from "./rule-catalog.js";
 import { formulaRefs, inputNames, type ValueExpr } from "./value-expr.js";
 import type { TSchema } from "typebox";
@@ -65,6 +65,13 @@ export interface CheckedProcessChange {
 
 export type CheckedChange = CheckedStateChange | CheckedProcessChange;
 
+export interface CheckedBranch {
+  readonly condition: Condition;
+  readonly changes: readonly CheckedChange[];
+  /** What this branch's effect means, in the pack's own words. */
+  readonly notice: string | null;
+}
+
 export interface CheckedRule {
   readonly ref: string;
   readonly system: string;
@@ -72,8 +79,8 @@ export interface CheckedRule {
   readonly source: ParsedRule;
   readonly triggers: readonly string[];
   readonly inputs: readonly CheckedInput[];
-  readonly condition: Condition;
-  readonly changes: readonly CheckedChange[];
+  /** Every branch the rule declares, in source order; the first that holds answers. */
+  readonly branches: readonly CheckedBranch[];
   readonly dependsOn: readonly string[];
   readonly evaluationScope: StateScope;
 }
@@ -424,6 +431,7 @@ function checkValueCompatibility(
 
 function bindChanges(
   rule: ParsedRule,
+  declared: readonly RuleChange[],
   systemId: string,
   inputs: Map<string, CheckedInput>,
   formulas: Map<string, CheckedFormula>,
@@ -432,7 +440,7 @@ function bindChanges(
   bag: IssueList,
 ): CheckedChange[] {
   const changes: CheckedChange[] = [];
-  for (const change of rule.changes) {
+  for (const change of declared) {
     if (change.kind === "process") {
       const process = systemIndex.process(change.processRef);
       if (process === undefined) {
@@ -825,22 +833,31 @@ function dependencyOrder(
   return ordered;
 }
 
+/** How a diagnostic names one branch; a rule with a single branch needs no number. */
+function branchLabel(rule: ParsedRule, index: number): string {
+  return rule.branches.length === 1 ? rule.ref : `${rule.ref} branch ${index + 1}`;
+}
+
 function classifyDependencies(rule: ParsedRule): readonly string[] {
   return [
     ...rule.dependsOn,
-    ...conditionFormulas(rule.condition),
-    ...rule.changes.flatMap((change) =>
-      change.kind === "process" ? Object.values(change.params).flatMap(formulaRefs) : formulaRefs(change.value),
-    ),
+    ...rule.branches.flatMap((branch) => [
+      ...conditionFormulas(branch.condition),
+      ...branch.changes.flatMap((change) =>
+        change.kind === "process" ? Object.values(change.params).flatMap(formulaRefs) : formulaRefs(change.value),
+      ),
+    ]),
   ];
 }
 
 function ruleReads(rule: ParsedRule): readonly string[] {
   return [
-    ...conditionInputs(rule.condition),
-    ...rule.changes.flatMap((change) =>
-      change.kind === "process" ? Object.values(change.params).flatMap(inputNames) : inputNames(change.value),
-    ),
+    ...rule.branches.flatMap((branch) => [
+      ...conditionInputs(branch.condition),
+      ...branch.changes.flatMap((change) =>
+        change.kind === "process" ? Object.values(change.params).flatMap(inputNames) : inputNames(change.value),
+      ),
+    ]),
   ];
 }
 
@@ -1019,9 +1036,24 @@ export function checkConfig(
       if (!usedAliases.has(read.name))
         bag.add(warning("structure", "unused-read", `${rule.ref} declares read name ${read.name} but never uses it`));
     const formulas = new Map(checkedFormulas.map((item) => [item.ref, item]));
-    checkCondition(rule.condition, rule.ref, inputs, formulas, systemIndex, bag);
-    if (rule.changes.length === 0) bindingFailure(bag, rule.ref, `${rule.ref} declares no state change`);
-    const changes = bindChanges(rule, system.systemId, inputs, formulas, systemIndex, catalog, bag);
+    const branches: CheckedBranch[] = [];
+    for (const [index, branch] of rule.branches.entries()) {
+      checkCondition(branch.condition, rule.ref, inputs, formulas, systemIndex, bag);
+      // Every branch must declare something a caller can act on: a state or process
+      // change, or the words that say its effect is deliberately nothing. Without the
+      // second option an operation on a state that changes nothing has no way to be
+      // authored, and the engine is left to infer an outcome from comparing before
+      // and after. A branch that declares neither would be indistinguishable from a
+      // forgotten one.
+      if (branch.changes.length === 0 && branch.notice === null)
+        bindingFailure(bag, rule.ref, `${branchLabel(rule, index)} declares no state change`);
+      branches.push({
+        condition: branch.condition,
+        changes: bindChanges(rule, branch.changes, system.systemId, inputs, formulas, systemIndex, catalog, bag),
+        notice: branch.notice,
+      });
+    }
+    const changes = branches.flatMap((branch) => branch.changes);
     const dependsOn = classifyDependencies(rule);
     for (const dependency of dependsOn)
       if (!packs.rule(dependency) && !packs.formula(dependency))
@@ -1036,9 +1068,13 @@ export function checkConfig(
           { subject: rule.ref },
         ),
       );
-    const evaluationScope = changeScopes[0] ?? "shared";
     const readScope = scopeFromInputs([...inputs.values()], usedAliases);
     const formulaScope = dependsOn.some((ref) => formulas.get(ref)?.evaluationScope === "entity") ? "entity" : "shared";
+    // A rule that changes nothing has no change to take its scope from, so it is
+    // scoped by what it reads: a notice about a body's own state belongs to that
+    // entity, exactly as the change it replaces would have. Every branch is read the
+    // same way, so a rule is evaluated in one scope for all of them.
+    const evaluationScope = changeScopes[0] ?? (readScope === "entity" ? "entity" : "shared");
     if (evaluationScope === "shared" && (readScope === "entity" || formulaScope === "entity"))
       bag.add(
         error("permission", "unauthorized-change", `${rule.ref} cannot use entity state to produce a shared change`, {
@@ -1052,8 +1088,7 @@ export function checkConfig(
       source: rule,
       triggers,
       inputs: [...inputs.values()],
-      condition: rule.condition,
-      changes,
+      branches,
       dependsOn,
       evaluationScope,
     });
@@ -1099,7 +1134,7 @@ export function checkConfig(
 function checkCombinePlan(rules: readonly CheckedRule[], catalog: RuleCatalog, bag: IssueList): void {
   const plans = new Map<string, { combine: CombineMode; sourceRules: string[] }>();
   for (const rule of rules) {
-    for (const change of rule.changes) {
+    for (const change of rule.branches.flatMap((branch) => branch.changes)) {
       if (change.kind !== "state") continue;
       const existing = plans.get(change.stateRef);
       if (existing === undefined) {
@@ -1149,7 +1184,10 @@ function checkSystems(
     ref: rule.ref,
     system: rule.system,
     triggers: rule.triggers,
-    targets: rule.changes.filter((change) => change.kind === "state").map((change) => change.stateRef),
+    targets: rule.branches
+      .flatMap((branch) => branch.changes)
+      .filter((change) => change.kind === "state")
+      .map((change) => change.stateRef),
   }));
   const lookup = (ref: string): { readonly type: string } | undefined => {
     const item = definitionIndex.get(ref);

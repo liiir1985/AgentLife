@@ -322,6 +322,7 @@ export class WorldService {
           influenceId: request.influenceId,
           status: "stale",
           reason: `request was formed against ${request.baseVersion}, this frame started from ${frameVersion}`,
+          notice: null,
           changes: 0,
         },
         processRequests: [],
@@ -358,6 +359,7 @@ export class WorldService {
           influenceId: request.influenceId,
           status: "stale",
           reason: `judgement did not run: ${judgement.status}`,
+          notice: null,
           changes: 0,
         },
         processRequests: [],
@@ -379,7 +381,7 @@ export class WorldService {
           : `no consent rule covered ${missing.sort().join(", ")}`;
       return {
         ...this.emptyCommit(state),
-        outcome: { influenceId: request.influenceId, status: "rejected", reason, changes: 0 },
+        outcome: { influenceId: request.influenceId, status: "rejected", reason, notice: null, changes: 0 },
         processRequests: [],
       };
     }
@@ -402,6 +404,7 @@ export class WorldService {
           influenceId: request.influenceId,
           status: "stale",
           reason: `application did not run: ${applied.status}`,
+          notice: null,
           changes: 0,
         },
         processRequests: [],
@@ -414,24 +417,60 @@ export class WorldService {
       applied.processChanges,
       { kind: "influence", actor: request.actor, subject: request.subject },
     );
-    const accepted = committed.applied.length > 0 || applied.processChanges.length > 0;
-    const requested = applied.stateChanges.length;
-    return {
-      ...committed,
-      outcome: accepted
-        ? { influenceId: request.influenceId, status: "applied", reason: "accepted", changes: committed.applied.length }
-        : {
+    // What an influence means is what its rules declared, never what a comparison of
+    // the world before and after happens to show. A branch whose effect is deliberately
+    // nothing answers as surely as one that writes a value: the pack says so in the
+    // branch's notice, and the run carries the words of the branch that answered.
+    // Acceptance is therefore read off the rules that ran, and the commit only says
+    // how much of their declared effect the world took.
+    //
+    // Every rule the accepted run evaluated, in the order the run reached them: the
+    // shared scope first, then each participant scope in its sorted order.
+    const answered = [applied.trace.shared, ...applied.trace.entities]
+      .flatMap((scope) => scope.rules)
+      .filter((rule) => rule.status === "evaluated");
+    const noticeByRule = new Map(answered.map((rule) => [rule.ruleId, rule.notice]));
+    const committedRules = new Set([
+      ...committed.applied.flatMap((change) => change.sourceRules),
+      ...applied.processChanges.map((change) => change.sourceRule),
+    ]);
+    const committedNotice =
+      [...committedRules].map((ref) => noticeByRule.get(ref) ?? null).find((notice) => notice !== null) ?? null;
+    // A rule whose change the world took speaks for the outcome; failing that, the
+    // first rule that answered at all. Two rules may both answer - mutually exclusive
+    // conditions are the author's business - and the loser only shows up in the trace.
+    const answeredNotice = answered.map((rule) => rule.notice).find((notice) => notice !== null) ?? null;
+    const declaredNotice = committedNotice ?? answeredNotice;
+    // A refusal outranks an answer: the world's own precondition explains the outcome
+    // better than any rule's words, and the pack cannot talk its way past one.
+    const outcome: InfluenceOutcome =
+      committed.rejected.length > 0
+        ? {
             influenceId: request.influenceId,
             status: "rejected",
-            reason:
-              committed.rejected[0]?.reason ??
-              (requested === 0
-                ? `no rule turned the accepted influence into a world change (rule run ${applied.status}, 0 requested)`
-                : `the accepted influence left the world unchanged (rule run ${applied.status}, ${requested} requested)`),
+            reason: committed.rejected[0]?.reason ?? "the world refused the change",
+            notice: null,
             changes: 0,
-          },
-      processRequests: applied.processChanges,
-    };
+          }
+        : committed.applied.length > 0 || applied.processChanges.length > 0 || declaredNotice !== null
+          ? {
+              influenceId: request.influenceId,
+              status: "applied",
+              reason: "accepted",
+              notice: declaredNotice,
+              changes: committed.applied.length,
+            }
+          : {
+              influenceId: request.influenceId,
+              status: "rejected",
+              reason:
+                applied.stateChanges.length === 0
+                  ? `no rule answered the accepted influence (rule run ${applied.status}, 0 requested)`
+                  : `the accepted influence left the world unchanged (rule run ${applied.status}, ${applied.stateChanges.length} requested)`,
+              notice: null,
+              changes: 0,
+            };
+    return { ...committed, outcome, processRequests: applied.processChanges };
   }
 
   /** Advances every established world process once, through its own rules. */

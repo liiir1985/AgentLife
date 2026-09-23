@@ -4,6 +4,9 @@ public: true
 fields:
   name: 一次移动的代价
   type: number
+  # 种子，不是真值：一次移动的代价由 base-move-cost 按负重算出来，
+  # 初始化的那一轮传播之后才是真值（当前的 demo 里是 2）。
+  # 故意留一个不同的数字：否则 tick 1 的第一次行走会按 0 计费。
   initial: 0
   unit: points
   policy:

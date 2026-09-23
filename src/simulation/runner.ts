@@ -208,6 +208,63 @@ export class SimulationRunner {
       failure: null,
       summary: null,
     });
+    // Everything the world and the bodies were just initialized with is only a seed
+    // until the rules have had their say about it.
+    this.current = this.initializeDerivations();
+  }
+
+  /**
+   * One propagation over every family initialization wrote, run once before the
+   * first tick can read anything.
+   *
+   * An `initial` is a seed, not a truth. A state the rules own has no hand-written
+   * value worth trusting: until the rules run, it holds whatever the author guessed,
+   * tick 1 reads that guess, and the first unrelated change quietly corrects it. So
+   * the constructor runs the propagation the tick would run, on the environment
+   * facts and the body values and channels initialization just wrote, and derives
+   * every rule-owned state before it can be read.
+   *
+   * This is not a tick and not world history. It publishes nothing, records no
+   * events (the derived values were already true of the world - nobody changed it)
+   * and no observation can see it, because nothing changed within a tick anyone
+   * perceives. `load` never repeats it either: a restored state already holds the
+   * derived values it was saved with.
+   *
+   * A derivation that cannot settle leaves the initial state undefined, which no
+   * later correction can be trusted to fix, so the run refuses to start.
+   */
+  private initializeDerivations(): SimulationState {
+    const world = this.current.world;
+    const settled = this.propagate(
+      world,
+      { body: this.current.body, actions: this.current.actions },
+      { timelineId: this.current.timelineId, tick: 0, command: "initialization" },
+      [WORLD_FACTS, BODY_VALUES, BODY_CHANNELS],
+      { initialization: true },
+    );
+    const problem =
+      settled.barrier === undefined
+        ? null
+        : `rule barrier on ${settled.barrier.trigger} for ${settled.barrier.stateRef}`;
+    if (problem !== null || settled.exceeded)
+      throw new Error(
+        `Initialization did not settle: ${
+          problem ?? `propagation exceeded ${this.settings.maxPropagationRounds} rounds`
+        }`,
+      );
+    this.trace?.record("world-initialised", {
+      rounds: settled.rounds,
+      triggers: settled.triggers,
+      notes: settled.notes,
+      worldVersion: settled.world.version,
+      bodyVersion: settled.body.body.version,
+    });
+    return Object.freeze({
+      ...this.current,
+      world: Object.freeze({ ...settled.world, events: world.events }),
+      body: settled.body.body,
+      actions: settled.body.actions,
+    });
   }
 
   static create(core: CoreRuntime, options: RunnerOptions): SimulationRunner {
@@ -1213,12 +1270,18 @@ export class SimulationRunner {
    * Deterministic propagation: only the rules the changed state selected run, in
    * stable order, each round based on the previous committed state, until the
    * objective state stops changing.
+   *
+   * `initialization` changes what a seed means: a family nothing derives from is
+   * simply a family with no rules, not a change the content failed to handle, so it
+   * is skipped rather than raised as a barrier. Nothing published, perceived or
+   * saved depends on that distinction; only the constructor asks for it.
    */
   private propagate(
     world: WorldState,
     runtime: BodyRuntime,
     context: TickContext,
     changedRefs: readonly string[],
+    options: { readonly initialization?: boolean } = {},
   ): {
     world: WorldState;
     body: BodyRuntime;
@@ -1230,7 +1293,17 @@ export class SimulationRunner {
   } {
     let currentWorld = world;
     let currentBody = runtime;
-    let pending = this.triggersFor(changedRefs);
+    // Which triggers a set of state refs selects. During initialization a family with
+    // no rules derives nothing: it is a family nothing derives from, not a change the
+    // content failed to answer, so it never becomes a barrier.
+    const select = (refs: readonly string[]): Set<string> => {
+      const triggers = this.triggersFor(refs);
+      if (options.initialization !== true) return triggers;
+      for (const trigger of [...triggers])
+        if ((this.runtime.config.triggerIndex[trigger] ?? []).length === 0) triggers.delete(trigger);
+      return triggers;
+    };
+    let pending = select(changedRefs);
     const triggers: string[] = [];
     const notes: string[] = [];
     let rounds = 0;
@@ -1282,7 +1355,7 @@ export class SimulationRunner {
           `${trigger}: ${committed.applied.length} applied, ${run.trace.stateChanges.length - committed.applied.length} unchanged or refused`,
         );
       }
-      pending = this.triggersFor(changed.map((change) => change.stateRef));
+      pending = select(changed.map((change) => change.stateRef));
     }
     return { world: currentWorld, body: currentBody, rounds, triggers, notes, exceeded: false };
   }

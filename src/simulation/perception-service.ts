@@ -87,6 +87,11 @@ export interface OutcomeMaterial {
   readonly action: string;
   readonly status: string;
   readonly reason: string;
+  /**
+   * What the world's rules said this result meant, in the pack's words; `null` when
+   * the rules said nothing. The reason is a diagnostic and never a player's text.
+   */
+  readonly notice: string | null;
 }
 
 /** What the body offers its own observer for one perception run. */
@@ -308,11 +313,12 @@ class ObserverRun {
     const subject = this.describe(material, entry.rank, entry.level);
     if (subject === null) return;
     const previous = this.subjects[material.anchor];
+    // Only what the observer could have read counts as a change. The level decides
+    // which projection describes the subject, so a level change matters when it
+    // brings another description or an identity with it; on its own it says nothing
+    // a change observation could put on either side of the arrow.
     const described =
-      previous === undefined ||
-      previous.level !== subject.level ||
-      previous.description !== subject.description ||
-      previous.identity !== subject.identity;
+      previous === undefined || previous.description !== subject.description || previous.identity !== subject.identity;
     // An object that comes into or leaves the observer's hands changed, even though
     // its appearance is the same one it had a moment ago.
     const carried = previous !== undefined && previous.held !== subject.held;
@@ -333,12 +339,18 @@ class ObserverRun {
             : previous.lastTick >= this.frame.tick - 1
               ? "continuing"
               : "reappearance";
+      // A change is only legible against what it changed from. Naming the new
+      // appearance on both sides of the arrow would report that nothing changed.
+      const before =
+        previous === undefined
+          ? null
+          : this.display({ ...subject, description: previous.description, identity: previous.identity });
       const text =
         kind === "appearance"
           ? `${this.display(subject)}${material.held ? "现在在你手上" : "出现在这里"}`
           : kind === "change"
-            ? described
-              ? `${this.display(subject)}变了：${subject.description}`
+            ? described && before !== null
+              ? `${before}变了：${subject.description}`
               : `${this.display(subject)}${subject.held ? "现在在你手上" : "不在你手上了"}`
             : kind === "continuing"
               ? `${this.display(subject)}还在那里`
@@ -466,9 +478,14 @@ class ObserverRun {
     if (this.settings.outcomeSalience < this.settings.salienceThreshold) return;
     for (const outcome of this.frame.body.outcomes) {
       const label = itemLabel(this.config, outcome.action);
+      // A completed action needs no explanation, but the pack may still have one: an
+      // operation the world answered with nothing changed says so here rather than
+      // leaving the player to guess why nothing moved.
       const text =
         outcome.status === "completed"
-          ? `你完成了「${label}」`
+          ? outcome.notice === null
+            ? `你完成了「${label}」`
+            : `你完成了「${label}」：${outcome.notice}`
           : `你的「${label}」${outcome.status === "failed" ? "失败了" : "中断了"}：${outcome.reason}`;
       this.sequence += 1;
       this.observations.push(

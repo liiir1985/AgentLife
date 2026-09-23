@@ -57,6 +57,19 @@ export interface ParsedItem {
   readonly fields: Readonly<Record<string, unknown>>;
 }
 
+export interface ParsedBranch {
+  readonly condition: Condition;
+  readonly changes: readonly RuleChange[];
+  /**
+   * What this branch's effect means, in the words the pack wants a player to read.
+   *
+   * A branch whose effect is deliberately nothing - a state the operation does not
+   * change, or changes in a way not worth naming - declares it here instead of
+   * leaving the engine to infer it from a comparison of before and after.
+   */
+  readonly notice: string | null;
+}
+
 export interface ParsedRule {
   readonly kind: "rule";
   readonly ref: string;
@@ -66,8 +79,15 @@ export interface ParsedRule {
   readonly relativePath: string;
   readonly triggers: readonly string[];
   readonly inputs: readonly ParsedInput[];
-  readonly condition: Condition;
-  readonly changes: readonly RuleChange[];
+  /**
+   * What the rule declares, in the order it is written. A rule answers with the
+   * effect of the first branch whose condition holds, so one rule can state what
+   * happens in each of the states the same thing can be in.
+   *
+   * A rule written flat - `condition`, `changes` and `notice` at the top level - is
+   * the one-branch case of this same shape.
+   */
+  readonly branches: readonly ParsedBranch[];
   readonly dependsOn: readonly string[];
 }
 
@@ -505,7 +525,7 @@ function ruleFromDocument(document: unknown, relativePath: string, namespace: st
   }
   expectKnownKeys(
     object,
-    ["kind", "id", "system", "triggers", "inputs", "condition", "changes", "dependsOn"],
+    ["kind", "id", "system", "triggers", "inputs", "condition", "changes", "notice", "branches", "dependsOn"],
     relativePath,
   );
   return {
@@ -519,11 +539,48 @@ function ruleFromDocument(document: unknown, relativePath: string, namespace: st
       asString(entry, `${relativePath}.triggers[${index}]`),
     ),
     inputs: parseInputs(object.inputs ?? [], `${relativePath}.inputs`),
-    condition: parseCondition(object.condition, `${relativePath}.condition`),
-    changes: parseChanges(object.changes, `${relativePath}.changes`),
+    branches: parseBranches(object, relativePath),
     dependsOn: asArray(object.dependsOn ?? [], `${relativePath}.dependsOn`).map((entry, index) =>
       asString(entry, `${relativePath}.dependsOn[${index}]`),
     ),
+  };
+}
+
+/**
+ * The branches of one rule, in source order.
+ *
+ * A rule is either written flat - one condition, one list of changes, one notice -
+ * or as a list of branches. Both spellings describe the same thing, so declaring
+ * both at once is refused rather than silently resolved into one of them.
+ */
+function parseBranches(object: Record<string, unknown>, relativePath: string): readonly ParsedBranch[] {
+  if (object.branches !== undefined) {
+    const conflicting = ["condition", "changes", "notice"].find((key) => object[key] !== undefined);
+    if (conflicting !== undefined)
+      throw new Error(
+        `${relativePath} declares both branches and ${conflicting}; a rule declares its effect one way or the other`,
+      );
+    return asArray(object.branches, `${relativePath}.branches`).map((entry, index) =>
+      parseBranch(entry, `${relativePath}.branches[${index}]`),
+    );
+  }
+  return [
+    {
+      condition: parseCondition(object.condition, `${relativePath}.condition`),
+      changes: parseChanges(object.changes, `${relativePath}.changes`),
+      notice: object.notice === undefined ? null : asString(object.notice, `${relativePath}.notice`),
+    },
+  ];
+}
+
+/** One branch: guarded by `when`, declaring state and process changes and its words. */
+function parseBranch(value: unknown, path: string): ParsedBranch {
+  const object = asObject(value, path);
+  expectKnownKeys(object, ["when", "changes", "notice"], path);
+  return {
+    condition: parseCondition(object.when, `${path}.when`),
+    changes: parseChanges(object.changes, `${path}.changes`),
+    notice: object.notice === undefined ? null : asString(object.notice, `${path}.notice`),
   };
 }
 

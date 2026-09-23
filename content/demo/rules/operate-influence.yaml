@@ -1,3 +1,7 @@
+# 操作一件可操作的物品：铜灯。
+#
+# 效果由状态映射：灯灭着就点亮，灯亮着就照实回答"什么也没有改变"。两态反应写在同一
+# 条规则里，各自一个分支——分支按书写顺序求值，第一个条件成立的就是这条规则的答案。
 kind: rule
 id: operate-influence
 system: agentlife.world
@@ -8,30 +12,76 @@ inputs:
     state: agentlife.world/influence.kind
   - name: accepted
     state: agentlife.world/influence.accepted
-condition:
-  op: all
-  operands:
-    - op: compare
-      left:
-        kind: read
-        name: kind
-      right:
-        kind: literal
-        value: agentlife.demo/operate-item
-      operator: eq
-    - op: compare
-      left:
-        kind: read
-        name: accepted
-      right:
-        kind: literal
-        value: true
-      operator: eq
-changes:
-  - state: agentlife.world/environment.lamp-state
-    combine: priority
-    priority: 1
-    value:
-      kind: literal
-      value: 1
-      unit: state
+  - name: lamp
+    state: agentlife.world/environment.lamp-state
+branches:
+  # 灯还灭着：点亮它。
+  - when:
+      op: all
+      operands:
+        - op: compare
+          left:
+            kind: read
+            name: kind
+          right:
+            kind: literal
+            value: agentlife.demo/operate-item
+          operator: eq
+        - op: compare
+          left:
+            kind: read
+            name: accepted
+          right:
+            kind: literal
+            value: true
+          operator: eq
+        - op: compare
+          left:
+            kind: read
+            name: lamp
+          right:
+            kind: literal
+            value: 0
+            unit: state
+          operator: eq
+    changes:
+      - state: agentlife.world/environment.lamp-state
+        combine: priority
+        priority: 1
+        value:
+          kind: literal
+          value: 1
+          unit: state
+    notice: 灯亮了起来
+  # 灯已经亮着：这条分支不改变任何状态，它声明的效果就是这句话本身。
+  # 想把这盏灯配置成可关闭的作者，把它的 changes 换成写 lamp-state=0 即可。
+  - when:
+      op: all
+      operands:
+        - op: compare
+          left:
+            kind: read
+            name: kind
+          right:
+            kind: literal
+            value: agentlife.demo/operate-item
+          operator: eq
+        - op: compare
+          left:
+            kind: read
+            name: accepted
+          right:
+            kind: literal
+            value: true
+          operator: eq
+        - op: compare
+          left:
+            kind: read
+            name: lamp
+          right:
+            kind: literal
+            value: 1
+            unit: state
+          operator: eq
+    changes: []
+    notice: 灯没有任何变化

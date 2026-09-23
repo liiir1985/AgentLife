@@ -230,7 +230,8 @@ describe("CharacterService", () => {
     // Tick 4: the lamp glow process advances and the warden moves, both outside
     // the paused character.
     await runPublishedTick(runner);
-    expect(worldOf(runner).environment["light-level"]).toBe(520);
+    // The demo starts at 40 lux; the lamp glow adds its 200 lux gain once.
+    expect(worldOf(runner).environment["light-level"]).toBe(240);
     expect(positionOf(runner, DEMO_WARDEN)).toBe(DEMO_KILN);
   });
 
