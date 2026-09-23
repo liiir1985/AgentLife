@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { SimulationRunner, TickResult } from "../src/simulation/runner.js";
 import type { ProjectionSources } from "../src/simulation/projection.js";
-import type { ActionPlan, BodyState, WorldState } from "../src/simulation/types.js";
+import type { BodyState, WorldState } from "../src/simulation/types.js";
 import type { TickContext } from "../src/simulation/world-service.js";
 import {
   DEMO_BENCH,
@@ -16,6 +15,7 @@ import {
   lastAction,
   positionOf,
   removeDirectory,
+  runPublishedTick,
   testPlan,
   worldOf,
 } from "./helpers/phase2.js";
@@ -57,17 +57,11 @@ fields:
       resource: agentlife.demo/hands
 `;
 
-function run(runner: SimulationRunner, plans: readonly ActionPlan[] = []): TickResult {
-  const result = runner.runTick({ plans });
-  expect(result.status).toBe("completed");
-  return result;
-}
-
 describe("BodyService", () => {
   it("starts a plan accepted in one tick only from the next tick", async () => {
     const sim = await createSimulation();
     const runner = sim.runner;
-    run(runner, [testPlan("p-say", DEMO_PLAYER, "parallel", [{ action: SAY }])]);
+    await runPublishedTick(runner, [testPlan("p-say", DEMO_PLAYER, "parallel", [{ action: SAY }])]);
 
     const accepted = lastAction(runner, "p-say");
     expect(accepted?.status).toBe("running");
@@ -76,7 +70,7 @@ describe("BodyService", () => {
     expect(accepted?.stageIndex).toBe(0);
     expect(accepted?.stageTicks).toBe(0);
 
-    run(runner);
+    await runPublishedTick(runner);
     expect(lastAction(runner, "p-say")?.status).toBe("running");
     expect(lastAction(runner, "p-say")?.stageTicks).toBe(1);
   });
@@ -84,20 +78,20 @@ describe("BodyService", () => {
   it("runs speaking and moving in parallel for one entity", async () => {
     const sim = await createSimulation();
     const runner = sim.runner;
-    run(runner, [
+    await runPublishedTick(runner, [
       testPlan("p-walk", DEMO_PLAYER, "parallel", [{ action: WALK, destination: DEMO_KILN }]),
       testPlan("p-say", DEMO_PLAYER, "parallel", [{ action: SAY }]),
     ]);
     expect(lastAction(runner, "p-walk")?.status).toBe("running");
     expect(lastAction(runner, "p-say")?.status).toBe("running");
 
-    run(runner);
-    run(runner);
+    await runPublishedTick(runner);
+    await runPublishedTick(runner);
     expect(lastAction(runner, "p-say")?.status).toBe("completed");
     expect(lastAction(runner, "p-walk")?.status).toBe("running");
     expect(positionOf(runner, DEMO_PLAYER)).toBe(DEMO_SQUARE);
 
-    run(runner);
+    await runPublishedTick(runner);
     expect(lastAction(runner, "p-walk")?.status).toBe("completed");
     expect(positionOf(runner, DEMO_PLAYER)).toBe(DEMO_KILN);
   });
@@ -105,7 +99,7 @@ describe("BodyService", () => {
   it("refuses a gesture and a take that need the same arms under the parallel policy", async () => {
     const sim = await createSimulation();
     const runner = sim.runner;
-    run(runner, [
+    await runPublishedTick(runner, [
       testPlan("p-wave", DEMO_PLAYER, "parallel", [{ action: WAVE }]),
       testPlan("p-grasp", DEMO_PLAYER, "parallel", [{ action: GRASP, target: DEMO_ROPE }]),
     ]);
@@ -120,25 +114,25 @@ describe("BodyService", () => {
   it("queues a conflicting take and starts it once the gesture has ended", async () => {
     const sim = await createSimulation();
     const runner = sim.runner;
-    run(runner, [
+    await runPublishedTick(runner, [
       testPlan("p-wave", DEMO_PLAYER, "parallel", [{ action: WAVE }]),
       testPlan("p-grasp", DEMO_PLAYER, "queue", [{ action: GRASP, target: DEMO_ROPE }]),
     ]);
     expect(lastAction(runner, "p-wave")?.status).toBe("running");
     expect(lastAction(runner, "p-grasp")?.status).toBe("queued");
 
-    run(runner);
-    run(runner);
+    await runPublishedTick(runner);
+    await runPublishedTick(runner);
     expect(lastAction(runner, "p-wave")?.status).toBe("completed");
     expect(lastAction(runner, "p-grasp")?.status).toBe("queued");
 
-    run(runner);
+    await runPublishedTick(runner);
     expect(lastAction(runner, "p-grasp")?.status).toBe("running");
     expect(worldOf(runner).entities[DEMO_ROPE]?.heldBy).toBeNull();
 
-    run(runner);
-    run(runner);
-    run(runner);
+    await runPublishedTick(runner);
+    await runPublishedTick(runner);
+    await runPublishedTick(runner);
     expect(lastAction(runner, "p-grasp")?.status).toBe("completed");
     expect(worldOf(runner).entities[DEMO_ROPE]?.heldBy).toBe(DEMO_PLAYER);
   });
@@ -146,17 +140,19 @@ describe("BodyService", () => {
   it("replaces the running gesture with a take under the replace policy", async () => {
     const sim = await createSimulation();
     const runner = sim.runner;
-    run(runner, [testPlan("p-wave", DEMO_PLAYER, "parallel", [{ action: WAVE }])]);
-    run(runner, [testPlan("p-grasp", DEMO_PLAYER, "replace", [{ action: GRASP, target: DEMO_ROPE }])]);
+    await runPublishedTick(runner, [testPlan("p-wave", DEMO_PLAYER, "parallel", [{ action: WAVE }])]);
+    await runPublishedTick(runner, [
+      testPlan("p-grasp", DEMO_PLAYER, "replace", [{ action: GRASP, target: DEMO_ROPE }]),
+    ]);
 
     expect(lastAction(runner, "p-wave")?.status).toBe("interrupted");
     expect(lastAction(runner, "p-wave")?.outcome?.status).toBe("interrupted");
     expect(lastAction(runner, "p-grasp")?.status).toBe("running");
     expect(lastAction(runner, "p-grasp")?.eligibleTick).toBe(3);
 
-    run(runner);
-    run(runner);
-    run(runner);
+    await runPublishedTick(runner);
+    await runPublishedTick(runner);
+    await runPublishedTick(runner);
     expect(lastAction(runner, "p-grasp")?.status).toBe("completed");
     expect(worldOf(runner).entities[DEMO_ROPE]?.heldBy).toBe(DEMO_PLAYER);
   });
@@ -165,22 +161,22 @@ describe("BodyService", () => {
     const sim = await createSimulationWith({ "resources/locomotion.yaml": EXCLUSIVE_LOCOMOTION });
     try {
       const runner = sim.runner;
-      run(runner, [
+      await runPublishedTick(runner, [
         testPlan("p-out", DEMO_PLAYER, "parallel", [{ action: WALK, destination: DEMO_KILN }]),
         testPlan("p-away", DEMO_PLAYER, "queue", [{ action: WALK, destination: DEMO_ORCHARD }]),
       ]);
       expect(lastAction(runner, "p-out")?.status).toBe("running");
       expect(lastAction(runner, "p-away")?.status).toBe("queued");
 
-      run(runner);
-      run(runner);
-      run(runner);
+      await runPublishedTick(runner);
+      await runPublishedTick(runner);
+      await runPublishedTick(runner);
       expect(positionOf(runner, DEMO_PLAYER)).toBe(DEMO_KILN);
       expect(lastAction(runner, "p-away")?.status).toBe("queued");
 
       // The kiln is not next to the orchard, so the queued move has no premise left.
       expect(runner.world.locationExits(DEMO_KILN)).toEqual([DEMO_SQUARE]);
-      run(runner);
+      await runPublishedTick(runner);
       expect(lastAction(runner, "p-away")?.status).toBe("queued");
       expect(lastAction(runner, "p-away")?.worldRequest).toBeNull();
       expect(positionOf(runner, DEMO_PLAYER)).toBe(DEMO_KILN);
@@ -193,8 +189,10 @@ describe("BodyService", () => {
     const sim = await createSimulationWith({ "actions/wave.yaml": UNINTERRUPTIBLE_WAVE });
     try {
       const runner = sim.runner;
-      run(runner, [testPlan("p-wave", DEMO_PLAYER, "parallel", [{ action: WAVE }])]);
-      run(runner, [testPlan("p-grasp", DEMO_PLAYER, "replace", [{ action: GRASP, target: DEMO_ROPE }])]);
+      await runPublishedTick(runner, [testPlan("p-wave", DEMO_PLAYER, "parallel", [{ action: WAVE }])]);
+      await runPublishedTick(runner, [
+        testPlan("p-grasp", DEMO_PLAYER, "replace", [{ action: GRASP, target: DEMO_ROPE }]),
+      ]);
 
       const wave = lastAction(runner, "p-wave");
       expect(wave?.status).toBe("running");
@@ -203,7 +201,7 @@ describe("BodyService", () => {
       expect(lastAction(runner, "p-grasp")).toBeUndefined();
       expect(worldOf(runner).entities[DEMO_ROPE]?.heldBy).toBeNull();
 
-      run(runner);
+      await runPublishedTick(runner);
       expect(lastAction(runner, "p-wave")?.status).toBe("completed");
     } finally {
       removeDirectory(sim.directory);
@@ -213,9 +211,9 @@ describe("BodyService", () => {
   it("completes an action the world accepted", async () => {
     const sim = await createSimulation();
     const runner = sim.runner;
-    run(runner, [testPlan("p-use", DEMO_PLAYER, "parallel", [{ action: USE, target: DEMO_LAMP }])]);
-    run(runner);
-    run(runner);
+    await runPublishedTick(runner, [testPlan("p-use", DEMO_PLAYER, "parallel", [{ action: USE, target: DEMO_LAMP }])]);
+    await runPublishedTick(runner);
+    await runPublishedTick(runner);
 
     expect(lastAction(runner, "p-use")?.status).toBe("completed");
     expect(lastAction(runner, "p-use")?.outcome?.status).toBe("completed");
@@ -225,10 +223,12 @@ describe("BodyService", () => {
   it("fails an action the world refused", async () => {
     const sim = await createSimulation();
     const runner = sim.runner;
-    run(runner, [testPlan("p-take-bench", DEMO_PLAYER, "parallel", [{ action: GRASP, target: DEMO_BENCH }])]);
-    run(runner);
-    run(runner);
-    run(runner);
+    await runPublishedTick(runner, [
+      testPlan("p-take-bench", DEMO_PLAYER, "parallel", [{ action: GRASP, target: DEMO_BENCH }]),
+    ]);
+    await runPublishedTick(runner);
+    await runPublishedTick(runner);
+    await runPublishedTick(runner);
 
     expect(lastAction(runner, "p-take-bench")?.status).toBe("failed");
     expect(lastAction(runner, "p-take-bench")?.outcome?.status).toBe("failed");
@@ -307,7 +307,7 @@ describe("BodyService", () => {
   it("keeps a change that was already committed when a later step of the action fails", async () => {
     const sim = await createSimulation();
     const runner = sim.runner;
-    run(runner, [
+    await runPublishedTick(runner, [
       testPlan("p-take-then-place", DEMO_PLAYER, "parallel", [
         { action: GRASP, target: DEMO_ROPE },
         { action: LAY_DOWN, target: DEMO_ROPE, destination: DEMO_LAMP },
@@ -315,7 +315,7 @@ describe("BodyService", () => {
     ]);
 
     // Ticks 2 to 8: the take commits, then the place is refused by the lamp.
-    for (let tick = 0; tick < 7; tick += 1) run(runner);
+    for (let tick = 0; tick < 7; tick += 1) await runPublishedTick(runner);
 
     const action = lastAction(runner, "p-take-then-place");
     expect(action?.action).toBe(LAY_DOWN);

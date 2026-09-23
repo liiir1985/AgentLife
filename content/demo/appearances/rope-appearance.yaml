@@ -1,0 +1,14 @@
+id: rope-appearance
+type: agentlife.perception/appearance
+public: true
+fields:
+  name: 麻绳的外在表现
+  description: 物件同样按分辨率给出不同细节。
+  subject: agentlife.demo/rope
+  projections:
+    - level: agentlife.demo/level-outline
+      detail: 地上的一团东西
+    - level: agentlife.demo/level-shape
+      detail: 地上一条细长的东西
+    - level: agentlife.demo/level-detail
+      detail: 一圈盘好的麻绳

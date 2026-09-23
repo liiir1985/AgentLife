@@ -6,6 +6,9 @@ import {
   FIXTURE_WORLD,
   messages,
   removeDirectory,
+  demoManifest,
+  demoSystemPins,
+  withSystemVersion,
   withTempDirectory,
   writePack,
 } from "./helpers/demo-pack.js";
@@ -13,36 +16,6 @@ import type { SystemSpec } from "../src/config/system-spec.js";
 import { loadPack } from "./helpers/demo-pack.js";
 import { Type } from "typebox";
 import { defineValueContainer } from "../src/config/value-shapes.js";
-
-const DEMO_MANIFEST = `pack: agentlife.demo
-version: "1.2.0"
-kernel: ">=1.0.0 <2.0.0"
-dependencies: []
-systems:
-  - agentlife.world@1.1.0
-  - agentlife.body@1.1.0
-  - agentlife.character@1.1.0
-  - agentlife.interaction@1.1.0
-sections:
-  world: agentlife.world/world
-  locations: agentlife.world/location
-  items: agentlife.world/item
-  environment: agentlife.world/fact
-  attributes: agentlife.world/attribute
-  influences: agentlife.world/influence-kind
-  localViews: agentlife.world/local-view
-  placements: agentlife.world/placement
-  values: agentlife.body/value
-  channels: agentlife.body/channel
-  abilities: agentlife.body/ability
-  resources: agentlife.body/resource
-  modes: agentlife.body/mode
-  bodies: agentlife.body/body
-  actions: agentlife.body/action
-  characters: agentlife.character/character
-  behaviourTrees: agentlife.character/behaviour-tree
-  commands: agentlife.interaction/action-command
-`;
 
 interface RefusalCase {
   readonly name: string;
@@ -495,7 +468,7 @@ changes: []
   {
     name: "a kernel version the pack cannot run against",
     overrides: {
-      "manifest.yaml": DEMO_MANIFEST.replace('kernel: ">=1.0.0 <2.0.0"', 'kernel: ">=3.0.0"'),
+      "manifest.yaml": demoManifest({ kernel: ">=3.0.0" }),
     },
     code: "incompatible-system",
     message: "requires kernel",
@@ -503,7 +476,9 @@ changes: []
   {
     name: "an system version the pack pins differently",
     overrides: {
-      "manifest.yaml": DEMO_MANIFEST.replace("agentlife.body@1.1.0", "agentlife.body@2.0.0"),
+      "manifest.yaml": demoManifest({
+        systems: withSystemVersion(demoSystemPins(), "agentlife.body", "2.0.0"),
+      }),
     },
     code: "incompatible-system",
     message: "agentlife.body",

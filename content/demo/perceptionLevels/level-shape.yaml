@@ -1,0 +1,8 @@
+id: level-shape
+type: agentlife.perception/resolution-level
+public: true
+fields:
+  name: 身形
+  description: 能看出大致是什么类别的东西，认不出是哪一个。
+  rank: 2
+  recognisable: false

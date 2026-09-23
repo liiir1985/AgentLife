@@ -1,0 +1,16 @@
+id: traveler-appearance
+type: agentlife.perception/appearance
+public: true
+fields:
+  name: 旅人的外在表现
+  description: 只描述外在；不读取角色配置中的姓名、身世或控制来源。
+  subject: agentlife.demo/player
+  recognisable: agentlife.demo/level-detail
+  projections:
+    - level: agentlife.demo/level-outline
+      detail: 一个人影
+    - level: agentlife.demo/level-shape
+      detail: 一个背着重物的人影
+    - level: agentlife.demo/level-detail
+      detail: 一个穿旧外套的人
+      identity: 那个旅人

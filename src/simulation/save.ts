@@ -53,6 +53,8 @@ const EVENT_SCHEMA = Type.Object(
     stateRef: NULLABLE_STRING,
     from: Type.Union([SCALAR, Type.Null()]),
     to: Type.Union([SCALAR, Type.Null()]),
+    /** What was actually said; `null` for every kind but an utterance. */
+    text: NULLABLE_STRING,
   },
   { additionalProperties: false },
 );
@@ -116,7 +118,12 @@ const PLAN_SCHEMA = Type.Object(
   {
     planId: Type.String(),
     entityId: Type.String(),
-    source: Type.Union([Type.Literal("diagnostic"), Type.Literal("behaviour-tree"), Type.Literal("cognition")]),
+    source: Type.Union([
+      Type.Literal("diagnostic"),
+      Type.Literal("player-command"),
+      Type.Literal("behaviour-tree"),
+      Type.Literal("cognition"),
+    ]),
     formedVersion: Type.String(),
     conflict: Type.Union([Type.Literal("parallel"), Type.Literal("queue"), Type.Literal("replace")]),
     steps: Type.Array(STEP_SCHEMA),
@@ -186,6 +193,265 @@ const SETTINGS_SCHEMA = Type.Object(
   { additionalProperties: false },
 );
 
+/** Role one observed object plays in the observer's current view. */
+const OBSERVATION_ROLE_SCHEMA = Type.Union([
+  Type.Literal("place"),
+  Type.Literal("exit"),
+  Type.Literal("character"),
+  Type.Literal("item"),
+]);
+
+/** The fields one observer-local subject description carries, the observed record included. */
+const SUBJECT_FIELDS = {
+  anchor: Type.String(),
+  reference: Type.String(),
+  role: OBSERVATION_ROLE_SCHEMA,
+  held: Type.Boolean(),
+  level: Type.String(),
+  recognisable: Type.Boolean(),
+  description: Type.String(),
+  identity: NULLABLE_STRING,
+};
+
+/** One subject's structured description in one observer's own terms. */
+const OBSERVATION_SUBJECT_SCHEMA = Type.Object({ ...SUBJECT_FIELDS }, { additionalProperties: false });
+
+/** One subject's continuity record: the subject plus its last observation ticks. */
+const OBSERVED_SUBJECT_SCHEMA = Type.Object(
+  {
+    ...SUBJECT_FIELDS,
+    lastTick: Type.Number(),
+    lastEmittedTick: Type.Number(),
+  },
+  { additionalProperties: false },
+);
+
+/** One structured observation: the authoritative record of what was perceived. */
+const OBSERVATION_SCHEMA = Type.Object(
+  {
+    observationId: Type.String(),
+    tick: Type.Number(),
+    channel: Type.String(),
+    kind: Type.Union([
+      Type.Literal("appearance"),
+      Type.Literal("continuing"),
+      Type.Literal("change"),
+      Type.Literal("disappearance"),
+      Type.Literal("reappearance"),
+      Type.Literal("event"),
+      Type.Literal("outcome"),
+    ]),
+    subject: Type.Union([Type.Null(), OBSERVATION_SUBJECT_SCHEMA]),
+    eventId: NULLABLE_STRING,
+    text: Type.String(),
+    salience: Type.Number(),
+  },
+  { additionalProperties: false },
+);
+
+/** One observer's perception instance. */
+const OBSERVER_PERCEPTION_SCHEMA = Type.Object(
+  {
+    subjects: Type.Record(Type.String(), OBSERVED_SUBJECT_SCHEMA),
+    pending: Type.Array(OBSERVATION_SCHEMA),
+    references: Type.Record(Type.String(), Type.String()),
+    referencesUsed: Type.Number(),
+    suppressedUntil: Type.Record(Type.String(), Type.Number()),
+    processedEvents: Type.Array(Type.String()),
+    materialVersion: Type.String(),
+    attentionVersion: Type.String(),
+  },
+  { additionalProperties: false },
+);
+
+const PERCEPTION_SCHEMA = Type.Object(
+  { version: Type.String(), observers: Type.Record(Type.String(), OBSERVER_PERCEPTION_SCHEMA) },
+  { additionalProperties: false },
+);
+
+/** One item admitted into an entity's Working Memory. */
+const WORKING_MEMORY_ENTRY_SCHEMA = Type.Object(
+  {
+    entryId: Type.String(),
+    kind: Type.Union([Type.Literal("observation"), Type.Literal("intention")]),
+    sourceId: Type.String(),
+    admittedTick: Type.Number(),
+    salience: Type.Number(),
+    text: Type.String(),
+    anchor: NULLABLE_STRING,
+    reference: NULLABLE_STRING,
+    role: Type.Union([Type.Null(), OBSERVATION_ROLE_SCHEMA]),
+  },
+  { additionalProperties: false },
+);
+
+const WORKING_MEMORY_RECORD_SCHEMA = Type.Object(
+  {
+    entries: Type.Array(WORKING_MEMORY_ENTRY_SCHEMA),
+    sequence: Type.Number(),
+    consumed: Type.Array(Type.String()),
+  },
+  { additionalProperties: false },
+);
+
+const MEMORY_SCHEMA = Type.Object(
+  { version: Type.String(), records: Type.Record(Type.String(), WORKING_MEMORY_RECORD_SCHEMA) },
+  { additionalProperties: false },
+);
+
+const INTENTION_STATUS_SCHEMA = Type.Union([
+  Type.Literal("active"),
+  Type.Literal("paused"),
+  Type.Literal("satisfied"),
+  Type.Literal("abandoned"),
+]);
+
+/** One prospective state the cognition of an entity holds. */
+const INTENTION_RECORD_SCHEMA = Type.Object(
+  {
+    intentionId: Type.String(),
+    content: Type.String(),
+    source: Type.Union([Type.Literal("cognition"), Type.Literal("user")]),
+    status: INTENTION_STATUS_SCHEMA,
+    createdTick: Type.Number(),
+    reviewedTick: Type.Number(),
+    useCount: Type.Number(),
+  },
+  { additionalProperties: false },
+);
+
+/** What an entity with nothing to do right now committed itself to wait for. */
+const IDLE_COMMITMENT_SCHEMA = Type.Object(
+  {
+    kind: Type.Union([
+      Type.Literal("external-event"),
+      Type.Literal("review-condition"),
+      Type.Literal("ongoing-activity"),
+    ]),
+    detail: Type.String(),
+    event: NULLABLE_STRING,
+    reviewTick: Type.Number(),
+    untilTick: Type.Number(),
+  },
+  { additionalProperties: false },
+);
+
+const COGNITION_RECORD_SCHEMA = Type.Object(
+  {
+    characterId: Type.String(),
+    attention: Type.Array(Type.String()),
+    understanding: Type.String(),
+    questions: Type.Array(Type.String()),
+    persistence: Type.String(),
+    intentions: Type.Array(INTENTION_RECORD_SCHEMA),
+    intentionSequence: Type.Number(),
+    idle: Type.Union([Type.Null(), IDLE_COMMITMENT_SCHEMA]),
+    lastDecisionTick: Type.Number(),
+    decisions: Type.Number(),
+    pendingRequestId: NULLABLE_STRING,
+    attempts: Type.Number(),
+  },
+  { additionalProperties: false },
+);
+
+const COGNITION_SCHEMA = Type.Object(
+  { version: Type.String(), records: Type.Record(Type.String(), COGNITION_RECORD_SCHEMA) },
+  { additionalProperties: false },
+);
+
+/** Why one entity has to think before the tick may go on. */
+const COGNITION_DEMAND_SCHEMA = Type.Object(
+  {
+    demandId: Type.String(),
+    characterId: Type.String(),
+    reason: Type.Union([
+      Type.Literal("initial"),
+      Type.Literal("observation"),
+      Type.Literal("outcome"),
+      Type.Literal("idle-review"),
+      Type.Literal("idle-expiry"),
+      Type.Literal("player-command"),
+    ]),
+    detail: Type.String(),
+    observations: Type.Array(Type.String()),
+  },
+  { additionalProperties: false },
+);
+
+const COGNITION_PARTICIPANT_SCHEMA = Type.Object(
+  {
+    characterId: Type.String(),
+    control: Type.Union([Type.Literal("cognition"), Type.Literal("user")]),
+    state: Type.Union([
+      Type.Literal("waiting"),
+      Type.Literal("requested"),
+      Type.Literal("decided"),
+      Type.Literal("skipped"),
+      Type.Literal("failed"),
+    ]),
+    requestId: NULLABLE_STRING,
+    attempts: Type.Number(),
+    detail: Type.String(),
+  },
+  { additionalProperties: false },
+);
+
+/** One intention the model wants created, restated, paused, satisfied or dropped. */
+const INTENTION_CHANGE_SCHEMA = Type.Object(
+  {
+    intentionId: NULLABLE_STRING,
+    content: Type.String(),
+    status: INTENTION_STATUS_SCHEMA,
+  },
+  { additionalProperties: false },
+);
+
+/** One body step as the model expressed it; its references stay observer-local. */
+const COGNITIVE_STEP_SCHEMA = Type.Object(
+  {
+    action: Type.String(),
+    target: Type.Optional(Type.String()),
+    destination: Type.Optional(Type.String()),
+    inputs: Type.Optional(Type.Record(Type.String(), Type.String())),
+  },
+  { additionalProperties: false },
+);
+
+/** What one participant decided; the service validates every field before committing. */
+const COGNITIVE_DECISION_SCHEMA = Type.Object(
+  {
+    characterId: Type.String(),
+    requestId: Type.String(),
+    attention: Type.Array(Type.String()),
+    understanding: Type.String(),
+    questions: Type.Array(Type.String()),
+    persistence: Type.String(),
+    intentionChanges: Type.Array(INTENTION_CHANGE_SCHEMA),
+    speech: NULLABLE_STRING,
+    steps: Type.Array(COGNITIVE_STEP_SCHEMA),
+    idle: Type.Union([Type.Null(), IDLE_COMMITMENT_SCHEMA]),
+    consumedObservations: Type.Array(Type.String()),
+    consideredIntentions: Type.Array(Type.String()),
+  },
+  { additionalProperties: false },
+);
+
+/** The cognition round of the tick in progress, while the barrier holds it. */
+const COGNITION_ROUND_SCHEMA = Type.Object(
+  {
+    roundId: Type.String(),
+    tick: Type.Number(),
+    stateVersion: Type.String(),
+    participants: Type.Array(COGNITION_PARTICIPANT_SCHEMA),
+    demands: Type.Array(COGNITION_DEMAND_SCHEMA),
+    decisions: Type.Record(Type.String(), COGNITIVE_DECISION_SCHEMA),
+    plans: Type.Array(PLAN_SCHEMA),
+    status: Type.Union([Type.Literal("open"), Type.Literal("resolved"), Type.Literal("failed")]),
+    failure: NULLABLE_STRING,
+  },
+  { additionalProperties: false },
+);
+
 /** The complete authoritative state one save carries. */
 export const saveStateSchema: TSchema = Type.Object(
   {
@@ -205,6 +471,10 @@ export const saveStateSchema: TSchema = Type.Object(
       { version: Type.String(), bodies: Type.Record(Type.String(), BODY_SCHEMA) },
       { additionalProperties: false },
     ),
+    perception: PERCEPTION_SCHEMA,
+    memory: MEMORY_SCHEMA,
+    cognition: COGNITION_SCHEMA,
+    round: Type.Union([Type.Null(), COGNITION_ROUND_SCHEMA]),
     behaviours: Type.Record(Type.String(), BEHAVIOUR_SCHEMA),
     activity: ACTIVITY_SCHEMA,
     actions: Type.Array(ACTION_SCHEMA),

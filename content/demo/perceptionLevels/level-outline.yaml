@@ -1,0 +1,8 @@
+id: level-outline
+type: agentlife.perception/resolution-level
+public: true
+fields:
+  name: 轮廓
+  description: 只能分辨那里有一个东西，看不出是什么。
+  rank: 1
+  recognisable: false

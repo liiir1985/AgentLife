@@ -1,7 +1,8 @@
-import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { parse, stringify } from "yaml";
 import { ContentPackLoader } from "../../src/content/content-pack-loader.js";
 import { CoreRuntime, packInput, type PublishResult } from "../../src/config/core-runtime.js";
 import { createSystemSpecs } from "../../src/systems/index.js";
@@ -16,6 +17,38 @@ import type { SystemSpec } from "../../src/config/system-spec.js";
  */
 
 export const DEMO_PACK = fileURLToPath(new URL("../../content/demo", import.meta.url));
+
+/** System pins the shipped demo manifest declares, in manifest order. */
+export function demoSystemPins(): readonly string[] {
+  const manifest = parse(readFileSync(path.join(DEMO_PACK, "manifest.yaml"), "utf8")) as {
+    readonly systems: readonly string[];
+  };
+  return [...manifest.systems];
+}
+
+/** Shipped system pins with one system's version replaced. */
+export function withSystemVersion(pins: readonly string[], systemId: string, version: string): readonly string[] {
+  return pins.map((pin) => (pin === systemId || pin.startsWith(`${systemId}@`) ? `${systemId}@${version}` : pin));
+}
+
+/**
+ * The shipped demo manifest with selected parts replaced. Fixtures derive from
+ * the real manifest, so adding a section to the pack never leaves a test
+ * override silently describing an older pack.
+ */
+export function demoManifest(
+  changes: {
+    readonly systems?: readonly string[];
+    readonly version?: string;
+    readonly kernel?: string;
+  } = {},
+): string {
+  const document = parse(readFileSync(path.join(DEMO_PACK, "manifest.yaml"), "utf8")) as Record<string, unknown>;
+  if (changes.systems !== undefined) document.systems = [...changes.systems];
+  if (changes.version !== undefined) document.version = changes.version;
+  if (changes.kernel !== undefined) document.kernel = changes.kernel;
+  return stringify(document);
+}
 
 /** Fully qualified refs of the demo vocabulary, so tests never spell them twice. */
 export const REFS = {

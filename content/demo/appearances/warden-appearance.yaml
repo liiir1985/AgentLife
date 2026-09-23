@@ -1,0 +1,16 @@
+id: warden-appearance
+type: agentlife.perception/appearance
+public: true
+fields:
+  name: 护卫的外在表现
+  description: 只看得到站位和装备，看不到他记得谁。
+  subject: agentlife.demo/gate-warden
+  recognisable: agentlife.demo/level-detail
+  projections:
+    - level: agentlife.demo/level-outline
+      detail: 一个立在路口的人影
+    - level: agentlife.demo/level-shape
+      detail: 一个一动不动的人影
+    - level: agentlife.demo/level-detail
+      detail: 一个拄着长杆、盯着路口的男人
+      identity: 门口的护卫

@@ -1,12 +1,14 @@
 pack: agentlife.demo
-version: "1.2.0"
+version: "1.3.0"
 kernel: ">=1.0.0 <2.0.0"
 dependencies: []
 systems:
   - agentlife.world@1.1.0
-  - agentlife.body@1.1.0
-  - agentlife.character@1.1.0
+  - agentlife.body@1.2.0
+  - agentlife.character@1.2.0
   - agentlife.interaction@1.1.0
+  - agentlife.perception@1.0.0
+  - agentlife.cognition@1.0.0
 sections:
   world: agentlife.world/world
   locations: agentlife.world/location
@@ -26,3 +28,10 @@ sections:
   characters: agentlife.character/character
   behaviourTrees: agentlife.character/behaviour-tree
   commands: agentlife.interaction/action-command
+  perceptionLevels: agentlife.perception/resolution-level
+  appearances: agentlife.perception/appearance
+  perceptionEvents: agentlife.perception/event-appearance
+  perceptionChannels: agentlife.perception/channel
+  perceptionSettings: agentlife.perception/settings
+  cognitionSettings: agentlife.cognition/settings
+  cognitionPrompts: agentlife.cognition/prompt

@@ -1,0 +1,16 @@
+id: companion-appearance
+type: agentlife.perception/appearance
+public: true
+fields:
+  name: 阿禾的外在表现
+  description: 陌生人只能看到她的样子，看不到她的名字。
+  subject: agentlife.demo/companion
+  recognisable: agentlife.demo/level-detail
+  projections:
+    - level: agentlife.demo/level-outline
+      detail: 一个人影
+    - level: agentlife.demo/level-shape
+      detail: 一个蹲在树边的人影
+    - level: agentlife.demo/level-detail
+      detail: 一个挽着袖子、手上带着修剪痕迹的人
+      identity: 阿禾

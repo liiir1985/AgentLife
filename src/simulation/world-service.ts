@@ -5,15 +5,20 @@ import type { SimpleValue } from "../config/value-expr.js";
 import {
   WORLD_ATTRIBUTES,
   WORLD_FACTS,
+  appearanceFor,
   declaredAttributes,
   checkValue,
   initialValues,
+  itemDescription,
+  itemLabel,
+  itemOf,
   itemPlacements,
   itemsOf,
   membersOf,
   processSpec,
   type ItemTypeRef,
 } from "./config-view.js";
+import type { SubjectMaterial, WorldPerceptionMaterial } from "./perception-service.js";
 import { NO_INFLUENCE, entitySlice, sharedSlice, type InfluenceView, type ProjectionSources } from "./projection.js";
 import type {
   EntityKind,
@@ -166,6 +171,114 @@ export class WorldService {
     const entity = state.entities[entityId];
     if (entity === undefined) return null;
     return entity.locatedAt ?? entity.heldBy ?? entity.placedOn;
+  }
+
+  /**
+   * Records what an entity actually said once every stage of its utterance action
+   * finished. The event becomes objective world history, and only a character that
+   * can hear this place receives it; an empty or unfinished utterance is never
+   * recorded, so nothing a body refused can be heard.
+   */
+  recordUtterance(
+    state: WorldState,
+    utterance: { readonly actor: string; readonly text: string },
+    context: TickContext,
+  ): WorldState {
+    if (utterance.text.trim() === "") return state;
+    const spoken = state.events.filter((event) => event.tick === context.tick && event.kind === "utterance").length;
+    const event: WorldEvent = Object.freeze({
+      eventId: `${context.timelineId}/${context.tick}/utterance-${spoken + 1}`,
+      tick: context.tick,
+      kind: "utterance",
+      actor: utterance.actor,
+      subject: utterance.actor,
+      stateRef: null,
+      from: null,
+      to: null,
+      text: utterance.text,
+    });
+    // An utterance changes no objective state, so it does not move the version every
+    // other request in this tick was formed against; it only joins the event history.
+    return Object.freeze({ ...state, events: capEvents([...state.events, event], this.settings.maxEvents) });
+  }
+
+  /**
+   * The purpose-limited material one observer may perceive at one tick.
+   *
+   * It carries only the observer's own place, the exits of that place, the objects
+   * standing there, the environment values, what changed in them and the events of
+   * that tick. No entity is dereferenced: an item, a character or a place arrives
+   * with the appearance content declares for it, and a character never carries its
+   * name, its background or its control source.
+   */
+  perceptionMaterial(
+    state: WorldState,
+    observer: string,
+    tick: number,
+    previousEnvironment: Readonly<Record<string, SimpleValue>>,
+  ): WorldPerceptionMaterial {
+    const observerEntity = state.entities[observer];
+    const place = observerEntity?.locatedAt ?? null;
+    const subject = (
+      entityId: string,
+      role: "character" | "item" | "exit" | "place",
+      held: boolean,
+    ): SubjectMaterial => {
+      const entity = state.entities[entityId];
+      return Object.freeze({
+        anchor: entityId,
+        role,
+        held,
+        place: entity === undefined ? null : this.position(state, entityId),
+        appearance: appearanceFor(this.config, entityId),
+        label: itemLabel(this.config, entityId),
+        description: itemDescription(this.config, entityId),
+      });
+    };
+    const subjects: SubjectMaterial[] = [];
+    for (const entityId of Object.keys(state.entities).sort()) {
+      if (entityId === observer) continue;
+      const entity = state.entities[entityId];
+      if (entity === undefined || entity.kind === "location") continue;
+      if (entity.heldBy === observer) subjects.push(subject(entityId, entity.kind, true));
+      else if (entity.heldBy === null && entity.placedOn === null && place !== null && entity.locatedAt === place)
+        subjects.push(subject(entityId, entity.kind, false));
+    }
+    const declaredExits = place === null ? [] : itemOf(this.config, place)?.values["exits"];
+    const exits = [...new Set(Array.isArray(declaredExits) ? declaredExits : [])]
+      .filter((exit): exit is string => typeof exit === "string" && state.entities[exit] !== undefined)
+      .sort()
+      .map((exit) => subject(exit, "exit", false));
+    const changedFacts = Object.keys(state.environment)
+      .filter((member) => state.environment[member] !== previousEnvironment[member])
+      .sort();
+    return Object.freeze({
+      place:
+        place === null
+          ? null
+          : Object.freeze({
+              anchor: place,
+              label: itemLabel(this.config, place),
+              description: itemDescription(this.config, place),
+            }),
+      exits: Object.freeze(exits),
+      subjects: Object.freeze(subjects),
+      environment: state.environment,
+      changedFacts: Object.freeze(changedFacts),
+      events: Object.freeze(
+        state.events
+          .filter((event) => event.tick === tick)
+          .map((event) =>
+            Object.freeze({
+              eventId: event.eventId,
+              kind: event.kind as string,
+              actor: event.actor,
+              place: event.actor === null ? null : this.position(state, event.actor),
+              text: event.text,
+            }),
+          ),
+      ),
+    });
   }
 
   /**
@@ -469,6 +582,7 @@ export class WorldService {
         stateRef: change.stateRef,
         from: this.readState(state, change),
         to: change.newValue,
+        text: null,
       });
     if (processes !== state.processes)
       events.push(...this.processEvents(state, processes, processChanges, context, origin));
@@ -504,6 +618,7 @@ export class WorldService {
           stateRef: null,
           from: null,
           to: process.processRef,
+          text: null,
         });
     for (const process of previous.processes)
       if (!after.has(process.processRef))
@@ -516,6 +631,7 @@ export class WorldService {
           stateRef: null,
           from: process.processRef,
           to: null,
+          text: null,
         });
     void requests;
     return events;

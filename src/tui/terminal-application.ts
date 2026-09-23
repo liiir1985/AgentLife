@@ -17,12 +17,33 @@ import {
   type TuiInputListenerResult,
 } from "@earendil-works/pi-tui";
 import type { ActionParameterSession, SimulationController } from "../interaction/simulation-controller.js";
-import type { PlayerView } from "../interaction/context-actions.js";
+import type { PerceivedSubject } from "../interaction/context-actions.js";
+import type { CognitionRound } from "../simulation/types.js";
 import { ContextActionBar } from "./context-action-bar.js";
 
 const WIDE_WIDTH = 120;
+const LOG_LIMIT = 500;
+const NOTIFICATION_MS = 2_000;
+const SHORTCUTS = "←/→ 选择  Enter 确认  Space 运行/暂停  / 管理  F2 监视";
+/** A barrier holds the tick: the player may still decide, but the clock must not be restarted. */
+const BARRIER_HOLD = "认知屏障未解除，世界冻结在等待决定，之后才能继续运行";
+
 type FocusMode = "action-bar" | "entity-parameter" | "text-parameter" | "management-input" | "monitor";
 type NarrowTab = "location" | "entities" | "log";
+
+/**
+ * How the ordinary view names a perceived object: what it recognised, or the
+ * appearance it was shown with, marked so a recognised person is distinguishable
+ * from an unrecognised figure.
+ */
+function subjectLabel(subject: PerceivedSubject): string {
+  return subject.recognisable ? subject.name : `${subject.name}（未识别）`;
+}
+
+/** One readable list for the management panel; private content never reaches this helper. */
+function listOf(values: readonly string[]): string {
+  return values.length === 0 ? "无" : values.join("、");
+}
 
 class ProjectedText implements Component {
   private readonly text = new Text(undefined, 0, 0);
@@ -39,13 +60,12 @@ class ProjectedText implements Component {
 class FooterStatusLine implements Component {
   constructor(private readonly status: () => string) {}
   render(width: number): string[] {
-    const shortcuts = "←/→ 选择  Enter 确认  Space 运行/暂停  / 管理  F2 监视";
     const status = this.status();
-    if (status.length === 0) return [truncateToWidth(shortcuts, width)];
+    if (status.length === 0) return [truncateToWidth(SHORTCUTS, width)];
     const visibleStatus = truncateToWidth(status, width);
     const statusWidth = visibleWidth(visibleStatus);
     if (statusWidth >= width) return [visibleStatus];
-    const visibleShortcuts = truncateToWidth(shortcuts, width - statusWidth - 1);
+    const visibleShortcuts = truncateToWidth(SHORTCUTS, width - statusWidth - 1);
     const padding = width - visibleWidth(visibleShortcuts) - statusWidth;
     return [`${visibleShortcuts}${" ".repeat(padding)}${visibleStatus}`];
   }
@@ -69,7 +89,8 @@ export class TerminalApplication {
   readonly tui: TuiAltScreen;
   readonly actionBar: ContextActionBar;
   private readonly log: string[] = [];
-  private readonly shownEventIds = new Set<string>();
+  /** Observation identities already written to the log; the pending list repeats them every tick. */
+  private readonly shownObservations = new Set<string>();
   private notification = "";
   private notificationTimer: ReturnType<typeof setTimeout> | undefined;
   private resumeAfterParameter = false;
@@ -94,12 +115,13 @@ export class TerminalApplication {
     locationPane.addChild(new ProjectedText(() => this.locationText()));
     const entityPane = new Box(1, 0);
     entityPane.addChild(new ProjectedText(() => this.entityText()));
-    const logView = new ScrollView(new ProjectedText(() => this.log.join("\n")), {
+    const logProjection = (): string => (this.log.length === 0 ? "（还没有观察到任何事情）" : this.log.join("\n"));
+    const logView = new ScrollView(new ProjectedText(logProjection), {
       follow: "end",
       primary: true,
       scrollbar: "auto",
     });
-    const narrowLog = new ScrollView(new ProjectedText(() => this.log.join("\n")), {
+    const narrowLog = new ScrollView(new ProjectedText(logProjection), {
       follow: "end",
       scrollbar: "auto",
     });
@@ -149,11 +171,11 @@ export class TerminalApplication {
 
   start(): void {
     this.unsubscribeInput = this.tui.addInputListener((data) => this.handleGlobal(data));
-    for (const event of this.controller.observedEvents()) this.shownEventIds.add(event.eventId);
     this.unsubscribeController = this.controller.subscribe(() => {
-      this.appendObservedEvents();
+      this.appendPerceivedObservations();
       this.tui.requestRender(true);
     });
+    this.appendPerceivedObservations();
     this.tui.start();
     this.tui.setFocus(this.actionBar);
     this.notify("左右选择动作，空格运行/暂停，/ 打开管理命令");
@@ -169,12 +191,6 @@ export class TerminalApplication {
     this.controller.close();
   }
 
-  appendLog(message: string): void {
-    this.log.push(message);
-    if (this.log.length > 500) this.log.splice(0, this.log.length - 500);
-    this.tui.renderNow(true);
-  }
-
   private notify(message: string): void {
     this.notification = message;
     if (this.notificationTimer !== undefined) clearTimeout(this.notificationTimer);
@@ -182,41 +198,82 @@ export class TerminalApplication {
       this.notification = "";
       this.notificationTimer = undefined;
       this.tui.renderNow(true);
-    }, 2_000);
+    }, NOTIFICATION_MS);
     this.tui.renderNow(true);
   }
 
-  private appendObservedEvents(): void {
-    for (const event of this.controller.observedEvents()) {
-      if (this.shownEventIds.has(event.eventId)) continue;
-      this.shownEventIds.add(event.eventId);
-      this.appendLog(event.text);
+  /** The only thing the ordinary log ever holds: what this player's own perception reported. */
+  private appendPerceivedObservations(): void {
+    for (const observation of this.controller.perceptionLog()) {
+      if (this.shownObservations.has(observation.observationId)) continue;
+      this.shownObservations.add(observation.observationId);
+      this.log.push(observation.text);
     }
+    if (this.log.length > LOG_LIMIT) this.log.splice(0, this.log.length - LOG_LIMIT);
   }
 
-  private view(): PlayerView {
-    return this.controller.view();
+  /**
+   * What the simulation is waiting for, in the player's own terms.
+   *
+   * The header never names a character, a control source or a request: it says which
+   * side of the barrier the world is held on, so the player knows whether the wait is
+   * theirs.
+   */
+  private waitState(): string {
+    const status = this.controller.status();
+    if (status.mode === "cognition") return this.barrierState();
+    if (status.mode === "failed") return "认知失败";
+    if (status.mode === "barrier") return "规则屏障";
+    if (status.mode === "running") return "连续运行中";
+    return "等待玩家选择";
+  }
+
+  private barrierState(): string {
+    const round = this.controller.runner.state().round;
+    if (round === null) return "等待 AI";
+    if (round.status === "failed") return "认知失败";
+    const unsettled = round.participants.filter(
+      (participant) => participant.state === "waiting" || participant.state === "requested",
+    );
+    if (unsettled.length === 0) return "计划统一交接中";
+    const deciding = unsettled.filter((participant) => participant.control === "cognition");
+    if (deciding.some((participant) => participant.attempts > 1)) return "AI 决定验证中";
+    return deciding.length > 0 ? "等待 AI" : "等待玩家选择";
   }
 
   private headerText(): string {
-    const view = this.view();
+    const view = this.controller.view();
     const status = this.controller.status();
-    return `AgentLife │ ${view.simSeconds}s · Tick ${view.tick} · ${status.mode} · ${view.configId.slice(0, 12)}${view.barrier === null ? "" : " · 屏障"}`;
+    const save = status.pendingSave === null ? "" : ` · 保存待处理 ${status.pendingSave}`;
+    return `AgentLife │ ${view.simSeconds}s · Tick ${view.tick} · ${status.mode} · ${view.configId.slice(0, 12)} · ${this.waitState()}${save}`;
   }
 
   private locationText(): string {
-    const view = this.view();
-    return [
-      `地点：${view.locationName}`,
-      view.locationDescription,
-      `出口：${view.exits.map((entry) => entry.name).join("、") || "无"}`,
-    ].join("\n");
+    const view = this.controller.view();
+    const place = view.place;
+    const lines = [
+      place === null ? "地点：未知（按空格推进一次，角色才有第一个观察）" : `地点：${subjectLabel(place)}`,
+    ];
+    if (place !== null && place.detail !== place.name) lines.push(place.detail);
+    lines.push(`出口：${view.exits.map(subjectLabel).join("、") || "无"}`);
+    for (const action of view.playerActions)
+      lines.push(
+        `自身动作：${action.action}（${action.status}）${action.outcome === null ? "" : ` — ${action.outcome}`}`,
+      );
+    return lines.join("\n");
   }
 
   private entityText(): string {
-    const view = this.view();
-    const nearby = view.entities.map((entry) => `· ${entry.name}`).join("\n") || "（无）";
-    const held = view.heldItems.map((entry) => entry.name).join("、") || "无";
+    const view = this.controller.view();
+    const nearby =
+      view.entities
+        .map((subject) =>
+          subject.detail === subject.name
+            ? `· ${subjectLabel(subject)}`
+            : `· ${subjectLabel(subject)} — ${subject.detail}`,
+        )
+        .join("\n") || "（无）";
+    const held = view.heldItems.map((subject) => subject.name).join("、") || "无";
     return `人物与物品\n${nearby}\n持有：${held}`;
   }
 
@@ -242,7 +299,9 @@ export class TerminalApplication {
     ) {
       const delta = matchesKey(data, "up") ? -1 : 1;
       this.historyIndex = Math.max(0, Math.min(this.managementHistory.length, this.historyIndex + delta));
-      this.activeInput.setValue(this.managementHistory[this.historyIndex] ?? "/");
+      // Recalled the way the terminal writes a line, so the cursor lands at its end.
+      this.activeInput.setValue("");
+      this.activeInput.handleInput(this.managementHistory[this.historyIndex] ?? "/");
       this.tui.requestRender(true);
       return { consume: true };
     }
@@ -257,8 +316,13 @@ export class TerminalApplication {
       return { consume: true };
     }
     if (matchesKey(data, "space")) {
-      this.controller.toggleRunning();
-      this.notify(this.controller.status().detail);
+      // The barrier owns the clock while it is open: space reports the wait instead
+      // of restarting a run the barrier would hold anyway.
+      if (this.controller.status().mode === "cognition") this.notify(`${this.barrierState()}：${BARRIER_HOLD}`);
+      else {
+        this.controller.toggleRunning();
+        this.notify(this.controller.status().mode === "paused" ? "已暂停" : this.runState());
+      }
       return { consume: true };
     }
     if (data === "/") {
@@ -274,6 +338,12 @@ export class TerminalApplication {
       return { consume: true };
     }
     return undefined;
+  }
+
+  /** How an ongoing run reads, without the internal detail text the controller carries. */
+  private runState(): string {
+    const remaining = this.controller.status().runLimitRemaining;
+    return remaining === null ? "连续运行中" : `连续运行，剩余 ${remaining} Tick`;
   }
 
   private confirmAction(): void {
@@ -308,7 +378,7 @@ export class TerminalApplication {
   private openEntityParameter(prompt: string): void {
     const choices = this.session?.choices() ?? [];
     const items: SelectItem[] = choices.map((choice) => ({
-      value: choice.entityId,
+      value: choice.reference,
       label: choice.name,
       description: choice.detail,
     }));
@@ -346,6 +416,7 @@ export class TerminalApplication {
     this.tui.renderNow(true);
   }
 
+  /** Esc leaves the parameter form only; the round the player may be in stays open. */
   private backOrCancel(): void {
     if (this.session?.back() === true) this.openCurrentParameter();
     else {
@@ -375,7 +446,8 @@ export class TerminalApplication {
   private openManagementInput(): void {
     this.closeOverlay();
     const input = new Input({ prompt: "", placeholder: "/help" });
-    input.setValue("/");
+    // The slash that opened this line stays in it, with the cursor after it.
+    input.handleInput("/");
     input.onSubmit = (value) => {
       if (value.trim().length > 1) this.managementHistory.push(value.trim());
       this.historyIndex = this.managementHistory.length;
@@ -397,26 +469,39 @@ export class TerminalApplication {
     try {
       if (command === "/step") {
         const result = this.controller.step();
-        this.notify(`Tick ${result.summary.tick}: ${result.status}`);
+        this.notify(
+          result.status === "cognitive-barrier"
+            ? `等待决定：${this.barrierState()}`
+            : `Tick ${result.summary.tick}: ${result.status}`,
+        );
       } else if (command === "/run") {
         this.controller.run(argument === undefined ? undefined : Number(argument));
-        this.notify(this.controller.status().detail);
+        this.notify(this.runState());
       } else if (command === "/pause") {
         this.controller.pause();
         this.notify("已暂停");
+      } else if (command === "/skip") {
+        this.notify(this.controller.skipPlayer().message);
       } else if (command === "/save" && argument !== undefined) {
-        this.controller.save(argument);
-        this.notify(`已保存 ${argument}`);
+        this.notify(this.controller.save(argument).message);
       } else if (command === "/load" && argument !== undefined) {
         this.notify(this.controller.load(argument).message);
-      } else if (command === "/status") this.notify(JSON.stringify(this.controller.status()));
+      } else if (command === "/status") this.notify(this.statusLine());
       else if (command === "/monitor") this.toggleMonitor();
       else if (command === "/help")
-        this.notify("管理：/step /run [ticks] /pause /save <id> /load <id> /status /monitor /help");
+        this.notify("管理：/step /run [ticks] /pause /skip /save <id> /load <id> /status /monitor /help");
       else this.notify("未知或缺少参数的管理命令；输入 /help 查看帮助");
     } catch (failure) {
       this.notify(failure instanceof Error ? failure.message : String(failure));
     }
+  }
+
+  /** A one-line status the ordinary footer may carry: it names no character and no reference. */
+  private statusLine(): string {
+    const status = this.controller.status();
+    const run = status.runLimitRemaining === null ? "不限" : `剩余 ${status.runLimitRemaining}`;
+    const save = status.pendingSave === null ? "" : ` · 保存待处理 ${status.pendingSave}`;
+    return `Tick ${status.tick} · ${status.mode} · ${this.waitState()} · 待交计划 ${status.pendingPlans} · 运行 ${run}${save}`;
   }
 
   private toggleMonitor(): void {
@@ -425,23 +510,67 @@ export class TerminalApplication {
       return;
     }
     this.closeOverlay();
-    const snapshot = this.controller.managementSnapshot();
-    const state = snapshot.state;
-    const lines = [
-      "管理员视图 — 不属于角色观察",
-      `Entities: ${Object.keys(state.world.entities).length} · Bodies: ${Object.keys(state.body.bodies).length}`,
-      `World: ${state.world.processes.length} process · ${state.world.events.length} events`,
-      `Scheduler: ${snapshot.status.mode} · Tick ${state.tick} · pending ${snapshot.pendingPlans.length}`,
-      `Barrier: ${state.barrier?.detail ?? "none"} · Failure: ${state.failure?.detail ?? "none"}`,
-      "Memory: 阶段 5 未接入",
-      `Diagnostics: ${state.configId}`,
-    ];
     const box = new Box(1, 1);
-    box.addChild(new Text(lines.join("\n"), 0, 0));
-    this.overlay = this.tui.showOverlay(box, { width: "70%", maxHeight: "70%", anchor: "center" });
+    box.addChild(new ProjectedText(() => this.monitorText()));
+    this.overlay = this.tui.showOverlay(box, { width: "92%", maxHeight: "85%", anchor: "center" });
     this.mode = "monitor";
     this.tui.setFocus(box);
     this.tui.renderNow(true);
+  }
+
+  /**
+   * The management view: entity identities, perception bookkeeping, cognition state and
+   * diagnostics belong here and nowhere else. Working Memory reports counts, never the
+   * admitted text.
+   */
+  private monitorText(): string {
+    const snapshot = this.controller.managementSnapshot();
+    const state = snapshot.state;
+    const status = snapshot.status;
+    const round = state.round;
+    const lines: string[] = [
+      "管理员视图 — 不属于角色观察",
+      `Entities: ${Object.keys(state.world.entities).length} · Bodies: ${Object.keys(state.body.bodies).length}`,
+      `World: ${state.world.processes.length} process · ${state.world.events.length} events`,
+      `Scheduler: ${status.mode} · Tick ${state.tick} · pending ${snapshot.pendingPlans.length}${status.pendingSave === null ? "" : ` · save ${status.pendingSave}`}`,
+      `Barrier: ${state.barrier?.detail ?? "none"} · Failure: ${state.failure?.detail ?? "none"}`,
+      "",
+      `Perception（${snapshot.perception.length} 观察者）`,
+    ];
+    if (snapshot.perception.length === 0) lines.push("  （无）");
+    for (const row of snapshot.perception)
+      lines.push(
+        `  ${row.characterId} · 对象 ${row.subjects} · 待处理 ${row.pending} · 材料 ${row.materialVersion} · 注意 ${row.attentionVersion}`,
+      );
+    lines.push("");
+    lines.push(`Cognition（${this.waitState()}）`);
+    lines.push(`  轮次：${round === null ? "无" : `${round.roundId} · ${round.status}`}`);
+    lines.push(`  等待原因：${this.waitingReason(round)}`);
+    for (const participant of round?.participants ?? [])
+      lines.push(
+        `  参与者：${participant.characterId}（${participant.control}）${participant.state} · 尝试 ${participant.attempts} · ${participant.detail}`,
+      );
+    if (snapshot.cognition.length === 0) lines.push("  （无）");
+    for (const row of snapshot.cognition)
+      lines.push(
+        `  ${row.characterId} 注意：${listOf(row.attention)}｜理解：${row.understanding === "" ? "无" : row.understanding}｜疑问：${listOf(row.questions)}｜持续：${row.persistence === "" ? "无" : row.persistence}｜意图：${listOf(row.intentions)}｜空闲：${row.idle ?? "无"}｜决定 ${row.decisions}｜请求 ${row.pendingRequestId ?? "无"}`,
+      );
+    lines.push("");
+    lines.push("Working Memory（容量、已准入与消费数量；不含私密文本）");
+    if (snapshot.workingMemory.length === 0) lines.push("  （无）");
+    for (const row of snapshot.workingMemory)
+      lines.push(`  ${row.characterId} · 已准入 ${row.entries}/${row.capacity} · 已消费 ${row.consumed}`);
+    lines.push("");
+    lines.push("Diagnostics");
+    if (snapshot.diagnostics.length === 0) lines.push("  （无）");
+    for (const note of snapshot.diagnostics) lines.push(`  ${note}`);
+    return lines.join("\n");
+  }
+
+  private waitingReason(round: CognitionRound | null): string {
+    if (round === null) return "没有等待决定的轮次";
+    const waiting = round.demands.map((demand) => `${demand.characterId}: ${demand.reason}（${demand.detail}）`);
+    return waiting.length === 0 ? "无" : waiting.join("；");
   }
 
   private closeOverlay(): void {

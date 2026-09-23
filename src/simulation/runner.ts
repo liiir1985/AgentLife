@@ -5,8 +5,11 @@ import type { CoreRuntime } from "../config/core-runtime.js";
 import type { ProcessChangeRequest, RuleResult, StateChangeRequest } from "../config/rule-engine.js";
 import type { SystemIndex } from "../config/system-index.js";
 import type { SimpleValue } from "../config/value-expr.js";
+import type { CognitionModelPort } from "../agent/cognition-agent.js";
 import { BodyService, type BodyRuntime } from "./body-service.js";
 import { CharacterService } from "./character-service.js";
+import { CognitionCoordinator, type DecisionResult, type RoundInput } from "./cognition-coordinator.js";
+import { CognitionService } from "./cognition-service.js";
 import {
   BODY_ACTIVITY,
   BODY_CHANNELS,
@@ -15,17 +18,29 @@ import {
   BODY_VALUES,
   WORLD_ATTRIBUTES,
   WORLD_FACTS,
+  actionUtteranceField,
   behaviourTreeSpec,
+  characterModules,
+  cognitionSettings,
+  itemLabel,
   localViewMembers,
 } from "./config-view.js";
+import { WorkingMemoryService } from "./memory-service.js";
+import { PerceptionService, type PerceptionFrame } from "./perception-service.js";
 import { IDLE_ACTIVITY, entitySlice, sharedSlice, type ProjectionSources } from "./projection.js";
 import {
   TICK_STAGES,
-  NO_OP_STAGES,
   stateVersionOf,
+  type ActionInstance,
   type ActionPlan,
   type ActivityState,
+  type CharacterState,
+  type CognitionDemand,
+  type CognitionRound,
+  type CognitionState,
   type InfluenceOutcome,
+  type Observation,
+  type PerceptionState,
   type RuleBarrier,
   type RunMode,
   type SimulationSettings,
@@ -33,6 +48,8 @@ import {
   type StageRecord,
   type TickFailure,
   type TickSummary,
+  type WorkingMemoryEntry,
+  type WorkingMemoryState,
   type WorldState,
 } from "./types.js";
 import { WorldService, type ServiceRuntime, type TickContext } from "./world-service.js";
@@ -53,14 +70,22 @@ export interface TickInput {
   readonly plans?: readonly ActionPlan[];
 }
 
-export interface TickResult {
-  readonly status: "completed" | "barrier" | "failed";
-  readonly summary: TickSummary;
-}
+/**
+ * One tick either completed, stopped on a missing rule set, stopped for cognition,
+ * or failed. A cognitive barrier is not a failure: the tick is held exactly where
+ * it is until every participant settled, and only then is it published.
+ */
+export type TickResult =
+  | { readonly status: "completed"; readonly summary: TickSummary }
+  | { readonly status: "rule-barrier"; readonly summary: TickSummary; readonly barrier: RuleBarrier }
+  | { readonly status: "cognitive-barrier"; readonly round: CognitionRound }
+  | { readonly status: "failed"; readonly summary: TickSummary; readonly failure: TickFailure };
 
 export interface RunnerOptions {
   readonly timelineId: string;
   readonly settings?: Partial<SimulationSettings>;
+  /** The cognition model the AI participants are decided with; required once an AI entity exists. */
+  readonly models?: CognitionModelPort;
 }
 
 const DEFAULT_SETTINGS: SimulationSettings = Object.freeze({
@@ -69,10 +94,60 @@ const DEFAULT_SETTINGS: SimulationSettings = Object.freeze({
   maxEvents: 256,
 });
 
+/**
+ * The port a timeline without any AI role is built with. Such a timeline never
+ * opens a round for a model, so the port is unreachable there; a timeline that
+ * does run AI cognition without a model is refused when it is constructed.
+ */
+const NO_MODEL_PORT: CognitionModelPort = Object.freeze({
+  request: () =>
+    Promise.resolve({ status: "failed" as const, detail: "this timeline runs no AI cognition", decision: null }),
+  cancel: () => {},
+});
+
+function requireModels(
+  options: RunnerOptions,
+  characters: CharacterService,
+  state: CharacterState,
+): CognitionModelPort {
+  if (options.models !== undefined) return options.models;
+  const ai = characters.sorted(state).filter((character) => character.control === "cognition");
+  if (ai.length > 0)
+    throw new Error(
+      `timeline runs ${ai.length} AI cognition role(s) (${ai.map((character) => character.entityId).join(", ")}) but no cognition model was given`,
+    );
+  return NO_MODEL_PORT;
+}
+
+/** Everything a barrier holds while its participants are deciding. */
+interface HeldTick {
+  readonly startingTick: number;
+  /** The published state the held tick started from, restored when it fails. */
+  readonly previous: SimulationState;
+  readonly world: WorldState;
+  readonly characters: CharacterState;
+  readonly body: BodyRuntime;
+  readonly perception: PerceptionState;
+  readonly memory: WorkingMemoryState;
+  readonly cognition: CognitionState;
+  readonly stages: StageRecord[];
+  readonly actionOutcomes: string[];
+  readonly influenceOutcomes: readonly InfluenceOutcome[];
+  readonly barrier: RuleBarrier | null;
+  readonly failure: TickFailure | null;
+  readonly scheduled: ActivityState["scheduled"];
+}
+
 export class SimulationRunner {
   private readonly runtime: ServiceRuntime;
   private readonly settings: SimulationSettings;
   private readonly adapters = new Map<string, BehaviorTreeAdapter>();
+  private readonly perception: PerceptionService;
+  private readonly workingMemory = new WorkingMemoryService();
+  private readonly cognition: CognitionService;
+  private readonly rounds: CognitionCoordinator;
+  private held: HeldTick | undefined;
+  private roundSequence = 0;
   private current: SimulationState;
 
   constructor(
@@ -90,7 +165,10 @@ export class SimulationRunner {
       systemIndex,
       runRules: (request) => this.core.runRules(request),
     };
+    this.perception = new PerceptionService(config);
+    this.cognition = new CognitionService(config);
     const characterState = characters.initialize();
+    this.rounds = new CognitionCoordinator(config, this.cognition, requireModels(options, characters, characterState));
     const worldState = world.initialize(
       characters.sorted(characterState).map((character) => ({
         entityId: character.entityId,
@@ -98,6 +176,7 @@ export class SimulationRunner {
       })),
     );
     const bodyState = body.initialize(characterState);
+    const observerIds = this.observerIds(characterState);
     this.current = Object.freeze({
       timelineId: options.timelineId,
       tick: 0,
@@ -109,6 +188,10 @@ export class SimulationRunner {
       world: worldState,
       characters: characterState,
       body: bodyState,
+      perception: this.perception.create(observerIds),
+      memory: this.workingMemory.create(observerIds),
+      cognition: this.cognition.create(this.cognitionIds(characterState)),
+      round: null,
       behaviours: Object.freeze({}),
       activity: this.initialActivity(characterState),
       actions: Object.freeze([]),
@@ -127,6 +210,26 @@ export class SimulationRunner {
     const world = new WorldService({ config, systemIndex, runRules: (request) => core.runRules(request) }, settings);
     const body = new BodyService({ config, systemIndex, runRules: (request) => core.runRules(request) }, world);
     return new SimulationRunner(core, characters, world, body, options, systemIndex);
+  }
+
+  /** Entities that keep a perception instance: normal entities with a body. */
+  private observerIds(state: CharacterState): readonly string[] {
+    const config = this.runtime.config;
+    return this.characters
+      .sorted(state)
+      .filter(
+        (character) =>
+          character.bodyConfig !== null && characterModules(config, character.entityId).includes("perception"),
+      )
+      .map((character) => character.entityId);
+  }
+
+  /** Entities that keep cognition state: every AI and user controlled role. */
+  private cognitionIds(state: CharacterState): readonly string[] {
+    return this.characters
+      .sorted(state)
+      .filter((character) => character.control === "cognition" || character.control === "user")
+      .map((character) => character.entityId);
   }
 
   private requireConfig(): RuntimeConfig {
@@ -154,6 +257,8 @@ export class SimulationRunner {
 
   /** Runs one complete tick from the current stable state. */
   runTick(input: TickInput = {}): TickResult {
+    if (this.held !== undefined)
+      throw new Error("a cognition barrier holds this tick; complete it before running another tick");
     const config = this.requireConfig();
     const stages: StageRecord[] = [];
     const startingTick = this.current.tick + 1;
@@ -203,6 +308,10 @@ export class SimulationRunner {
     const advanced = this.body.advance(bodyRuntime, sourcesFor(), this.current.characters, context);
     bodyRuntime = advanced.runtime;
     actionOutcomes.push(...advanced.notes);
+    // Only an action that finished every stage it declares becomes audible: what a
+    // body refused, interrupted or is still speaking is never a world utterance.
+    for (const utterance of this.completedUtterances(this.current.actions, bodyRuntime.actions))
+      world = this.world.recordUtterance(world, utterance, context);
     let changedRefs = [...worldProcesses.applied, ...advanced.applied].map((change) => change.stateRef);
 
     // The standing tick wake runs the body maintenance rules.
@@ -308,13 +417,384 @@ export class SimulationRunner {
       stages.push({ stage: "stability", status: "done", detail: "objective state is stable" });
     }
 
-    // 8-11. Explicit extension points that phase 2 records as no-ops.
-    if (!stageTruncated)
-      for (const stage of NO_OP_STAGES) stages.push({ stage, status: "no-op", detail: "phase 2 records no work here" });
+    // 8. Perception: every observer receives the material of this tick and commits
+    //    the observations the conditions allow.
+    let perceptionState = this.current.perception;
+    let memoryState = this.current.memory;
+    let cognitionState = this.current.cognition;
+    const observers = this.observerIds(this.current.characters);
+    const admitted: Record<string, readonly Observation[]> = {};
+    if (!stageTruncated) {
+      const materialVersion = `${world.version}/${bodyRuntime.body.version}/${startingTick}`;
+      const notes: string[] = [];
+      for (const observer of observers) {
+        const frame: PerceptionFrame = {
+          observer,
+          tick: startingTick,
+          materialVersion,
+          attention: this.cognition.record(cognitionState, observer)?.attention ?? [],
+          world: this.world.perceptionMaterial(world, observer, startingTick, this.current.world.environment),
+          body: this.body.perceptionMaterial(bodyRuntime, this.current.actions, observer),
+        };
+        const result = this.perception.observe(perceptionState, frame);
+        perceptionState = result.state;
+        notes.push(...result.notes.map((note) => `${observer}: ${note}`));
+      }
+      stages.push({
+        stage: "perception",
+        status: observers.length === 0 ? "no-op" : "done",
+        detail:
+          observers.length === 0
+            ? "no entity keeps a perception instance"
+            : `${observers.length} observer(s): ${notes.filter((note) => note.includes("submitted")).join("; ")}`,
+      });
+
+      // 9. Admission and demands: what was perceived enters Working Memory before
+      //    anyone is asked to think about it.
+      for (const observer of observers) {
+        const admittedNow = this.perception.pendingObservations(perceptionState, observer);
+        const result = this.workingMemory.admitObservations(memoryState, {
+          characterId: observer,
+          tick: startingTick,
+          capacity: cognitionSettings(config)?.observationCapacity ?? 0,
+          observations: admittedNow,
+          references: this.perception.observer(perceptionState, observer)?.references ?? {},
+        });
+        memoryState = result.state;
+        admitted[observer] = Object.freeze(
+          admittedNow.filter((observation) =>
+            result.admitted.some((entry) => entry.sourceId === observation.observationId),
+          ),
+        );
+      }
+    }
+
+    const demands: readonly CognitionDemand[] = stageTruncated
+      ? []
+      : this.cognition.demands({
+          tick: startingTick,
+          cognition: cognitionState,
+          characters: this.current.characters.characters,
+          participation: this.participationOf(bodyRuntime),
+          admitted,
+        });
+    stages.push({
+      stage: "cognitive-demand",
+      status: demands.length === 0 ? "no-op" : "done",
+      detail:
+        demands.length === 0
+          ? "no entity owes a decision"
+          : demands.map((demand) => `${demand.characterId}: ${demand.reason} (${demand.detail})`).join("; "),
+    });
+
+    // 10. The barrier: the tick is held exactly where it is while its participants
+    //     decide, and nothing simulated advances until every one of them settled.
+    if (demands.length > 0 && !stageTruncated) {
+      this.roundSequence += 1;
+      const entries: Record<string, readonly WorkingMemoryEntry[]> = {};
+      const situations: Record<string, string> = {};
+      const demanded = new Set(demands.map((demand) => demand.characterId));
+      // A user-controlled entity may join the round while the barrier is open, so
+      // every entity that keeps Working Memory belongs to the fixed barrier snapshot
+      // of this tick, not only the ones that owe a decision right now.
+      for (const characterId of Object.keys(memoryState.records).sort()) {
+        if (!demanded.has(characterId) && this.current.characters.characters[characterId]?.control !== "user") continue;
+        entries[characterId] = this.workingMemory.contextFor(memoryState, characterId);
+        situations[characterId] = this.situationOf(characterId, world, bodyRuntime);
+      }
+      const input: RoundInput = {
+        roundId: `${this.current.timelineId}/tick-${startingTick}/round-${this.roundSequence}`,
+        tick: startingTick,
+        stateVersion: stateVersionOf({ world, characters: this.current.characters, body: bodyRuntime.body }),
+        demands,
+        participants: demands.map((demand) => ({ characterId: demand.characterId, control: "cognition" as const })),
+        admitted,
+        entries,
+        situations,
+        cognition: cognitionState,
+      };
+      const round = this.rounds.openRound(input);
+      stages.push({
+        stage: "cognitive-barrier",
+        status: "done",
+        detail: `${round.participants.length} participant(s) deciding at round ${round.roundId}`,
+      });
+      this.held = {
+        startingTick,
+        previous: this.current,
+        world,
+        characters: this.current.characters,
+        body: bodyRuntime,
+        perception: perceptionState,
+        memory: memoryState,
+        cognition: cognitionState,
+        stages,
+        actionOutcomes,
+        influenceOutcomes,
+        barrier,
+        failure,
+        scheduled,
+      };
+      this.current = Object.freeze({
+        timelineId: this.current.timelineId,
+        tick: startingTick,
+        simTime: { tick: startingTick, seconds: startingTick * this.settings.tickSeconds },
+        phase: "cognitive-barrier" as const,
+        configId: config.configId,
+        runMode: "barrier" as RunMode,
+        settings: this.settings,
+        world,
+        characters: this.current.characters,
+        body: bodyRuntime.body,
+        perception: perceptionState,
+        memory: memoryState,
+        cognition: cognitionState,
+        round,
+        behaviours: Object.freeze(this.behaviourStates()),
+        activity: { active: this.activityEntries(), scheduled },
+        actions: bodyRuntime.actions,
+        barrier,
+        failure: null,
+        summary: null,
+      });
+      return { status: "cognitive-barrier", round };
+    }
+    stages.push({ stage: "cognitive-barrier", status: "no-op", detail: "no barrier was needed" });
+    stages.push({ stage: "memory", status: "no-op", detail: "nothing was consumed" });
 
     // 12. Publish the new stable state and the tick summary.
-    const nextTick = stageTruncated ? this.current.tick : startingTick;
-    const nextPhase = stageTruncated ? "stability" : "publish";
+    return this.publish({
+      startingTick,
+      world,
+      characters: this.current.characters,
+      body: bodyRuntime,
+      perception: perceptionState,
+      memory: memoryState,
+      cognition: cognitionState,
+      stages,
+      actionOutcomes,
+      influenceOutcomes,
+      barrier,
+      failure,
+      scheduled,
+      stageTruncated,
+    });
+  }
+
+  /** Finishes the held tick: consumption, intention maintenance and the batch handoff. */
+  completeCognition(): TickResult | null {
+    const held = this.held;
+    if (held === undefined) return null;
+    const resolution = this.rounds.resolution();
+    if (resolution === null) return null;
+    const stages = [...held.stages];
+    const actionOutcomes = [...held.actionOutcomes];
+    if (resolution.round.status === "failed") {
+      const failure: TickFailure = {
+        stage: "cognitive-barrier",
+        code: "cognition-failed",
+        detail: resolution.round.failure ?? "a participant submitted no usable decision",
+      };
+      this.rounds.close(failure.detail);
+      this.held = undefined;
+      // A tick that could not be decided is not published: the objective state stays
+      // exactly where the barrier found it, and only the failure becomes visible.
+      const failed = this.publishFailed(held, failure, resolution.round);
+      return { status: "failed", summary: failed, failure };
+    }
+
+    // 11. Consumption confirmation and intention maintenance, in entity identity order.
+    let cognitionState = held.cognition;
+    let memoryState = held.memory;
+    let perceptionState = held.perception;
+    for (const decision of resolution.decisions) {
+      const applied = this.cognition.applyDecision(cognitionState, {
+        characterId: decision.characterId,
+        tick: held.startingTick,
+        decision,
+      });
+      cognitionState = applied.state;
+    }
+    for (const [characterId, references] of Object.entries(resolution.consumptions)) {
+      const entries = this.workingMemory.contextFor(memoryState, characterId);
+      const entryIds = this.cognition.usedEntries(entries, references);
+      const confirmed = this.workingMemory.confirmUsage(memoryState, { characterId, entryIds });
+      memoryState = confirmed.state;
+      const observationIds = confirmed.confirmed
+        .map((entryId) => entries.find((entry) => entry.entryId === entryId)?.sourceId)
+        .filter((sourceId): sourceId is string => sourceId !== undefined);
+      perceptionState = this.perception.confirmConsumed(perceptionState, characterId, observationIds);
+    }
+    stages.push({
+      stage: "memory",
+      status: resolution.decisions.length === 0 && Object.keys(resolution.consumptions).length === 0 ? "no-op" : "done",
+      detail: `${resolution.decisions.length} decision(s), ${resolution.plans.length} plan(s), ${Object.keys(resolution.consumptions).length} consumption(s)`,
+    });
+
+    // 12. The batch handoff: every plan of the round reaches the same body validation.
+    let bodyRuntime = held.body;
+    for (const plan of resolution.plans) {
+      const attempt = this.body.acceptPlan(bodyRuntime, held.characters, plan, held.world, {
+        timelineId: this.current.timelineId,
+        tick: held.startingTick,
+        command: `cognition/${plan.planId}`,
+      });
+      bodyRuntime = attempt.runtime;
+      actionOutcomes.push(`${attempt.outcome.status} ${plan.planId}: ${attempt.outcome.reason}`);
+    }
+    this.rounds.close();
+    this.held = undefined;
+    return this.publish({
+      startingTick: held.startingTick,
+      world: held.world,
+      characters: held.characters,
+      body: bodyRuntime,
+      perception: perceptionState,
+      memory: memoryState,
+      cognition: cognitionState,
+      stages,
+      actionOutcomes,
+      influenceOutcomes: held.influenceOutcomes,
+      barrier: held.barrier,
+      failure: held.failure,
+      scheduled: held.scheduled,
+      stageTruncated: false,
+      round: resolution.round,
+    });
+  }
+
+  /** Runs every AI participant of the open barrier; the player answers through its own input. */
+  async resolveCognition(): Promise<CognitionRound | undefined> {
+    if (this.held === undefined) return undefined;
+    return this.rounds.resolveAiParticipants();
+  }
+
+  /**
+   * Runs one tick and, when it stopped for cognition, lets every AI participant
+   * decide before publishing it. A barrier that still waits for the player is
+   * returned as it is, so the caller can submit the player's own decision.
+   */
+  async runTickToPublication(input: TickInput = {}): Promise<TickResult> {
+    const result = this.runTick(input);
+    if (result.status !== "cognitive-barrier") return result;
+    await this.resolveCognition();
+    return this.completeCognition() ?? result;
+  }
+
+  /** The plan the player chose while the barrier is open joins this round. */
+  submitPlayerPlan(plan: ActionPlan): DecisionResult {
+    const control = this.current.characters.characters[plan.entityId]?.control;
+    if (control === undefined) return { ok: false, message: `未知角色 ${plan.entityId}` };
+    const allowed = Object.values(this.perception.observer(this.current.perception, plan.entityId)?.subjects ?? {}).map(
+      (subject) => subject.anchor,
+    );
+    const consumed = plan.steps
+      .flatMap((step) => [step.target, step.destination])
+      .filter((anchor): anchor is string => anchor !== undefined)
+      .map((anchor) => this.perception.referenceFor(this.current.perception, plan.entityId, anchor))
+      .filter((reference): reference is string => reference !== undefined);
+    return this.rounds.submitPlayerPlan(
+      { characterId: plan.entityId, control: control === "user" ? "user" : "cognition" },
+      plan,
+      [...new Set(consumed)],
+      allowed,
+    );
+  }
+
+  /** The player declines to act in this round. */
+  skipPlayer(characterId: string): DecisionResult {
+    const control = this.current.characters.characters[characterId]?.control;
+    if (control === undefined) return { ok: false, message: `未知角色 ${characterId}` };
+    return this.rounds.skipPlayer({ characterId, control: control === "user" ? "user" : "cognition" });
+  }
+
+  /** The round currently holding the tick, for status and diagnostics. */
+  openRound(): CognitionRound | null {
+    return this.rounds.current() ?? null;
+  }
+
+  /** Model requests, refusals and outcomes of the most recent round. */
+  roundNotes(): readonly string[] {
+    return this.rounds.notes();
+  }
+
+  /** One readable frame per participant: where it is and what it is doing. */
+  private situationOf(characterId: string, world: WorldState, runtime: BodyRuntime): string {
+    const place = this.world.position(world, characterId);
+    const activity = activityOf(runtime, characterId);
+    const parts = [place === null ? "你还不知道自己在哪里" : `你在${itemLabel(this.config, place)}`];
+    if (activity.action !== "")
+      parts.push(`当前动作：${itemLabel(this.config, activity.action)}（${activity.status}）`);
+    return `${parts.join("；")}。`;
+  }
+
+  private get config(): RuntimeConfig {
+    return this.runtime.config;
+  }
+
+  /** Body participation per entity, so a body that forbids cognition is never asked. */
+  private participationOf(runtime: BodyRuntime): Readonly<Record<string, string>> {
+    const participation: Record<string, string> = {};
+    for (const [entityId, record] of Object.entries(runtime.body.bodies))
+      participation[entityId] = record.participation;
+    return participation;
+  }
+
+  /** Actions that finished their last stage in this tick and declare an utterance. */
+  private completedUtterances(
+    previous: readonly ActionInstance[],
+    next: readonly ActionInstance[],
+  ): readonly { readonly actor: string; readonly text: string }[] {
+    const before = new Map(previous.map((action) => [action.actionId, action.status]));
+    const spoken: { readonly actor: string; readonly text: string }[] = [];
+    for (const action of [...next].sort((left, right) => left.actionId.localeCompare(right.actionId))) {
+      if (action.status !== "completed" || before.get(action.actionId) === "completed") continue;
+      const field = actionUtteranceField(this.config, action.action);
+      if (field === null) continue;
+      const inputs = action.plan.steps[action.stepIndex]?.inputs ?? action.plan.steps[0]?.inputs;
+      const text = inputs?.[field];
+      if (text === undefined) continue;
+      spoken.push(Object.freeze({ actor: action.entityId, text }));
+    }
+    return Object.freeze(spoken);
+  }
+
+  /** Records a failed barrier without moving the objective state. */
+  private publishFailed(held: HeldTick, failure: TickFailure, round: CognitionRound): TickSummary {
+    const config = this.requireConfig();
+    const summary: TickSummary = Object.freeze({
+      tick: held.previous.tick,
+      stages: Object.freeze([
+        ...held.stages,
+        { stage: "cognitive-barrier" as const, status: "failed" as const, detail: failure.detail },
+      ]),
+      stateVersion: stateVersionOf(held.previous),
+      actionOutcomes: Object.freeze([...held.actionOutcomes]),
+      influenceOutcomes: Object.freeze([...held.influenceOutcomes]),
+      eventCount: held.previous.world.events.length,
+      observations: 0,
+      cognition: failure.detail,
+    });
+    this.current = Object.freeze({
+      ...held.previous,
+      phase: "cognitive-barrier" as const,
+      runMode: "failed" as RunMode,
+      failure,
+      round,
+      summary,
+      configId: config.configId,
+    });
+    return summary;
+  }
+
+  /** Publishes one finished tick and returns the matching result. */
+  private publish(
+    held: Omit<HeldTick, "previous"> & { readonly stageTruncated: boolean; readonly round?: CognitionRound },
+  ): TickResult {
+    const config = this.requireConfig();
+    const stages = [...held.stages];
+    const nextTick = held.stageTruncated ? this.current.tick : held.startingTick;
+    const nextPhase = held.stageTruncated ? "stability" : "publish";
     const nextState: Omit<SimulationState, "summary" | "runMode"> = {
       timelineId: this.current.timelineId,
       tick: nextTick,
@@ -322,35 +802,54 @@ export class SimulationRunner {
       phase: nextPhase,
       configId: config.configId,
       settings: this.settings,
-      world,
-      characters: this.current.characters,
-      body: bodyRuntime.body,
+      world: held.world,
+      characters: held.characters,
+      body: held.body.body,
+      perception: held.perception,
+      memory: held.memory,
+      cognition: held.cognition,
+      // A published tick keeps no open round: what the round decided is recorded in
+      // the summary and in the diagnostics, and only a failed barrier leaves one.
+      round: null,
       behaviours: Object.freeze(this.behaviourStates()),
-      activity: { active: this.activityEntries(), scheduled },
-      actions: bodyRuntime.actions,
-      barrier,
-      failure,
+      activity: { active: this.activityEntries(), scheduled: held.scheduled },
+      actions: held.body.actions,
+      barrier: held.barrier,
+      failure: held.failure,
     };
     const runMode: RunMode =
-      failure !== null ? "failed" : barrier !== null ? "barrier" : this.idle(nextState) ? "idle" : "single-step";
+      held.failure !== null
+        ? "failed"
+        : held.barrier !== null
+          ? "barrier"
+          : this.idle(nextState)
+            ? "idle"
+            : "single-step";
     stages.push({
       stage: "publish",
       status: "done",
-      detail: `${runMode} at tick ${nextTick}, ${world.events.length} objective event(s)`,
+      detail: `${runMode} at tick ${nextTick}, ${held.world.events.length} objective event(s)`,
     });
-    const summary: TickSummary = Object.freeze({
+    const summary = Object.freeze({
       tick: nextTick,
       stages: Object.freeze(stages),
       stateVersion: stateVersionOf(nextState),
-      actionOutcomes: Object.freeze(actionOutcomes),
-      influenceOutcomes: Object.freeze(influenceOutcomes),
-      eventCount: world.events.length,
+      actionOutcomes: Object.freeze(held.actionOutcomes),
+      influenceOutcomes: Object.freeze(held.influenceOutcomes),
+      eventCount: held.world.events.length,
+      observations: Object.values(held.perception.observers).reduce(
+        (total, observer) => total + observer.pending.length,
+        0,
+      ),
+      cognition:
+        held.round === undefined
+          ? null
+          : `${held.round.roundId} ${held.round.status}: ${held.round.participants.map((participant) => `${participant.characterId}=${participant.state}`).join(", ")}`,
     });
     this.current = Object.freeze({ ...nextState, runMode, summary });
-    return {
-      status: failure !== null ? "failed" : barrier !== null ? "barrier" : "completed",
-      summary,
-    };
+    if (held.failure !== null) return { status: "failed", summary, failure: held.failure };
+    if (held.barrier !== null) return { status: "rule-barrier", summary, barrier: held.barrier };
+    return { status: "completed", summary };
   }
 
   /** Restores a saved state after checking it belongs to the published config. */
@@ -358,6 +857,10 @@ export class SimulationRunner {
     const config = this.requireConfig();
     if (state.configId !== config.configId)
       throw new Error(`save refers to config ${state.configId}, the runtime publishes ${config.configId}`);
+    // A loaded timeline keeps nothing from the one it replaces: in-flight model
+    // requests, an held barrier and every adapter belong to the old timeline.
+    this.rounds.cancelAll();
+    this.held = undefined;
     this.adapters.clear();
     this.current = Object.freeze({ ...state, runMode: "single-step", summary: state.summary });
   }

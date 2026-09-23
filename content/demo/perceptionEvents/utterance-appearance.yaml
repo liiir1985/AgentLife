@@ -1,0 +1,9 @@
+id: utterance-appearance
+type: agentlife.perception/event-appearance
+public: true
+fields:
+  name: 说话事件的外在表现
+  description: 说话完成后才产生事件；听者只拿到已经说出口的内容。
+  event: utterance
+  channel: agentlife.demo/hearing
+  template: "{speaker}说：{utterance}"

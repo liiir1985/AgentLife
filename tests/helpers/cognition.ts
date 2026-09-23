@@ -1,0 +1,26 @@
+import { PiCognitionAgent } from "../../src/agent/cognition-agent.js";
+import { idleDecision, type ScriptedDraft } from "../../src/agent/scripted-cognition.js";
+
+/**
+ * Test-side cognition.
+ *
+ * The scripted model goes through the real Pi adapter rather than around it, so a
+ * test exercises the same submission, validation and refusal path the runtime uses.
+ * Ticks are driven with `SimulationRunner.runTickToPublication`, which resolves a
+ * barrier with that same port.
+ */
+
+export interface CognitionScript {
+  readonly tokensPerSecond?: number;
+  readonly draft?: ScriptedDraft;
+}
+
+/** A faux cognition model whose submissions are scripted by the test. */
+export function scriptedModel(script: CognitionScript = {}): PiCognitionAgent {
+  return new PiCognitionAgent({
+    provider: "faux",
+    model: "faux-cognition",
+    tokensPerSecond: script.tokensPerSecond ?? 100_000,
+    draft: script.draft ?? idleDecision,
+  });
+}

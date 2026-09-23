@@ -11,11 +11,14 @@ import {
   checkValue,
   influenceRelation,
   initialValues,
+  itemsOf,
+  localIdOf,
   modeAbilities,
   processSpec,
   resourceSpec,
   type ActionSpec,
 } from "./config-view.js";
+import type { BodyPerceptionMaterial, OutcomeMaterial } from "./perception-service.js";
 import {
   IDLE_ACTIVITY,
   NO_INFLUENCE,
@@ -109,6 +112,53 @@ export class BodyService {
 
   body(state: BodyState, entityId: string): BodyRecord | undefined {
     return state.bodies[entityId];
+  }
+
+  /**
+   * The purpose-limited material one body offers its own observer.
+   *
+   * It reports which of the body's sensory channels are available and how
+   * efficient each is right now, plus the action results its owner can feel this
+   * tick: what just finished, failed or was interrupted. It never reports body
+   * values, another entity's actions or anything the body cannot itself sense.
+   */
+  perceptionMaterial(
+    runtime: BodyRuntime,
+    previous: readonly ActionInstance[],
+    entityId: string,
+  ): BodyPerceptionMaterial {
+    const record = runtime.body.bodies[entityId];
+    const terminal = new Set<ActionStatus>(["completed", "failed", "interrupted", "cancelled"]);
+    const was = new Map(
+      previous.filter((action) => action.entityId === entityId).map((action) => [action.actionId, action.status]),
+    );
+    const outcomes: OutcomeMaterial[] = [];
+    for (const action of runtime.actions)
+      if (action.entityId === entityId && terminal.has(action.status) && was.get(action.actionId) !== action.status)
+        outcomes.push(
+          Object.freeze({
+            actionId: action.actionId,
+            action: action.action,
+            status: action.status,
+            reason: action.outcome?.reason ?? action.status,
+          }),
+        );
+    return Object.freeze({
+      channels: Object.freeze(
+        itemsOf(this.runtime.config, "agentlife.body/channel").map((item) => {
+          const key = localIdOf(item.ref);
+          const available = record?.channels[`${key}.available`];
+          const efficiency = record?.channels[`${key}.efficiency`];
+          return Object.freeze({
+            channel: item.ref,
+            available: available === true,
+            efficiency: typeof efficiency === "number" ? efficiency : 0,
+          });
+        }),
+      ),
+      outcomes: Object.freeze(outcomes.sort((left, right) => left.actionId.localeCompare(right.actionId))),
+      participation: record?.participation ?? "forbidden",
+    });
   }
 
   actionSpecOf(actionRef: string): ActionSpec | undefined {

@@ -4,18 +4,22 @@ import type { AvailableAction } from "../interaction/context-actions.js";
 /** Horizontal, content-driven action chooser used at the stable main-screen boundary. */
 export class ContextActionBar implements Component {
   private selectedRef: string | undefined;
+  /** Until the player moves the selection, the first command the view allows stays chosen. */
+  private moved = false;
 
   constructor(private readonly actions: () => readonly AvailableAction[]) {}
 
   current(): AvailableAction | undefined {
     const values = this.actions();
-    const selected = values.find((entry) => entry.command.ref === this.selectedRef) ?? values[0];
+    const kept = this.moved ? values.find((entry) => entry.command.ref === this.selectedRef) : undefined;
+    const selected = kept ?? values[0];
     this.selectedRef = selected?.command.ref;
     return selected;
   }
 
   move(delta: -1 | 1): void {
     const values = this.actions();
+    this.moved = true;
     if (values.length === 0) {
       this.selectedRef = undefined;
       return;

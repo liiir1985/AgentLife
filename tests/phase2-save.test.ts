@@ -7,6 +7,7 @@ import { SimulationRunner } from "../src/simulation/runner.js";
 import { checkSnapshot, decodeSnapshot, encodeSnapshot, snapshotOf } from "../src/simulation/save.js";
 import type { ActionPlan } from "../src/simulation/types.js";
 import { RuntimeStore, SIMULATION_SAVE_TYPE, SIMULATION_SAVE_VERSION } from "../src/storage/runtime-store.js";
+import { scriptedModel } from "./helpers/cognition.js";
 import {
   DEMO_KILN,
   DEMO_LAMP,
@@ -16,6 +17,7 @@ import {
   DEMO_WARDEN,
   createSimulation,
   publishDemoWith,
+  runPublishedTick,
   testPlan,
 } from "./helpers/phase2.js";
 
@@ -36,9 +38,9 @@ const SCRIPT: Readonly<Record<number, readonly ActionPlan[]>> = Object.freeze({
   12: [testPlan("player-grasp", DEMO_PLAYER, "parallel", [{ action: "agentlife.demo/grasp", target: DEMO_ROPE }])],
 });
 
-function runTicks(runner: SimulationRunner, from: number, count: number): void {
-  for (let tick = from; tick < from + count; tick += 1)
-    expect(runner.runTick({ plans: SCRIPT[tick] ?? [] }).status).toBe("completed");
+/** Runs `count` published ticks from `from`; the scripted model resolves each barrier. */
+async function runTicks(runner: SimulationRunner, from: number, count: number): Promise<void> {
+  for (let tick = from; tick < from + count; tick += 1) await runPublishedTick(runner, SCRIPT[tick] ?? []);
 }
 
 /** Opens one store over a temporary database; the host may still hold the file briefly. */
@@ -60,7 +62,7 @@ function withStore<T>(run: (store: RuntimeStore) => T): T {
 describe("phase 2 save and load", () => {
   it("stores one snapshot and restores exactly the saved world, bodies, characters, plans and processes", async () => {
     const simulation = await createSimulation({ timelineId: "timeline-save" });
-    runTicks(simulation.runner, 1, 13);
+    await runTicks(simulation.runner, 1, 13);
     const state = simulation.runner.state();
     expect(state.world.processes.map((process) => process.processRef)).toEqual(["agentlife.world/lamp-glow"]);
     expect(state.body.bodies[DEMO_PLAYER]?.values["wakefulness"]).toBe(40);
@@ -102,7 +104,10 @@ describe("phase 2 save and load", () => {
       const snapshot = decoded.snapshot;
       expect(checkSnapshot(snapshot, simulation.config)).toEqual({ ok: true });
 
-      const restored = SimulationRunner.create(simulation.core, { timelineId: "timeline-restored" });
+      const restored = SimulationRunner.create(simulation.core, {
+        timelineId: "timeline-restored",
+        models: scriptedModel(),
+      });
       restored.load({ ...snapshot.state, timelineId: "timeline-restored" });
       const before = snapshot.state;
       const after = restored.state();
@@ -136,7 +141,7 @@ describe("phase 2 save and load", () => {
     // so a save that dropped the restored behaviour record would diverge.
     for (const boundary of [4, 7]) {
       const original = await createSimulation({ timelineId: `timeline-continue-${boundary}` });
-      runTicks(original.runner, 1, boundary);
+      await runTicks(original.runner, 1, boundary);
       const saved = snapshotOf(original.runner.state(), `save-continue-${boundary}`, original.config);
 
       const loaded = await createSimulation({ timelineId: `timeline-loaded-${boundary}` });
@@ -145,9 +150,9 @@ describe("phase 2 save and load", () => {
       loadedAgain.runner.load({ ...saved.state, timelineId: `timeline-loaded-again-${boundary}` });
 
       const remaining = 12 - boundary;
-      runTicks(original.runner, boundary + 1, remaining);
-      runTicks(loaded.runner, boundary + 1, remaining);
-      runTicks(loadedAgain.runner, boundary + 1, remaining);
+      await runTicks(original.runner, boundary + 1, remaining);
+      await runTicks(loaded.runner, boundary + 1, remaining);
+      await runTicks(loadedAgain.runner, boundary + 1, remaining);
 
       const continued = digestOf(original.runner.state());
       expect(loaded.runner.state().tick, `boundary ${boundary}`).toBe(12);
@@ -160,7 +165,7 @@ describe("phase 2 save and load", () => {
 
   it("refuses a save made against another config or other system versions and keeps the running state", async () => {
     const simulation = await createSimulation({ timelineId: "timeline-save" });
-    runTicks(simulation.runner, 1, 7);
+    await runTicks(simulation.runner, 1, 7);
     const saved = snapshotOf(simulation.runner.state(), "save-checked", simulation.config);
     const other = await publishDemoWith({ "rules/daylight-wakefulness.yaml": null });
     expect(other.config.configId).not.toBe(simulation.config.configId);

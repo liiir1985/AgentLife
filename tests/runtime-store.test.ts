@@ -162,44 +162,49 @@ describe("runtime store", () => {
   });
 
   describe("crash recovery", () => {
-    it.each(CRASH_POINTS)("exposes only whole states after crashing at %s", (point) => {
-      const directory = mkdtempSync(path.join(tmpdir(), "agent-life-config-crash-"));
-      const filename = path.join(directory, "state.sqlite");
-      try {
-        const before = new RuntimeStore(filename);
-        expect(
-          before.saveConfig({
-            configId: "config-a",
-            namespace: "agentlife.demo",
-            packVersion: "1.0.0",
-            document: loadConfig("1.0.0"),
-          }),
-        ).toBe("committed");
-        before.close();
+    it.each(CRASH_POINTS)(
+      "exposes only whole states after crashing at %s",
+      (point) => {
+        const directory = mkdtempSync(path.join(tmpdir(), "agent-life-config-crash-"));
+        const filename = path.join(directory, "state.sqlite");
+        try {
+          const before = new RuntimeStore(filename);
+          expect(
+            before.saveConfig({
+              configId: "config-a",
+              namespace: "agentlife.demo",
+              packVersion: "1.0.0",
+              document: loadConfig("1.0.0"),
+            }),
+          ).toBe("committed");
+          before.close();
 
-        const crashed = spawnSync(
-          process.execPath,
-          ["--import", "tsx", CONFIG_CRASH_WORKER, filename, point, "config-b"],
-          { cwd: fileURLToPath(new URL("..", import.meta.url)), encoding: "utf8" },
-        );
-        expect(crashed.status, crashed.stderr).toBe(point === "after-commit" ? 3 : 1);
+          const crashed = spawnSync(
+            process.execPath,
+            ["--import", "tsx", CONFIG_CRASH_WORKER, filename, point, "config-b"],
+            { cwd: fileURLToPath(new URL("..", import.meta.url)), encoding: "utf8" },
+          );
+          expect(crashed.status, crashed.stderr).toBe(point === "after-commit" ? 3 : 1);
 
-        const after = new RuntimeStore(filename);
-        const committed = point === "after-commit";
-        expect(after.currentConfig()?.configId).toBe(committed ? "config-b" : "config-a");
-        expect(after.configHistory().map((entry) => entry.configId)).toEqual(
-          committed ? ["config-a", "config-b"] : ["config-a"],
-        );
-        expect(after.loadConfig("config-a")).toEqual(loadConfig("1.0.0"));
-        if (committed) {
-          const stored: unknown = after.loadConfig("config-b");
-          expect(stored).toBeDefined();
-          expect(Reflect.get(stored as object, "kernelVersion")).toBe("1.0.0");
+          const after = new RuntimeStore(filename);
+          const committed = point === "after-commit";
+          expect(after.currentConfig()?.configId).toBe(committed ? "config-b" : "config-a");
+          expect(after.configHistory().map((entry) => entry.configId)).toEqual(
+            committed ? ["config-a", "config-b"] : ["config-a"],
+          );
+          expect(after.loadConfig("config-a")).toEqual(loadConfig("1.0.0"));
+          if (committed) {
+            const stored: unknown = after.loadConfig("config-b");
+            expect(stored).toBeDefined();
+            expect(Reflect.get(stored as object, "kernelVersion")).toBe("1.0.0");
+          }
+          after.close();
+        } finally {
+          rmSync(directory, { recursive: true, force: true });
         }
-        after.close();
-      } finally {
-        rmSync(directory, { recursive: true, force: true });
-      }
-    });
+        // Each case starts a real process with tsx, which costs seconds under a loaded suite.
+      },
+      60_000,
+    );
   });
 });

@@ -8,6 +8,8 @@ import { CoreRuntime, packInput, type PublishResult } from "../config/core-runti
 import type { RuntimeConfig } from "../config/config-builder.js";
 import { RuntimeStore } from "../storage/runtime-store.js";
 import { createSystemSpecs } from "../systems/index.js";
+import { PiCognitionAgent } from "../agent/cognition-agent.js";
+import { idleDecision } from "../agent/scripted-cognition.js";
 import { SimulationRunner } from "./runner.js";
 import { checkSnapshot, decodeSnapshot, encodeSnapshot, snapshotOf, type SaveSnapshot } from "./save.js";
 import type { ActionPlan, ActionPolicy, ActionStep, SimulationState } from "./types.js";
@@ -104,6 +106,18 @@ export async function publishDemoConfig(): Promise<{ readonly core: CoreRuntime;
   return { core, config: applied.config };
 }
 
+/**
+ * An event identity without the timeline that minted it.
+ *
+ * Every loaded timeline is a new timeline by design and stamps its own prefix, while
+ * the events it names are the same events. A canonical view therefore compares which
+ * tick an identity points at, not which timeline wrote the string around it.
+ */
+function canonicalEventId(eventId: string): string {
+  const tick = /\/(\d+)\//.exec(eventId);
+  return tick === null ? eventId : eventId.slice(tick.index);
+}
+
 /** A canonical view of what the simulation produced, independent of run identity. */
 export function semanticView(state: SimulationState): unknown {
   return {
@@ -136,6 +150,27 @@ export function semanticView(state: SimulationState): unknown {
       outcome: action.outcome,
       waitingWorld: action.worldRequest !== null,
     })),
+    perception: Object.fromEntries(
+      Object.entries(state.perception.observers).map(([observer, value]) => [
+        observer,
+        {
+          subjects: value.subjects,
+          pending: value.pending.map((observation) => ({
+            ...observation,
+            eventId: observation.eventId === null ? null : canonicalEventId(observation.eventId),
+          })),
+          references: value.references,
+          referencesUsed: value.referencesUsed,
+          suppressedUntil: value.suppressedUntil,
+          // A set of events already turned into observations: order carries nothing.
+          processedEvents: value.processedEvents.map((eventId) => canonicalEventId(eventId)).sort(),
+          materialVersion: value.materialVersion,
+          attentionVersion: value.attentionVersion,
+        },
+      ]),
+    ),
+    memory: state.memory,
+    cognition: state.cognition,
     behaviours: state.behaviours,
     barrier: state.barrier,
     failure: state.failure,
@@ -146,11 +181,24 @@ export function digestOf(state: SimulationState): string {
   return hashId(semanticView(state)).slice(0, 16);
 }
 
-function runTicks(runner: SimulationRunner, from: number, count: number, lines: string[]): void {
+/**
+ * The demo runs the scripted faux model: a decision needs a model port, and the
+ * vocabulary policy acts on nothing and waits for something it can hear.
+ */
+function cognitionModel(): PiCognitionAgent {
+  return new PiCognitionAgent({
+    provider: "faux",
+    model: "faux-cognition",
+    tokensPerSecond: 100_000,
+    draft: idleDecision,
+  });
+}
+
+async function runTicks(runner: SimulationRunner, from: number, count: number, lines: string[]): Promise<void> {
   const scripted = script();
   for (let tick = from; tick < from + count; tick += 1) {
     const plans = scripted[tick] ?? [];
-    const result = runner.runTick({ plans });
+    const result = await runner.runTickToPublication({ plans });
     lines.push(`  continued tick ${tick} -> ${result.status}`);
     if (result.status !== "completed") break;
   }
@@ -220,12 +268,18 @@ export async function runDemoScenario(options: DemoOptions = {}): Promise<DemoRe
     `content         ${config.items.length} items, ${config.rules.length} rules, ${config.formulas.length} formulas`,
   );
 
-  const runner = SimulationRunner.create(core, { timelineId: "timeline-demo" });
+  const runner = SimulationRunner.create(core, { timelineId: "timeline-demo", models: cognitionModel() });
   const scripted = script();
   let savedState: SimulationState = runner.state();
   for (let tick = 1; tick <= ticks; tick += 1) {
     const plans = scripted[tick] ?? [];
-    const result = runner.runTick({ plans });
+    const result = await runner.runTickToPublication({ plans });
+    if (result.status === "cognitive-barrier") {
+      lines.push(
+        `tick ${tick} waits for ${result.round.participants.map((participant) => participant.characterId).join(", ")}`,
+      );
+      break;
+    }
     if (plans.length > 0) lines.push(`tick ${tick}: ${plans.map((entry) => entry.planId).join(", ")}`);
     for (const outcome of result.summary.actionOutcomes) lines.push(`  ${outcome}`);
     for (const outcome of result.summary.influenceOutcomes)
@@ -245,7 +299,7 @@ export async function runDemoScenario(options: DemoOptions = {}): Promise<DemoRe
   const digest = digestOf(runner.state());
 
   // Continue the original timeline for a fixed number of ticks.
-  runTicks(runner, ticks + 1, continueTicks, lines);
+  await runTicks(runner, ticks + 1, continueTicks, lines);
   const continuedDigest = digestOf(runner.state());
 
   // Save explicitly, then load that save into a fresh timeline and continue.
@@ -280,10 +334,13 @@ export async function runDemoScenario(options: DemoOptions = {}): Promise<DemoRe
     saved = decoded.snapshot;
     const check = checkSnapshot(saved, config);
     if (!check.ok) throw new Error(`Save is not compatible with the current config: ${check.reason}`);
-    const restored = SimulationRunner.create(core, { timelineId: "timeline-demo-restored" });
+    const restored = SimulationRunner.create(core, {
+      timelineId: "timeline-demo-restored",
+      models: cognitionModel(),
+    });
     restored.load({ ...saved.state, timelineId: "timeline-demo-restored" });
     lines.push(`loaded save     tick ${saved.state.tick}, ${store.listSaves().length} save(s) in the store`);
-    runTicks(restored, ticks + 1, continueTicks, lines);
+    await runTicks(restored, ticks + 1, continueTicks, lines);
     loadedDigest = digestOf(restored.state());
     store.close();
   } finally {

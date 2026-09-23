@@ -757,14 +757,6 @@ export class SystemCatalog {
               { subject: registered.systemId },
             ),
           );
-        if (found.spec.version !== registered.spec.version)
-          diagnostics.push(
-            warning(
-              "compatibility",
-              "incompatible-system",
-              `System ${registered.systemId} and ${found.systemId} are not on the same version`,
-            ),
-          );
       }
     }
     return diagnostics;

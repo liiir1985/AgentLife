@@ -1,15 +1,25 @@
 import type { RuntimeConfig } from "../config/config-builder.js";
 import type { MergedItem } from "../config/config-merge.js";
 import type { SimpleValue } from "../config/value-expr.js";
-import { actionSpec, bodyConfigSpec, itemOf, itemsOf, modeAbilities } from "../simulation/config-view.js";
+import { actionSpec, bodyConfigSpec, itemLabel, itemOf, modeAbilities } from "../simulation/config-view.js";
 import type {
   ActionPlan,
   ActionPolicy,
   ActionStep,
+  ObservationRole,
+  ObservedSubject,
   SimulationState,
-  WorldEntity,
-  WorldEvent,
 } from "../simulation/types.js";
+
+/**
+ * The authorized player view and the commands built from it.
+ *
+ * Everything here reads what the player's own perception holds: the place, the
+ * objects in view by their observer-local reference, and the player's own action
+ * state. A reference is handed back when the player chooses, and the session maps
+ * it back onto the protected anchor the services work with, so the interface never
+ * addresses the world directly and never learns a name content did not project.
+ */
 
 export type EntityCandidateSource = "current-exits" | "visible-items" | "held-items" | "visible-entities";
 
@@ -47,8 +57,10 @@ export interface ActionCommandDefinition {
   readonly arguments: readonly ActionCommandArgument[];
 }
 
+/** One object the player may choose: a reference to hand back, an anchor to act on. */
 export interface EntityChoice {
-  readonly entityId: string;
+  readonly reference: string;
+  readonly anchor: string;
   readonly name: string;
   readonly detail: string;
 }
@@ -58,34 +70,37 @@ export interface AvailableAction {
   readonly firstChoices: readonly EntityChoice[];
 }
 
-export interface PlayerViewEntity extends EntityChoice {
-  readonly kind: "item" | "character";
-  readonly relation: "nearby" | "held" | "placed";
+export interface PerceivedSubject extends EntityChoice {
+  readonly kind: ObservationRole;
+  readonly held: boolean;
+  readonly recognisable: boolean;
 }
 
-export interface PlayerView {
+/** One observation the player actually holds, for the ordinary log. */
+export interface PerceivedObservation {
+  readonly observationId: string;
+  readonly text: string;
+}
+
+export interface PerceivedPlayerView {
   readonly playerId: string;
   readonly tick: number;
   readonly simSeconds: number;
   readonly runMode: string;
   readonly configId: string;
-  readonly locationId: string | null;
-  readonly locationName: string;
-  readonly locationDescription: string;
-  readonly exits: readonly EntityChoice[];
-  readonly entities: readonly PlayerViewEntity[];
-  readonly heldItems: readonly PlayerViewEntity[];
+  /** The place the player perceives, as its own observation describes it. */
+  readonly place: PerceivedSubject | null;
+  readonly exits: readonly PerceivedSubject[];
+  readonly entities: readonly PerceivedSubject[];
+  readonly heldItems: readonly PerceivedSubject[];
   readonly playerActions: readonly {
     readonly action: string;
     readonly status: string;
     readonly outcome: string | null;
   }[];
+  readonly observations: readonly PerceivedObservation[];
   readonly barrier: string | null;
-}
-
-export interface ObservedEvent {
-  readonly eventId: string;
-  readonly text: string;
+  readonly cognition: string | null;
 }
 
 export interface ActionParameterValues {
@@ -144,127 +159,78 @@ function commandOf(item: MergedItem): ActionCommandDefinition {
 }
 
 export function actionCommands(config: RuntimeConfig): readonly ActionCommandDefinition[] {
-  return itemsOf(config, "agentlife.interaction/action-command")
+  return config.items
+    .filter((item) => item.typeRef === "agentlife.interaction/action-command")
     .map(commandOf)
     .sort((left, right) => left.order - right.order || left.ref.localeCompare(right.ref));
 }
 
-function label(config: RuntimeConfig, ref: string): string {
-  const value = itemOf(config, ref)?.values.name;
-  return typeof value === "string" ? value : ref;
+/** Everything the player's own perception currently holds, in reference order. */
+function subjectsOf(state: SimulationState, playerId: string): readonly ObservedSubject[] {
+  const observer = state.perception.observers[playerId];
+  if (observer === undefined) return [];
+  return Object.values(observer.subjects).sort((left, right) => left.reference.localeCompare(right.reference));
 }
 
-function description(config: RuntimeConfig, ref: string): string {
-  const value = itemOf(config, ref)?.values.description;
-  return typeof value === "string" ? value : "";
+function perceivedOf(subject: ObservedSubject): PerceivedSubject {
+  return Object.freeze({
+    reference: subject.reference,
+    anchor: subject.anchor,
+    // Only what the observer recognised or was shown: a subject without a projected
+    // identity is described, never named.
+    name: subject.identity ?? subject.description,
+    detail: subject.description,
+    kind: subject.role,
+    held: subject.held,
+    recognisable: subject.recognisable,
+  });
 }
 
-/** Resolves the location carrying an entity without mutating or interpreting world rules. */
-export function physicalLocation(state: SimulationState, entityId: string): string | null {
-  const seen = new Set<string>();
-  let current: string | null = entityId;
-  while (current !== null && !seen.has(current)) {
-    seen.add(current);
-    const entity: WorldEntity | undefined = state.world.entities[current];
-    if (entity === undefined) return null;
-    if (entity.kind === "location") return entity.entityId;
-    current = entity.locatedAt ?? entity.heldBy ?? entity.placedOn;
-  }
-  return null;
-}
-
-export function playerView(config: RuntimeConfig, state: SimulationState, playerId: string): PlayerView {
-  const locationId = physicalLocation(state, playerId);
-  const location = locationId === null ? undefined : itemOf(config, locationId);
-  const exits = stringsOf(location?.values.exits).map((ref) => ({
-    entityId: ref,
-    name: label(config, ref),
-    detail: description(config, ref),
-  }));
-  const entities: PlayerViewEntity[] = [];
-  const heldItems: PlayerViewEntity[] = [];
-  for (const entity of Object.values(state.world.entities).sort((left, right) =>
-    left.entityId.localeCompare(right.entityId),
-  )) {
-    if (entity.entityId === playerId || entity.kind === "location") continue;
-    const common = {
-      entityId: entity.entityId,
-      name: label(config, entity.entityId),
-      detail: description(config, entity.entityId),
-      kind: entity.kind as "item" | "character",
-    };
-    if (entity.heldBy === playerId) heldItems.push({ ...common, relation: "held" });
-    else if (locationId !== null && physicalLocation(state, entity.entityId) === locationId)
-      entities.push({ ...common, relation: entity.placedOn === null ? "nearby" : "placed" });
-  }
+export function perceivedView(config: RuntimeConfig, state: SimulationState, playerId: string): PerceivedPlayerView {
+  const subjects = subjectsOf(state, playerId).map(perceivedOf);
+  const place = subjects.find((subject) => subject.kind === "place") ?? null;
+  const exits = subjects.filter((subject) => subject.kind === "exit");
+  const visible = subjects.filter((subject) => subject.kind === "character" || subject.kind === "item");
+  const pending = state.perception.observers[playerId]?.pending ?? [];
   return Object.freeze({
     playerId,
     tick: state.tick,
     simSeconds: state.simTime.seconds,
     runMode: state.runMode,
     configId: state.configId,
-    locationId,
-    locationName: locationId === null ? "未知地点" : label(config, locationId),
-    locationDescription: locationId === null ? "" : description(config, locationId),
+    place,
     exits: Object.freeze(exits),
-    entities: Object.freeze(entities),
-    heldItems: Object.freeze(heldItems),
+    entities: Object.freeze(visible),
+    heldItems: Object.freeze(visible.filter((subject) => subject.held)),
     playerActions: Object.freeze(
       state.actions
         .filter((action) => action.entityId === playerId)
         .map((action) => ({
-          action: label(config, action.action),
+          action: itemLabel(config, action.action),
           status: action.status,
           outcome: action.outcome?.reason ?? null,
         })),
     ),
+    observations: Object.freeze(
+      pending.map((observation) => ({ observationId: observation.observationId, text: observation.text })),
+    ),
     barrier: state.barrier?.detail ?? state.failure?.detail ?? null,
+    cognition:
+      state.round === null
+        ? null
+        : `${state.round.status}: ${state.round.participants
+            .map((participant) => `${participant.characterId}=${participant.state}`)
+            .join(", ")}`,
   });
 }
 
-function eventIsVisible(state: SimulationState, playerId: string, event: WorldEvent): boolean {
-  const locationId = physicalLocation(state, playerId);
-  const visible = new Set(
-    Object.values(state.world.entities)
-      .filter((entity) => locationId !== null && physicalLocation(state, entity.entityId) === locationId)
-      .map((entity) => entity.entityId),
-  );
-  visible.add(playerId);
-  return (event.actor !== null && visible.has(event.actor)) || (event.subject !== null && visible.has(event.subject));
-}
-
-function eventText(config: RuntimeConfig, playerId: string, event: WorldEvent): string {
-  const actor = event.actor === null ? "环境" : label(config, event.actor);
-  const subject = event.subject === null ? "环境" : label(config, event.subject);
-  const from = typeof event.from === "string" ? label(config, event.from) : String(event.from ?? "无");
-  const to = typeof event.to === "string" ? label(config, event.to) : String(event.to ?? "无");
-  if (event.kind === "relation-changed") {
-    if (event.stateRef === "agentlife.world/located-at") return `${subject}从${from}移动到了${to}`;
-    if (event.stateRef === "agentlife.world/held-by") {
-      if (event.to === playerId) return `你拿起了${subject}`;
-      if (event.from === playerId) return `你放下了${subject}`;
-      return `${actor}拿起了${subject}`;
-    }
-    if (event.stateRef === "agentlife.world/placed-on") return `${actor}把${subject}放在了${to}上`;
-    return `${subject}的状态从${from}变为${to}`;
-  }
-  if (event.kind === "environment-changed") return `${subject}发生了变化：${from} → ${to}`;
-  if (event.kind === "influence-rejected") return `${actor}对${subject}的尝试没有生效`;
-  if (event.kind === "process-established") return `${subject}开始发生变化`;
-  if (event.kind === "process-ended") return `${subject}的变化结束了`;
-  return `${subject}的变化仍在继续`;
-}
-
-/** Temporary phase-3 observation projection; formal perception replaces it in phase 4. */
-export function observedEvents(
-  config: RuntimeConfig,
-  state: SimulationState,
-  playerId: string,
-): readonly ObservedEvent[] {
+/** What the player perceived, in formation order; the ordinary log renders this. */
+export function perceivedObservations(state: SimulationState, playerId: string): readonly PerceivedObservation[] {
   return Object.freeze(
-    state.world.events
-      .filter((event) => eventIsVisible(state, playerId, event))
-      .map((event) => Object.freeze({ eventId: event.eventId, text: eventText(config, playerId, event) })),
+    (state.perception.observers[playerId]?.pending ?? []).map((observation) => ({
+      observationId: observation.observationId,
+      text: observation.text,
+    })),
   );
 }
 
@@ -276,15 +242,23 @@ function attributeKey(config: RuntimeConfig, ref: string): string | undefined {
 function passesFilters(
   config: RuntimeConfig,
   state: SimulationState,
-  entityId: string,
+  anchor: string,
   filters: readonly EntityCandidateFilter[],
 ): boolean {
-  const attributes = state.world.entities[entityId]?.attributes;
+  const attributes = state.world.entities[anchor]?.attributes;
   if (attributes === undefined) return false;
   return filters.every((filter) => {
     const key = attributeKey(config, filter.attribute);
     return key !== undefined && attributes[key] === filter.equals;
   });
+}
+
+/** The objects of one observer-local view that fit a declared candidate source. */
+function sourceOf(view: PerceivedPlayerView, source: EntityCandidateSource): readonly PerceivedSubject[] {
+  if (source === "current-exits") return view.exits;
+  if (source === "held-items") return view.heldItems;
+  if (source === "visible-items") return view.entities.filter((subject) => subject.kind === "item");
+  return view.entities;
 }
 
 export function entityChoices(
@@ -293,17 +267,16 @@ export function entityChoices(
   playerId: string,
   argument: Extract<ActionCommandArgument, { readonly kind: "entity" }>,
 ): readonly EntityChoice[] {
-  const view = playerView(config, state, playerId);
-  let ids: readonly string[];
-  if (argument.candidates === "current-exits") ids = view.exits.map((entry) => entry.entityId);
-  else if (argument.candidates === "held-items") ids = view.heldItems.map((entry) => entry.entityId);
-  else if (argument.candidates === "visible-items")
-    ids = view.entities.filter((entry) => entry.kind === "item").map((entry) => entry.entityId);
-  else ids = view.entities.map((entry) => entry.entityId);
+  const view = perceivedView(config, state, playerId);
   return Object.freeze(
-    ids
-      .filter((entityId) => passesFilters(config, state, entityId, argument.filters))
-      .map((entityId) => ({ entityId, name: label(config, entityId), detail: description(config, entityId) })),
+    sourceOf(view, argument.candidates)
+      .filter((subject) => passesFilters(config, state, subject.anchor, argument.filters))
+      .map((subject) => ({
+        reference: subject.reference,
+        anchor: subject.anchor,
+        name: subject.name,
+        detail: subject.detail,
+      })),
   );
 }
 
@@ -343,6 +316,7 @@ export function availableActions(
   return Object.freeze(available);
 }
 
+/** The plan one fulfilled command becomes; the session already mapped references. */
 export function planFromCommand(
   command: ActionCommandDefinition,
   values: ActionParameterValues,
@@ -359,7 +333,7 @@ export function planFromCommand(
   return Object.freeze({
     planId,
     entityId: playerId,
-    source: "diagnostic",
+    source: "player-command",
     formedVersion,
     conflict: command.conflict,
     steps: Object.freeze([step]),

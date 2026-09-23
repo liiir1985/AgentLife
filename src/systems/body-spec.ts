@@ -79,6 +79,19 @@ const STAGE_SCHEMA = Type.Object(
   { additionalProperties: false },
 );
 
+/**
+ * Declaration that an action becomes audible once it completes. The text is the
+ * value of the named input field; the body system never interprets it, and the
+ * world only records it after every stage of the action has finished.
+ */
+const UTTERANCE_SCHEMA = Type.Object(
+  {
+    /** Input field of the action step that carries the spoken text. */
+    field: Type.String(),
+  },
+  { additionalProperties: false },
+);
+
 const ACTION_SCHEMA = Type.Object(
   {
     name: Type.String(),
@@ -86,6 +99,7 @@ const ACTION_SCHEMA = Type.Object(
     ability: Type.String(),
     interruptible: Type.Boolean(),
     worldInfluence: Type.Optional(Type.String()),
+    utterance: Type.Optional(UTTERANCE_SCHEMA),
     stages: Type.Array(STAGE_SCHEMA),
   },
   { additionalProperties: false },
@@ -107,13 +121,20 @@ function actionProblems(
     if (typeof resource === "string" && !resources.has(resource))
       report(`${item.ref} names unknown resource ${resource}`);
   }
+  const utterance = item.values.utterance;
+  if (utterance === undefined) return;
+  const field = typeof utterance === "object" && utterance !== null ? Reflect.get(utterance, "field") : undefined;
+  if (typeof field !== "string" || field.trim() === "")
+    report(`${item.ref} declares an utterance whose text field is empty`);
+  else if (item.values.worldInfluence !== undefined)
+    report(`${item.ref} changes the world and speaks in the same action`);
 }
 
 export function createBodySpec(): SystemSpec {
   return {
     name: "system",
     namespace: "agentlife.body",
-    version: "1.1.0",
+    version: "1.2.0",
     kernel: ">=1.0.0 <2.0.0",
     requires: [],
     items: [
@@ -173,13 +194,14 @@ export function createBodySpec(): SystemSpec {
         kind: "action",
         fields: ACTION_SCHEMA,
         references: { ability: ["agentlife.body/ability"], worldInfluence: ["agentlife.world/influence-kind"] },
-        overridable: ["name", "description", "ability", "interruptible", "worldInfluence", "stages"],
+        overridable: ["name", "description", "ability", "interruptible", "worldInfluence", "utterance", "stages"],
         merge: {
           name: "replace",
           description: "replace",
           ability: "replace",
           interruptible: "replace",
           worldInfluence: "replace",
+          utterance: "replace",
           stages: "replace",
         },
       },

@@ -3,7 +3,7 @@ type: agentlife.interaction/action-command
 public: true
 fields:
   name: 说话
-  description: 说出一段文字；阶段 3 不触发其他角色认知。
+  description: 说出一段文字；说完之后，同地点的人才会听见。
   order: 60
   aliases: [say]
   action: agentlife.demo/say

@@ -332,3 +332,6 @@ Skill 只生产结构化候选和诊断，不负责持久化、用户审阅、�
 * [Core 命名规范与重命名方案](docs/core-naming-guide.md)
 * [阶段 0 Spike 报告](docs/phase-0-spike-report.md)
 * [阶段 1 报告：内容、配置与规则基础](docs/phase-1-report.md)
+* [阶段 2 报告：确定性模拟内核](docs/phase-2-report.md)
+* [阶段 3 报告：可玩 TUI 竖切](docs/phase-3-report.md)
+* [阶段 4 报告：授权感知、指令式玩家交互与 Pi 认知](docs/phase-4-report.md)

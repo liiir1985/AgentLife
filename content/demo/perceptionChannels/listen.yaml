@@ -1,0 +1,13 @@
+id: listen
+type: agentlife.perception/channel
+public: true
+fields:
+  name: 听觉
+  description: 只传递同地点已经完成的说话事件，不受光照和雾气影响。
+  channel: agentlife.demo/hearing
+  finestLevel: agentlife.demo/level-detail
+  carries: [events]
+  dimBelow: 0.5
+  faintBelow: 0.15
+  events:
+    - agentlife.demo/utterance-appearance

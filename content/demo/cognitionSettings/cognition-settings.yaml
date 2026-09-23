@@ -1,0 +1,23 @@
+id: cognition-settings
+type: agentlife.cognition/settings
+public: true
+fields:
+  name: 演示认知设置
+  description: 短计划、有限等待、模型次数与容量都写在内容里；provider 与 model 可由启动参数覆盖。
+  observationCapacity: 6
+  intentionReservation: 2
+  attentionCapacity: 3
+  maxPlanSteps: 3
+  maxAttempts: 2
+  requestTimeoutSeconds: 60
+  idleReviewTicks: 3
+  idleWaitLimitTicks: 12
+  provider: faux
+  model: faux-cognition
+  allowedActions:
+    - agentlife.demo/walk
+    - agentlife.demo/grasp
+    - agentlife.demo/lay-down
+    - agentlife.demo/use
+    - agentlife.demo/wave
+    - agentlife.demo/say

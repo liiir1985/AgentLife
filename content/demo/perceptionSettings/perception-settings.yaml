@@ -1,0 +1,14 @@
+id: perception-settings
+type: agentlife.perception/settings
+public: true
+fields:
+  name: 演示感知设置
+  description: 显著度、容量与重复抑制都写在内容里，服务不硬编码阈值。
+  maxObservationsPerTick: 8
+  repeatSuppressionTicks: 3
+  ordinarySalience: 1
+  changeSalience: 2
+  attentionSalience: 2
+  eventSalience: 3
+  outcomeSalience: 3
+  salienceThreshold: 0.5

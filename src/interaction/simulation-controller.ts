@@ -1,24 +1,26 @@
 import type { RuntimeConfig } from "../config/config-builder.js";
-import { stateVersionOf, type ActionPlan, type SimulationState } from "../simulation/types.js";
+import { cognitionSettings } from "../simulation/config-view.js";
+import { stateVersionOf, type ActionPlan, type CognitionRound, type SimulationState } from "../simulation/types.js";
 import { SimulationRunner, type TickResult } from "../simulation/runner.js";
 import { checkSnapshot, decodeSnapshot, encodeSnapshot, snapshotOf } from "../simulation/save.js";
 import { RuntimeStore, type SaveResult } from "../storage/runtime-store.js";
+import type { VersionedPayload } from "../storage/runtime-store-probe.js";
 import {
   availableActions,
   entityChoices,
-  observedEvents,
+  perceivedObservations,
+  perceivedView,
   planFromCommand,
-  playerView,
   type ActionCommandArgument,
   type ActionCommandDefinition,
   type ActionParameterValues,
   type AvailableAction,
   type EntityChoice,
-  type PlayerView,
-  type ObservedEvent,
+  type PerceivedObservation,
+  type PerceivedPlayerView,
 } from "./context-actions.js";
 
-export type ControllerMode = "ready" | "running" | "paused" | "barrier" | "idle" | "failed";
+export type ControllerMode = "ready" | "running" | "paused" | "barrier" | "idle" | "failed" | "cognition";
 
 export interface SimulationControlStatus {
   readonly mode: ControllerMode;
@@ -26,13 +28,53 @@ export interface SimulationControlStatus {
   readonly simSeconds: number;
   readonly pendingPlans: number;
   readonly runLimitRemaining: number | null;
+  /** What the open cognition barrier is waiting for, in readable terms. */
+  readonly round: string | null;
+  /** A save that will run once the tick in progress is published. */
+  readonly pendingSave: string | null;
   readonly detail: string;
+}
+
+/** One entity's perception, for the management view only. */
+export interface PerceptionPanelRow {
+  readonly characterId: string;
+  readonly subjects: number;
+  readonly pending: number;
+  readonly materialVersion: string;
+  readonly attentionVersion: string;
+}
+
+/** One entity's cognition, for the management view only. */
+export interface CognitionPanelRow {
+  readonly characterId: string;
+  readonly attention: readonly string[];
+  readonly understanding: string;
+  readonly questions: readonly string[];
+  readonly persistence: string;
+  readonly intentions: readonly string[];
+  readonly idle: string | null;
+  readonly decisions: number;
+  readonly pendingRequestId: string | null;
+  readonly attempts: number;
+}
+
+/** How much one entity holds, never what the private text says. */
+export interface MemoryPanelRow {
+  readonly characterId: string;
+  readonly entries: number;
+  readonly capacity: number;
+  readonly consumed: number;
 }
 
 export interface ManagementSnapshot {
   readonly state: SimulationState;
   readonly status: SimulationControlStatus;
   readonly pendingPlans: readonly ActionPlan[];
+  readonly perception: readonly PerceptionPanelRow[];
+  readonly cognition: readonly CognitionPanelRow[];
+  readonly workingMemory: readonly MemoryPanelRow[];
+  /** Model requests, validation refusals and round outcomes. */
+  readonly diagnostics: readonly string[];
 }
 
 export interface TimerPort {
@@ -73,13 +115,14 @@ export class ActionParameterSession {
     return current?.kind === "entity" ? entityChoices(this.config, this.state(), this.playerId, current) : [];
   }
 
-  acceptEntity(entityId: string): { readonly done: boolean; readonly error?: string } {
+  /** The player chose by reference; the session keeps the anchor the plan needs. */
+  acceptEntity(reference: string): { readonly done: boolean; readonly error?: string } {
     const current = this.current();
     if (current?.kind !== "entity") return { done: false, error: "当前参数不是实体选择" };
-    if (!this.choices().some((choice) => choice.entityId === entityId))
-      return { done: false, error: "该对象已不在候选中" };
-    if (current.binding === "target") this.target = entityId;
-    else this.destination = entityId;
+    const choice = this.choices().find((candidate) => candidate.reference === reference);
+    if (choice === undefined) return { done: false, error: "该对象已不在候选中" };
+    if (current.binding === "target") this.target = choice.anchor;
+    else this.destination = choice.anchor;
     this.index += 1;
     return { done: this.current() === undefined };
   }
@@ -122,6 +165,8 @@ export class SimulationController {
   private mode: ControllerMode = "ready";
   private timerHandle: unknown;
   private runRemaining: number | null = null;
+  private continuous = false;
+  private pendingSaveId: string | null = null;
   private readonly pending: ActionPlan[] = [];
   private sequence = 0;
   private loadSequence = 0;
@@ -154,16 +199,17 @@ export class SimulationController {
     for (const listener of this.listeners) listener();
   }
 
-  view(): PlayerView {
-    return playerView(this.config, this.runner.state(), this.options.playerId);
+  view(): PerceivedPlayerView {
+    return perceivedView(this.config, this.runner.state(), this.options.playerId);
   }
 
   availableActions(): readonly AvailableAction[] {
     return availableActions(this.config, this.runner.state(), this.options.playerId);
   }
 
-  observedEvents(): readonly ObservedEvent[] {
-    return observedEvents(this.config, this.runner.state(), this.options.playerId);
+  /** What the player really perceived; never a management or diagnostic text. */
+  perceptionLog(): readonly PerceivedObservation[] {
+    return perceivedObservations(this.runner.state(), this.options.playerId);
   }
 
   beginAction(commandRef: string): ActionParameterSession | undefined {
@@ -173,6 +219,13 @@ export class SimulationController {
     return new ActionParameterSession(action.command, this.config, () => this.runner.state(), this.options.playerId);
   }
 
+  /**
+   * Queues one fulfilled command.
+   *
+   * While a cognition barrier is open the plan joins that round, so everything the
+   * tick's participants decided is handed to the body as one batch; at a stable
+   * boundary it is fixed at the start of the next tick instead.
+   */
   queueAction(session: ActionParameterSession): { readonly ok: boolean; readonly message: string } {
     const available = this.availableActions().some((entry) => entry.command.ref === session.command.ref);
     if (!available) return { ok: false, message: "上下文已经变化，该动作不再可用" };
@@ -184,28 +237,50 @@ export class SimulationController {
       session.command,
       session.values(),
       this.options.playerId,
-      `player-command-${state.tick}-${this.sequence}`,
+      `${this.options.playerId}/tick-${state.tick + 1}/command-${this.sequence}`,
       stateVersionOf(state),
     );
+    if (this.runner.openRound() !== null) {
+      const joined = this.runner.submitPlayerPlan(plan);
+      this.detail = joined.message;
+      this.changed();
+      if (joined.ok) this.afterJoin();
+      return { ok: joined.ok, message: joined.message };
+    }
     this.pending.push(plan);
     this.detail = `${session.command.name}已排入下一 Tick`;
     this.changed();
     return { ok: true, message: this.detail };
   }
 
+  /** The player declines to decide in the open round; its existing actions keep running. */
+  skipPlayer(): { readonly ok: boolean; readonly message: string } {
+    const result = this.runner.skipPlayer(this.options.playerId);
+    this.detail = result.message;
+    this.changed();
+    if (result.ok) this.afterJoin();
+    return result;
+  }
+
   step(): TickResult {
     this.clearTimer();
+    const open = this.runner.openRound();
+    if (open !== null) {
+      this.detail = `等待决定：${this.roundDetail(open)}`;
+      this.changed();
+      return { status: "cognitive-barrier", round: open };
+    }
     const plans = this.pending.splice(0);
     const result = this.runner.runTick({ plans });
-    this.mode = result.status === "failed" ? "failed" : result.status === "barrier" ? "barrier" : "ready";
-    this.detail = `Tick ${result.summary.tick} ${result.status}`;
-    this.changed();
+    this.afterTick(result);
     return result;
   }
 
   run(limit?: number): void {
     if (limit !== undefined && (!Number.isInteger(limit) || limit < 1)) throw new Error("运行 Tick 数必须是正整数");
+    if (this.runner.openRound() !== null) throw new Error("认知屏障未解除，暂时不能连续运行");
     this.clearTimer();
+    this.continuous = true;
     this.mode = "running";
     this.runRemaining = limit ?? null;
     this.detail = limit === undefined ? "连续运行中" : `连续运行，剩余 ${limit} Tick`;
@@ -215,6 +290,7 @@ export class SimulationController {
 
   pause(): void {
     this.clearTimer();
+    this.continuous = false;
     this.mode = "paused";
     this.runRemaining = null;
     this.detail = "已暂停";
@@ -233,19 +309,67 @@ export class SimulationController {
       const plans = this.pending.splice(0);
       const result = this.runner.runTick({ plans });
       if (this.runRemaining !== null) this.runRemaining -= 1;
-      if (result.status !== "completed") {
-        this.mode = result.status === "barrier" ? "barrier" : "failed";
-        this.detail = `自动运行因 ${result.status} 停止`;
-      } else if (this.runRemaining === 0) {
-        this.mode = "ready";
-        this.runRemaining = null;
-        this.detail = "已达到运行 Tick 数";
-      } else {
-        this.detail = this.runRemaining === null ? "连续运行中" : `连续运行，剩余 ${this.runRemaining} Tick`;
-      }
-      this.changed();
-      if (this.mode === "running") this.scheduleNext(this.intervalMs);
+      this.afterTick(result);
     }, delayMs);
+  }
+
+  /**
+   * Applies one tick result: a cognition barrier freezes the simulation until its
+   * participants settled, and only a published tick runs the pending save and lets
+   * a continuous run continue.
+   */
+  private afterTick(result: TickResult): void {
+    if (result.status === "cognitive-barrier") {
+      this.mode = "cognition";
+      this.detail = `等待决定：${this.roundDetail(result.round)}`;
+      this.changed();
+      void this.resolveBarrier();
+      return;
+    }
+    this.mode = result.status === "failed" ? "failed" : result.status === "rule-barrier" ? "barrier" : "ready";
+    if (this.mode === "failed" || this.mode === "barrier") this.continuous = false;
+    let detail = `Tick ${result.summary.tick} ${result.status}`;
+    const saved = this.runPendingSave();
+    if (saved !== null) detail = `${detail}；${saved}`;
+    if (this.continuous && this.runRemaining === 0) {
+      this.continuous = false;
+      this.runRemaining = null;
+      detail = `${detail}；已达到运行 Tick 数`;
+    } else if (this.continuous) {
+      this.mode = "running";
+      detail = this.runRemaining === null ? "连续运行中" : `连续运行，剩余 ${this.runRemaining} Tick`;
+    }
+    this.detail = detail;
+    this.changed();
+    if (this.continuous) this.scheduleNext(this.intervalMs);
+  }
+
+  /** Runs the AI participants of the barrier, then publishes the tick if it can. */
+  private async resolveBarrier(): Promise<void> {
+    const round = this.runner.openRound();
+    if (round === null) return;
+    await this.runner.resolveCognition();
+    const finished = this.runner.completeCognition();
+    if (finished === null) {
+      const still = this.runner.openRound();
+      if (still !== null) this.detail = `等待决定：${this.roundDetail(still)}`;
+      this.changed();
+      return;
+    }
+    this.afterTick(finished);
+  }
+
+  /** A player decision may have been the last one the round was waiting for. */
+  private afterJoin(): void {
+    const finished = this.runner.completeCognition();
+    if (finished !== null) this.afterTick(finished);
+  }
+
+  private roundDetail(round: CognitionRound): string {
+    const waiting = round.participants
+      .filter((participant) => participant.state === "waiting" || participant.state === "requested")
+      .map((participant) => `${participant.characterId}(${participant.control})`);
+    return waiting.length === 0 ? "全部已决定" : waiting.join(", ");
   }
 
   private clearTimer(): void {
@@ -255,45 +379,135 @@ export class SimulationController {
 
   status(): SimulationControlStatus {
     const state = this.runner.state();
+    const round = this.runner.openRound();
     return Object.freeze({
       mode: this.mode,
       tick: state.tick,
       simSeconds: state.simTime.seconds,
       pendingPlans: this.pending.length,
       runLimitRemaining: this.runRemaining,
+      round:
+        round === null
+          ? null
+          : round.participants.map((participant) => `${participant.characterId}=${participant.state}`).join(", "),
+      pendingSave: this.pendingSaveId,
       detail: this.detail,
     });
   }
 
   managementSnapshot(): ManagementSnapshot {
+    const state = this.runner.state();
+    const capacity = cognitionSettings(this.config)?.observationCapacity ?? 0;
     return Object.freeze({
-      state: this.runner.state(),
+      state,
       status: this.status(),
       pendingPlans: Object.freeze([...this.pending]),
+      perception: Object.freeze(
+        Object.entries(state.perception.observers)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([characterId, observer]) => ({
+            characterId,
+            subjects: Object.keys(observer.subjects).length,
+            pending: observer.pending.length,
+            materialVersion: observer.materialVersion,
+            attentionVersion: observer.attentionVersion,
+          })),
+      ),
+      cognition: Object.freeze(
+        Object.entries(state.cognition.records)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([characterId, record]) => ({
+            characterId,
+            attention: record.attention,
+            understanding: record.understanding,
+            questions: record.questions,
+            persistence: record.persistence,
+            intentions: record.intentions.map(
+              (intention) =>
+                `${intention.intentionId} ${intention.status}(${intention.useCount}): ${intention.content}`,
+            ),
+            idle:
+              record.idle === null ? null : `${record.idle.kind} until ${record.idle.untilTick}: ${record.idle.detail}`,
+            decisions: record.decisions,
+            pendingRequestId: record.pendingRequestId,
+            attempts: record.attempts,
+          })),
+      ),
+      workingMemory: Object.freeze(
+        Object.entries(state.memory.records)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([characterId, record]) => ({
+            characterId,
+            entries: record.entries.length,
+            capacity,
+            consumed: record.consumed.length,
+          })),
+      ),
+      diagnostics: Object.freeze([
+        ...this.runner.roundNotes(),
+        ...(state.round === null ? [] : [`round ${state.round.roundId} ${state.round.status}`]),
+      ]),
     });
   }
 
-  save(saveId: string): SaveResult {
-    if (!/^[A-Za-z0-9._-]{1,64}$/.test(saveId)) throw new Error("存档名只能包含字母、数字、点、下划线和短横线");
-    if (this.pending.length > 0) throw new Error("仍有未接纳动作，请先推进 Tick");
-    if (this.mode === "running") throw new Error("请先暂停再保存");
+  /**
+   * Saves at a stable boundary.
+   *
+   * A request that arrives while the tick is held for cognition is not lost and not
+   * half-applied either: it becomes the pending save, which runs once the tick is
+   * published and before the next tick starts. A second request is refused rather
+   * than queued behind the first.
+   */
+  save(saveId: string): { readonly ok: boolean; readonly message: string } {
+    if (!/^[A-Za-z0-9._-]{1,64}$/.test(saveId))
+      return { ok: false, message: "存档名只能包含字母、数字、点、下划线和短横线" };
     const state = this.runner.state();
-    if (state.phase !== "publish") throw new Error("只能在稳定 Tick 边界保存");
+    if (state.phase !== "publish" || this.runner.openRound() !== null) {
+      if (this.pendingSaveId !== null)
+        return { ok: false, message: `已有待处理保存 ${this.pendingSaveId}，本次请求被拒绝` };
+      this.pendingSaveId = saveId;
+      this.detail = `保存 ${saveId} 待 Tick 发布后执行`;
+      this.changed();
+      return { ok: true, message: this.detail };
+    }
+    if (this.pending.length > 0) return { ok: false, message: "仍有未接纳动作，请先推进 Tick" };
+    if (this.mode === "running") return { ok: false, message: "请先暂停再保存" };
+    const outcome: SaveResult = this.commitSave(saveId);
+    this.changed();
+    return { ok: true, message: outcome === "duplicate" ? `已覆盖存档 ${saveId}` : `已保存 ${saveId}` };
+  }
+
+  private commitSave(saveId: string): SaveResult {
+    const state = this.runner.state();
     const snapshot = snapshotOf(state, saveId, this.config);
-    const result = this.store.saveSimulation({
+    return this.store.saveSimulation({
       saveId,
       timelineId: snapshot.timelineId,
       tick: snapshot.tick,
       configId: snapshot.configId,
       payload: encodeSnapshot(snapshot),
     });
-    this.detail = `已保存 ${saveId}`;
-    this.changed();
-    return result;
+  }
+
+  /** The pending save runs after a published tick and before the next one starts. */
+  private runPendingSave(): string | null {
+    const saveId = this.pendingSaveId;
+    if (saveId === null) return null;
+    if (this.runner.state().phase !== "publish") return null;
+    this.pendingSaveId = null;
+    const outcome = this.commitSave(saveId);
+    return `已保存 ${saveId}${outcome === "duplicate" ? "（覆盖）" : ""}（屏障后执行）`;
   }
 
   load(saveId: string): { readonly ok: boolean; readonly message: string } {
-    const document = this.store.loadSimulation(saveId);
+    let document: VersionedPayload | undefined;
+    try {
+      document = this.store.loadSimulation(saveId);
+    } catch (failure) {
+      // A payload stored by another schema version is an incompatibility to report,
+      // not a crash: phase 4 refuses a phase 3 save instead of migrating it.
+      return { ok: false, message: failure instanceof Error ? failure.message : String(failure) };
+    }
     if (document === undefined) return { ok: false, message: `找不到存档 ${saveId}` };
     const decoded = decodeSnapshot(document);
     if (!decoded.ok) return { ok: false, message: decoded.reason };
@@ -301,6 +515,8 @@ export class SimulationController {
     if (!check.ok) return { ok: false, message: check.reason };
     this.clearTimer();
     this.pending.splice(0);
+    this.pendingSaveId = null;
+    this.runRemaining = null;
     this.loadSequence += 1;
     this.runner.load({
       ...decoded.snapshot.state,
@@ -310,6 +526,13 @@ export class SimulationController {
     this.detail = `已加载 ${saveId}`;
     this.changed();
     return { ok: true, message: this.detail };
+  }
+
+  /** The commands the player may run right now, in readable terms. */
+  commandSummary(): string {
+    return this.availableActions()
+      .map((entry) => `${entry.command.name}(${entry.command.ref})`)
+      .join(", ");
   }
 
   close(): void {

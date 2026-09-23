@@ -1,0 +1,14 @@
+id: lamp-appearance
+type: agentlife.perception/appearance
+public: true
+fields:
+  name: 油灯的外在表现
+  description: 灯是否点着由环境表现给出，外观只描述它是什么。
+  subject: agentlife.demo/lamp
+  projections:
+    - level: agentlife.demo/level-outline
+      detail: 一个矮墩墩的东西
+    - level: agentlife.demo/level-shape
+      detail: 一个金属质地的东西
+    - level: agentlife.demo/level-detail
+      detail: 一盏黄铜油灯

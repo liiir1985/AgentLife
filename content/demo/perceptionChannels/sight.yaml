@@ -1,0 +1,16 @@
+id: sight
+type: agentlife.perception/channel
+public: true
+fields:
+  name: 视觉
+  description: 同地点的实体、出口与环境；光照不足、雾气过浓或视觉效率偏低时细节下降一整级。
+  channel: agentlife.demo/vision
+  finestLevel: agentlife.demo/level-detail
+  carries: [place, exits, subjects, environment]
+  lightFact: agentlife.demo/light-level
+  darkBelow: 60
+  fogFact: agentlife.demo/fog-density
+  fogDenseAbove: 0.7
+  dimBelow: 0.6
+  faintBelow: 0.15
+  events: []

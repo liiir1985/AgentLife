@@ -55,7 +55,14 @@ export type ItemTypeRef =
   | "agentlife.body/action"
   | "agentlife.character/character"
   | "agentlife.character/behaviour-tree"
-  | "agentlife.interaction/action-command";
+  | "agentlife.interaction/action-command"
+  | "agentlife.perception/resolution-level"
+  | "agentlife.perception/appearance"
+  | "agentlife.perception/event-appearance"
+  | "agentlife.perception/channel"
+  | "agentlife.perception/settings"
+  | "agentlife.cognition/settings"
+  | "agentlife.cognition/prompt";
 
 function asString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
@@ -312,4 +319,263 @@ function propertiesOf(schema: unknown): Record<string, TSchema> {
   if (typeof schema !== "object" || schema === null) return {};
   const properties: unknown = Reflect.get(schema as object, "properties");
   return typeof properties === "object" && properties !== null ? (properties as Record<string, TSchema>) : {};
+}
+
+/** The local id of a content ref, i.e. what follows the namespace. */
+export function localIdOf(ref: string): string {
+  const separator = ref.indexOf("/");
+  return separator < 0 ? ref : ref.slice(separator + 1);
+}
+
+/** The display name one content item declares, falling back to its ref. */
+export function itemLabel(config: RuntimeConfig, ref: string): string {
+  const value = itemOf(config, ref)?.values.name;
+  return typeof value === "string" ? value : ref;
+}
+
+/** The display description one content item declares. */
+export function itemDescription(config: RuntimeConfig, ref: string): string {
+  const value = itemOf(config, ref)?.values.description;
+  return typeof value === "string" ? value : "";
+}
+
+/** The subsystem modules one character declares; empty when content declares none. */
+export function characterModules(config: RuntimeConfig, ref: string): readonly string[] {
+  return asStrings(itemOf(config, ref)?.values["modules"]);
+}
+
+export interface ResolutionLevelSpec {
+  readonly ref: string;
+  readonly rank: number;
+  /** Whether this level is clear enough to attempt recognising the subject. */
+  readonly recognisable: boolean;
+}
+
+/** Resolution levels by ref, so a coarser level can never express a finer one's detail. */
+export function resolutionLevels(config: RuntimeConfig): ReadonlyMap<string, ResolutionLevelSpec> {
+  const levels = new Map<string, ResolutionLevelSpec>();
+  for (const item of itemsOf(config, "agentlife.perception/resolution-level")) {
+    const rank = asNumber(item.values.rank);
+    if (rank === undefined) continue;
+    levels.set(item.ref, { ref: item.ref, rank, recognisable: asBoolean(item.values.recognisable) ?? false });
+  }
+  return levels;
+}
+
+export interface AppearanceProjection {
+  readonly level: string;
+  readonly detail: string;
+  /** How the subject is called once the observer recognises it, if ever. */
+  readonly identity: string | null;
+}
+
+/** What one entity looks like at each declared resolution level. */
+export interface AppearanceSpec {
+  readonly ref: string;
+  readonly subject: string;
+  /** The level from which the projections of this appearance may express identity. */
+  readonly recognisable: string | null;
+  readonly projections: readonly AppearanceProjection[];
+}
+
+function appearanceOf(item: MergedItem): AppearanceSpec | undefined {
+  const subject = asString(item.values.subject);
+  if (subject === undefined) return undefined;
+  const projections = Array.isArray(item.values.projections) ? item.values.projections : [];
+  return {
+    ref: item.ref,
+    subject,
+    recognisable: asString(item.values.recognisable) ?? null,
+    projections: projections.map((entry) => {
+      const record = asRecord(entry);
+      return {
+        level: asString(record["level"]) ?? "",
+        detail: asString(record["detail"]) ?? "",
+        identity: asString(record["identity"]) ?? null,
+      };
+    }),
+  };
+}
+
+/** Appearances keyed by the entity they describe. */
+export function appearances(config: RuntimeConfig): ReadonlyMap<string, AppearanceSpec> {
+  const appearances = new Map<string, AppearanceSpec>();
+  for (const item of itemsOf(config, "agentlife.perception/appearance")) {
+    const appearance = appearanceOf(item);
+    if (appearance !== undefined) appearances.set(appearance.subject, appearance);
+  }
+  return appearances;
+}
+
+/** The appearance of one entity, or `undefined` when content describes none. */
+export function appearanceFor(config: RuntimeConfig, subject: string): AppearanceSpec | undefined {
+  const item = itemsOf(config, "agentlife.perception/appearance").find(
+    (candidate) => candidate.values.subject === subject,
+  );
+  return item === undefined ? undefined : appearanceOf(item);
+}
+
+/** The materials one perception channel can deliver. */
+export type ChannelMaterialKind = "place" | "exits" | "subjects" | "environment" | "events";
+
+/** One declared perception channel: how a material reaches an observer and what coarsens it. */
+export interface PerceptionChannelSpec {
+  readonly ref: string;
+  /** Body channel this perception channel reads its availability and efficiency from. */
+  readonly channel: string;
+  readonly channelKey: string;
+  readonly finestLevel: string;
+  /** Which materials of a frame this channel delivers. */
+  readonly carries: readonly ChannelMaterialKind[];
+  /** Environment fact holding the light level, and the value below which details drop. */
+  readonly lightFact: string | null;
+  readonly darkBelow: number | null;
+  readonly fogFact: string | null;
+  readonly fogDenseAbove: number | null;
+  /** Channel efficiency below which the channel carries nothing at all. */
+  readonly faintBelow: number | null;
+  /** Channel efficiency below which the channel loses one level of detail. */
+  readonly dimBelow: number | null;
+  readonly events: readonly string[];
+}
+
+export function perceptionChannels(config: RuntimeConfig): readonly PerceptionChannelSpec[] {
+  const channels: PerceptionChannelSpec[] = [];
+  for (const item of itemsOf(config, "agentlife.perception/channel")) {
+    const channel = asString(item.values.channel);
+    const finestLevel = asString(item.values.finestLevel);
+    if (channel === undefined || finestLevel === undefined) continue;
+    channels.push({
+      ref: item.ref,
+      channel,
+      channelKey: localIdOf(channel),
+      finestLevel,
+      carries: asStrings(item.values.carries) as readonly ChannelMaterialKind[],
+      lightFact: asString(item.values.lightFact) ?? null,
+      darkBelow: asNumber(item.values.darkBelow) ?? null,
+      fogFact: asString(item.values.fogFact) ?? null,
+      fogDenseAbove: asNumber(item.values.fogDenseAbove) ?? null,
+      faintBelow: asNumber(item.values.faintBelow) ?? null,
+      dimBelow: asNumber(item.values.dimBelow) ?? null,
+      events: asStrings(item.values.events),
+    });
+  }
+  return channels;
+}
+
+/** How one observable event is rendered for an observer that can perceive it. */
+export interface EventAppearanceSpec {
+  readonly ref: string;
+  readonly event: string;
+  readonly channel: string;
+  readonly template: string;
+}
+
+export function eventAppearances(config: RuntimeConfig): readonly EventAppearanceSpec[] {
+  const appearances: EventAppearanceSpec[] = [];
+  for (const item of itemsOf(config, "agentlife.perception/event-appearance")) {
+    const event = asString(item.values.event);
+    const channel = asString(item.values.channel);
+    const template = asString(item.values.template);
+    if (event === undefined || channel === undefined || template === undefined) continue;
+    appearances.push({ ref: item.ref, event, channel, template });
+  }
+  return appearances;
+}
+
+/** Every event kind content declares as observable at all. */
+export function observableEvents(config: RuntimeConfig): readonly string[] {
+  return [...new Set(eventAppearances(config).map((appearance) => appearance.event))].sort();
+}
+
+/** Salience bands and bounds one perception settings item declares. */
+export interface PerceptionSettingsSpec {
+  readonly ref: string;
+  readonly maxObservationsPerTick: number;
+  readonly repeatSuppressionTicks: number;
+  readonly ordinarySalience: number;
+  readonly changeSalience: number;
+  readonly attentionSalience: number;
+  readonly eventSalience: number;
+  readonly outcomeSalience: number;
+  readonly salienceThreshold: number;
+}
+
+export function perceptionSettings(config: RuntimeConfig): PerceptionSettingsSpec | undefined {
+  const item = itemsOf(config, "agentlife.perception/settings")[0];
+  if (item === undefined) return undefined;
+  return {
+    ref: item.ref,
+    maxObservationsPerTick: asNumber(item.values["maxObservationsPerTick"]) ?? 0,
+    repeatSuppressionTicks: asNumber(item.values["repeatSuppressionTicks"]) ?? 0,
+    ordinarySalience: asNumber(item.values["ordinarySalience"]) ?? 0,
+    changeSalience: asNumber(item.values["changeSalience"]) ?? 0,
+    attentionSalience: asNumber(item.values["attentionSalience"]) ?? 0,
+    eventSalience: asNumber(item.values["eventSalience"]) ?? 0,
+    outcomeSalience: asNumber(item.values["outcomeSalience"]) ?? 0,
+    salienceThreshold: asNumber(item.values["salienceThreshold"]) ?? 0,
+  };
+}
+
+/** Bounds and model choice one cognition settings item declares. */
+export interface CognitionSettingsSpec {
+  readonly ref: string;
+  readonly observationCapacity: number;
+  readonly intentionReservation: number;
+  readonly attentionCapacity: number;
+  readonly maxPlanSteps: number;
+  readonly maxAttempts: number;
+  readonly requestTimeoutSeconds: number;
+  readonly idleReviewTicks: number;
+  readonly idleWaitLimitTicks: number;
+  readonly provider: string;
+  readonly model: string;
+  readonly allowedActions: readonly string[];
+}
+
+export function cognitionSettings(config: RuntimeConfig): CognitionSettingsSpec | undefined {
+  const item = itemsOf(config, "agentlife.cognition/settings")[0];
+  if (item === undefined) return undefined;
+  return {
+    ref: item.ref,
+    observationCapacity: asNumber(item.values["observationCapacity"]) ?? 0,
+    intentionReservation: asNumber(item.values["intentionReservation"]) ?? 0,
+    attentionCapacity: asNumber(item.values["attentionCapacity"]) ?? 0,
+    maxPlanSteps: asNumber(item.values["maxPlanSteps"]) ?? 0,
+    maxAttempts: asNumber(item.values["maxAttempts"]) ?? 0,
+    requestTimeoutSeconds: asNumber(item.values["requestTimeoutSeconds"]) ?? 0,
+    idleReviewTicks: asNumber(item.values["idleReviewTicks"]) ?? 0,
+    idleWaitLimitTicks: asNumber(item.values["idleWaitLimitTicks"]) ?? 0,
+    provider: asString(item.values.provider) ?? "",
+    model: asString(item.values.model) ?? "",
+    allowedActions: asStrings(item.values.allowedActions),
+  };
+}
+
+/** The authored prompt a cognition request is started with. */
+export function cognitionPrompt(config: RuntimeConfig): string | undefined {
+  const item = itemsOf(config, "agentlife.cognition/prompt")[0];
+  const text = item === undefined ? undefined : asString(item.values.text);
+  return text === undefined || text.trim() === "" ? undefined : text;
+}
+
+/**
+ * The input field one action turns into an utterance when it completes.
+ *
+ * Content declares it, so the runtime never has to know which action is "say":
+ * the action that carries an utterance is the action whose text becomes audible.
+ */
+export function actionUtteranceField(config: RuntimeConfig, actionRef: string): string | null {
+  const utterance = itemOf(config, actionRef)?.values["utterance"];
+  const field =
+    typeof utterance === "object" && utterance !== null ? asString(Reflect.get(utterance, "field")) : undefined;
+  return field === undefined || field.trim() === "" ? null : field;
+}
+
+/** Environment facts by their member key, so materials can name what changed. */
+export function environmentFacts(config: RuntimeConfig): ReadonlyMap<string, string> {
+  const facts = new Map<string, string>();
+  for (const item of itemsOf(config, "agentlife.world/fact"))
+    facts.set(localIdOf(item.ref), item.values.name as string);
+  return facts;
 }

@@ -1,0 +1,7 @@
+id: prompt
+type: agentlife.cognition/prompt
+public: true
+fields:
+  name: AI 认知提示
+  description: 提示只描述决定格式与边界，不替角色选择意图。
+  text: cognitionPrompts/decision.md

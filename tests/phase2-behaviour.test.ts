@@ -3,6 +3,7 @@ import type { BehaviorTraceEntry } from "../src/behavior/behavior-tree-adapter.j
 import { ContentPackLoader } from "../src/content/content-pack-loader.js";
 import { CoreRuntime, packInput } from "../src/config/core-runtime.js";
 import type { SimulationRunner } from "../src/simulation/runner.js";
+import type { TickSummary } from "../src/simulation/types.js";
 import { createSystemSpecs } from "../src/systems/index.js";
 import { copyDemoPack } from "./helpers/demo-pack.js";
 import {
@@ -74,11 +75,11 @@ interface Decision {
 }
 
 /** Drives ticks until the warden's tree has resolved `wanted` decisions. */
-function driveDecisions(runner: SimulationRunner, wanted: number): readonly Decision[] {
+async function driveDecisions(runner: SimulationRunner, wanted: number): Promise<readonly Decision[]> {
   const decisions: Decision[] = [];
   let applied = 0;
   for (let tick = 1; tick <= 12 && decisions.length < wanted; tick += 1) {
-    runner.runTick();
+    await runner.runTickToPublication();
     const behaviour = runner.state().behaviours[DEMO_WARDEN];
     expect(behaviour).toBeDefined();
     if ((behaviour?.appliedKeys.length ?? 0) > applied) {
@@ -114,7 +115,7 @@ async function publishProblems(overrides: Readonly<Record<string, string | null>
 describe("phase 2 behaviour tree adapter", () => {
   it("resolves the gate-warden tree in the declared node order and records the plan it hands over", async () => {
     const simulation = await createSimulation({ timelineId: "timeline-behaviour" });
-    const decisions = driveDecisions(simulation.runner, 2);
+    const decisions = await driveDecisions(simulation.runner, 2);
     const walked = decisions.map((decision) => decision.trace.map((entry) => [entry.path, entry.state] as const));
 
     expect(decisions.map((decision) => decision.tick)).toEqual([1, 5]);
@@ -186,8 +187,10 @@ fields:
     const say = testPlan("player-say", DEMO_PLAYER, "parallel", [{ action: "agentlife.demo/say" }]);
     const wave = testPlan("companion-wave", DEMO_COMPANION, "parallel", [{ action: "agentlife.demo/wave" }]);
 
-    const forward = first.runner.runTick({ plans: [say, wave] });
-    const reversed = second.runner.runTick({ plans: [wave, say] });
+    const forward = await first.runner.runTickToPublication({ plans: [say, wave] });
+    const reversed = await second.runner.runTickToPublication({ plans: [wave, say] });
+    if (forward.status !== "completed" || reversed.status !== "completed")
+      throw new Error(`the tick did not publish: ${forward.status}/${reversed.status}`);
 
     expect(second.runner.state().world).toEqual(first.runner.state().world);
     expect(second.runner.state().body).toEqual(first.runner.state().body);
@@ -196,15 +199,15 @@ fields:
     expect(second.runner.state().behaviours).toEqual(first.runner.state().behaviours);
     expect(second.runner.state().activity).toEqual(first.runner.state().activity);
 
-    const observable = (result: typeof forward) => ({
-      stages: result.summary.stages.map((stage) => `${stage.stage}:${stage.status}`),
-      outcomes: [...result.summary.actionOutcomes].sort(),
-      influence: result.summary.influenceOutcomes,
-      events: result.summary.eventCount,
-      stateVersion: result.summary.stateVersion,
-      tick: result.summary.tick,
+    const observable = (summary: TickSummary) => ({
+      stages: summary.stages.map((stage) => `${stage.stage}:${stage.status}`),
+      outcomes: [...summary.actionOutcomes].sort(),
+      influence: summary.influenceOutcomes,
+      events: summary.eventCount,
+      stateVersion: summary.stateVersion,
+      tick: summary.tick,
     });
-    expect(observable(reversed)).toEqual(observable(forward));
+    expect(observable(reversed.summary)).toEqual(observable(forward.summary));
 
     // Only the order the plans were supplied in differs, and it is visible there alone.
     expect(forward.summary.actionOutcomes[0]).toContain("player-say");
@@ -214,7 +217,8 @@ fields:
 
   it("accepts a behaviour tree plan for the next tick without progressing it in the submitting tick", async () => {
     const simulation = await createSimulation({ timelineId: "timeline-lazy" });
-    const submitting = simulation.runner.runTick();
+    const submitting = await simulation.runner.runTickToPublication();
+    if (submitting.status !== "completed") throw new Error(`the tick did not publish: ${submitting.status}`);
 
     const planned = simulation.runner.state().actions.find((action) => action.plan.source === "behaviour-tree");
     expect(planned?.status).toBe("running");
@@ -226,7 +230,7 @@ fields:
     expect(submitting.summary.eventCount).toBe(0);
     expect(positionOf(simulation.runner, DEMO_WARDEN)).toBe(DEMO_SQUARE);
 
-    simulation.runner.runTick();
+    await simulation.runner.runTickToPublication();
     const progressed = simulation.runner.state().actions.find((action) => action.actionId === planned?.actionId);
     expect(progressed?.stageTicks).toBe(1);
     expect(progressed?.stepIndex).toBe(0);

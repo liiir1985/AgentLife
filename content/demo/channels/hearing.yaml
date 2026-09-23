@@ -1,0 +1,17 @@
+id: hearing
+type: agentlife.body/channel
+public: true
+fields:
+  name: 听觉
+  available: true
+  efficiency: 1
+  unit: ratio
+  policy:
+    rounding:
+      mode: half-away-from-zero
+      precision: 3
+    range:
+      min: 0
+      max: 1
+      boundary: inclusive
+    overflow: saturate

@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { applyDemoPack, causeCodes, createRegistry } from "./helpers/demo-pack.js";
 import { localViewMembers } from "../src/simulation/config-view.js";
-import type { SimulationRunner, TickResult } from "../src/simulation/runner.js";
-import type { ActionPlan } from "../src/simulation/types.js";
 import {
   DEMO_COMPANION,
   DEMO_KILN,
@@ -15,6 +13,7 @@ import {
   lastAction,
   positionOf,
   removeDirectory,
+  runPublishedTick,
   testPlan,
   worldOf,
 } from "./helpers/phase2.js";
@@ -100,12 +99,6 @@ const RUNTIME_VIEW_KEYS = [
   "agentlife.world/participation",
   "agentlife.world/placed-on",
 ];
-
-function run(runner: SimulationRunner, plans: readonly ActionPlan[] = []): TickResult {
-  const result = runner.runTick({ plans });
-  expect(result.status).toBe("completed");
-  return result;
-}
 
 /** Every field name reachable in one projection, at any depth. */
 function fieldNames(value: unknown): string[] {
@@ -213,7 +206,9 @@ describe("CharacterService", () => {
   it("stops new plans when paused while the running action, the world process and other entities go on", async () => {
     const sim = await createSimulation();
     const runner = sim.runner;
-    run(runner, [testPlan("use-lamp", DEMO_PLAYER, "parallel", [{ action: USE, target: DEMO_LAMP }])]);
+    await runPublishedTick(runner, [
+      testPlan("use-lamp", DEMO_PLAYER, "parallel", [{ action: USE, target: DEMO_LAMP }]),
+    ]);
 
     const paused = runner.characters.pause(runner.state().characters, DEMO_PLAYER);
     expect(runner.characters.acceptsNewPlans(paused, DEMO_PLAYER)).toBe(false);
@@ -223,18 +218,18 @@ describe("CharacterService", () => {
 
     // Tick 2: the paused character may not start anything new, but the action it
     // already ran keeps advancing.
-    run(runner, [testPlan("paused-say", DEMO_PLAYER, "parallel", [{ action: SAY }])]);
+    await runPublishedTick(runner, [testPlan("paused-say", DEMO_PLAYER, "parallel", [{ action: SAY }])]);
     expect(lastAction(runner, "paused-say")).toBeUndefined();
     expect(lastAction(runner, "use-lamp")?.stageTicks).toBe(1);
 
     // Tick 3: the running action reaches its world impact and the world accepts it.
-    run(runner);
+    await runPublishedTick(runner);
     expect(lastAction(runner, "use-lamp")?.status).toBe("completed");
     expect(worldOf(runner).environment["lamp-state"]).toBe(1);
 
     // Tick 4: the lamp glow process advances and the warden moves, both outside
     // the paused character.
-    run(runner);
+    await runPublishedTick(runner);
     expect(worldOf(runner).environment["light-level"]).toBe(520);
     expect(positionOf(runner, DEMO_WARDEN)).toBe(DEMO_KILN);
   });

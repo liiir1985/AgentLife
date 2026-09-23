@@ -24,9 +24,10 @@
     "phase1:verify": "tsc --noEmit && prettier --check . && vitest run",
     "phase2:verify": "tsc --noEmit && prettier --check . && vitest run",
     "phase2:demo": "tsx src/simulation/phase2-demo.ts",
-    "phase3:tui": "tsx src/tui/phase3-app.ts",
-    "phase3:demo": "tsx src/interaction/phase3-demo.ts",
-    "phase3:verify": "tsc --noEmit && prettier --check . && vitest run"
+    "phase3:verify": "tsc --noEmit && prettier --check . && vitest run",
+    "phase4:tui": "tsx src/tui/phase4-app.ts",
+    "phase4:demo": "tsx src/interaction/phase4-demo.ts",
+    "phase4:verify": "tsc --noEmit && prettier --check . && vitest run"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.86.1",

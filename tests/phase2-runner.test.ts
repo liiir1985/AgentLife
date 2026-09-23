@@ -8,6 +8,7 @@ import {
   DEMO_SQUARE,
   createSimulation,
   createSimulationWith,
+  runPublishedTick,
   testPlan,
 } from "./helpers/phase2.js";
 
@@ -27,8 +28,12 @@ const TWELVE_PHASES: readonly string[] = [
   "publish",
 ];
 
-/** The phases phase 2 always records as an explicit no-op. */
-const PHASE_2_NO_OPS: readonly string[] = ["perception", "cognitive-demand", "cognitive-barrier", "memory"];
+/**
+ * The stages phase 4 added to the tick: perception, the demand summary, the global
+ * barrier and the working-memory confirmation. The demo pack declares perception and
+ * cognition, so the companion really is perceived and really decides.
+ */
+const COGNITION_STAGES: readonly string[] = ["perception", "cognitive-demand", "cognitive-barrier", "memory"];
 
 const OPERATE_LAMP = testPlan("player-operate", DEMO_PLAYER, "parallel", [
   { action: "agentlife.demo/use", target: DEMO_LAMP },
@@ -42,14 +47,14 @@ function recordedPhases(stages: readonly StageRecord[]): readonly string[] {
 }
 
 describe("phase 2 simulation runner", () => {
-  it("records the fixed twelve phases in order and keeps the phase-2 stages as explicit no-ops", async () => {
+  it("records the fixed twelve phases in order, running the perception, cognition and memory stages", async () => {
     expect(TICK_STAGES).toEqual(TWELVE_PHASES);
 
     const simulation = await createSimulation({ timelineId: "timeline-phases" });
-    const result = simulation.runner.runTick();
+    const result = await simulation.runner.runTickToPublication();
+    if (result.status !== "completed") throw new Error(`the first tick did not publish: ${result.status}`);
     const stages = result.summary.stages;
 
-    expect(result.status).toBe("completed");
     expect(recordedPhases(stages)).toEqual(TWELVE_PHASES);
     expect(stages[0]?.stage).toBe("fixed");
     expect(stages.at(-1)?.stage).toBe("publish");
@@ -62,10 +67,13 @@ describe("phase 2 simulation runner", () => {
     // The propagation phase is recorded every tick, even when it selects no trigger.
     expect(stages.find((stage) => stage.stage === "propagate")?.status).toBe("done");
 
-    for (const phase of PHASE_2_NO_OPS) {
+    // The demo content gives the companion perception and cognition modules, so the
+    // stages that used to be explicit no-ops now carry the observations and the
+    // decision of the one AI participant.
+    for (const phase of COGNITION_STAGES) {
       const record = stages.find((stage) => stage.stage === phase);
       expect(record).toBeDefined();
-      expect(record?.status).toBe("no-op");
+      expect(record?.status).toBe("done");
     }
   });
 
@@ -80,17 +88,15 @@ describe("phase 2 simulation runner", () => {
     };
 
     // Tick 1 wakes the standing tick rules, whose body value changes are re-evaluated in the same tick.
-    const first = simulation.runner.runTick();
+    const first = await runPublishedTick(simulation.runner);
     requested.push(current);
     current = [];
     expect(requested[0]).toContain("agentlife.body/value-changed");
     // No rule under the environment trigger ran: nothing changed the environment yet.
     expect(requested[0]).not.toContain("agentlife.world/environment-changed");
-    expect(first.summary.stages.find((stage) => stage.stage === "propagate")?.detail).toContain(
-      "agentlife.body/value-changed",
-    );
+    expect(first.stages.find((stage) => stage.stage === "propagate")?.detail).toContain("agentlife.body/value-changed");
 
-    simulation.runner.runTick();
+    await runPublishedTick(simulation.runner);
     requested.push(current);
     current = [];
     expect(requested[1]).not.toContain("agentlife.world/environment-changed");
@@ -98,7 +104,7 @@ describe("phase 2 simulation runner", () => {
     // Operating the lamp changes an environment value; the same tick re-evaluates that trigger.
     let environmentTick = 0;
     for (let tick = 3; tick <= 8 && environmentTick === 0; tick += 1) {
-      simulation.runner.runTick({ plans: tick === 3 ? [OPERATE_LAMP] : [] });
+      await runPublishedTick(simulation.runner, tick === 3 ? [OPERATE_LAMP] : []);
       requested.push(current);
       current = [];
       if (requested.at(-1)?.includes("agentlife.world/environment-changed")) environmentTick = tick;
@@ -118,6 +124,7 @@ describe("phase 2 simulation runner", () => {
     const failed = limited.runner.runTick();
 
     expect(failed.status).toBe("failed");
+    if (failed.status !== "failed") return;
     expect(failed.summary.tick).toBe(0);
     expect(failed.summary.stages.find((stage) => stage.stage === "stability")?.status).toBe("failed");
     expect(limited.runner.state().failure).toEqual({
@@ -131,7 +138,7 @@ describe("phase 2 simulation runner", () => {
 
     // The same first tick settles when the tick is allowed enough rounds.
     const settled = await createSimulation({ timelineId: "timeline-limited" });
-    expect(settled.runner.runTick().status).toBe("completed");
+    await runPublishedTick(settled.runner);
     expect(settled.runner.state().tick).toBe(1);
     expect(settled.runner.state().failure).toBeNull();
   });
@@ -156,10 +163,12 @@ describe("phase 2 simulation runner", () => {
       requested.push(request.trigger);
       return call(request);
     };
-    const result = simulation.runner.runTick();
+    const result = await simulation.runner.runTickToPublication();
     const state = simulation.runner.state();
 
-    expect(result.status).toBe("barrier");
+    expect(result.status).toBe("rule-barrier");
+    if (result.status !== "rule-barrier")
+      throw new Error(`the tick did not stop on the rule barrier: ${result.status}`);
     expect(state.failure).toBeNull();
     expect(state.runMode).toBe("barrier");
     expect(state.barrier?.kind).toBe("missing-rules");
@@ -174,8 +183,14 @@ describe("phase 2 simulation runner", () => {
     // Only the vocabulary the content declares was ever asked for.
     expect(requested.length).toBeGreaterThan(0);
     for (const trigger of requested) expect(declared.has(trigger)).toBe(true);
-    for (const phase of PHASE_2_NO_OPS)
-      expect(result.summary.stages.some((stage) => stage.stage === phase)).toBe(false);
+    // The tick never reached stage 8, so no observer received material; the stages
+    // that follow are still recorded, each as an explicit no-op rather than work a
+    // participant did.
+    const recorded = result.summary.stages.map((stage) => stage.stage);
+    expect(recorded).not.toContain("perception");
+    for (const phase of ["cognitive-demand", "cognitive-barrier", "memory"]) {
+      expect(result.summary.stages.find((stage) => stage.stage === phase)?.status).toBe("no-op");
+    }
   });
 
   it("records a whole tick: rule evaluation, world request, adjudication and the resulting event", async () => {
@@ -183,8 +198,8 @@ describe("phase 2 simulation runner", () => {
     const move = testPlan("player-move-out", DEMO_PLAYER, "parallel", [
       { action: "agentlife.demo/walk", destination: DEMO_KILN },
     ]);
-    simulation.runner.runTick({ plans: [move] });
-    for (let tick = 2; tick <= 4; tick += 1) simulation.runner.runTick();
+    await runPublishedTick(simulation.runner, [move]);
+    for (let tick = 2; tick <= 4; tick += 1) await runPublishedTick(simulation.runner);
 
     const result = simulation.runner.state().summary;
     const state = simulation.runner.state();

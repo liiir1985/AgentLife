@@ -1,0 +1,14 @@
+id: bench-appearance
+type: agentlife.perception/appearance
+public: true
+fields:
+  name: 长凳的外在表现
+  description: 支撑物也按分辨率给出细节。
+  subject: agentlife.demo/bench
+  projections:
+    - level: agentlife.demo/level-outline
+      detail: 一块横着的东西
+    - level: agentlife.demo/level-shape
+      detail: 一个坐得下人的东西
+    - level: agentlife.demo/level-detail
+      detail: 一张被磨得发亮的长凳

@@ -126,6 +126,10 @@ function checkTier(item: SystemItem, report: (diagnostic: ReturnType<typeof erro
       item.ref,
       `${item.ref} is a normal entity and must not run a behaviour tree next to full cognition`,
     );
+  if (tier === "normal")
+    for (const module of SUBJECTIVE_MODULES)
+      if (!modules.includes(module))
+        reportInvariant(report, item.ref, `${item.ref} is a normal entity and must reference the ${module} module`);
   if (kind === "cognition" && !modules.includes("cognition"))
     reportInvariant(report, item.ref, `${item.ref} uses a cognition entry without a cognition module`);
   if (kind === "user" && modules.includes("cognition") && !modules.includes("memory"))
@@ -161,7 +165,7 @@ export function createCharacterSpec(): SystemSpec {
   return {
     name: "system",
     namespace: "agentlife.character",
-    version: "1.1.0",
+    version: "1.2.0",
     kernel: ">=1.0.0 <2.0.0",
     requires: [],
     items: [

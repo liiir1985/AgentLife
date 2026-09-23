@@ -1,0 +1,8 @@
+id: level-detail
+type: agentlife.perception/resolution-level
+public: true
+fields:
+  name: 细节
+  description: 能看清衣着、物品与状态，可以据此尝试辨认。
+  rank: 3
+  recognisable: true

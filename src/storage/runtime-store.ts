@@ -33,7 +33,13 @@ export const currentConfig = sqliteTable("current_config", {
 
 export const RUNTIME_CONFIG_PAYLOAD_VERSION = "1";
 export const RUNTIME_CONFIG_PAYLOAD_TYPE = "runtime-config";
-export const SIMULATION_SAVE_VERSION = "2";
+/**
+ * Payload version of an explicit save, unrelated to the SQLite migration level.
+ * Phase 4 widened the saved state with perception, Working Memory, cognition and
+ * the cognition round, so a version-2 payload is refused by `decodeSnapshot`
+ * rather than migrated: phase 4 does not continue phase-3 saves.
+ */
+export const SIMULATION_SAVE_VERSION = "3";
 export const SIMULATION_SAVE_TYPE = "simulation-save";
 
 export const simulationSaves = sqliteTable("simulation_saves", {

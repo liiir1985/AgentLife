@@ -3,7 +3,15 @@ import type { RuntimeConfig } from "../src/config/config-builder.js";
 import type { PublishResult } from "../src/config/core-runtime.js";
 import type { SystemSpec } from "../src/config/system-spec.js";
 import { createSystemSpecs } from "../src/systems/index.js";
-import { applyDemoPack, causeCodes, createRegistry, removeDirectory } from "./helpers/demo-pack.js";
+import {
+  applyDemoPack,
+  causeCodes,
+  createRegistry,
+  demoManifest,
+  demoSystemPins,
+  removeDirectory,
+  withSystemVersion,
+} from "./helpers/demo-pack.js";
 import { declaredAttributes } from "../src/simulation/config-view.js";
 import { publishDemoWith } from "./helpers/phase2.js";
 
@@ -154,35 +162,12 @@ function moodAttribute(initial: string): string {
  * byte-identical to the shipped demo content, so two publishes that differ only
  * in their system declarations share one content identity.
  */
-const MANIFEST_ANY_WORLD_VERSION = `pack: agentlife.demo
-version: "1.2.0"
-kernel: ">=1.0.0 <2.0.0"
-dependencies: []
-systems:
-  - agentlife.world
-  - agentlife.body@1.1.0
-  - agentlife.character@1.1.0
-  - agentlife.interaction@1.1.0
-sections:
-  world: agentlife.world/world
-  locations: agentlife.world/location
-  items: agentlife.world/item
-  environment: agentlife.world/fact
-  attributes: agentlife.world/attribute
-  influences: agentlife.world/influence-kind
-  localViews: agentlife.world/local-view
-  placements: agentlife.world/placement
-  values: agentlife.body/value
-  channels: agentlife.body/channel
-  abilities: agentlife.body/ability
-  resources: agentlife.body/resource
-  modes: agentlife.body/mode
-  bodies: agentlife.body/body
-  actions: agentlife.body/action
-  characters: agentlife.character/character
-  behaviourTrees: agentlife.character/behaviour-tree
-  commands: agentlife.interaction/action-command
-`;
+const MANIFEST_ANY_WORLD_VERSION = demoManifest({
+  // The world pin is removed; every other declaration is the shipped one.
+  systems: withSystemVersion(demoSystemPins(), "agentlife.world", "").map((pin) =>
+    pin.endsWith("@") ? pin.slice(0, -1) : pin,
+  ),
+});
 
 /** The demo systems with one version raised; the spec hash follows the version. */
 const BUMPED_WORLD: readonly SystemSpec[] = createSystemSpecs().map((system) =>

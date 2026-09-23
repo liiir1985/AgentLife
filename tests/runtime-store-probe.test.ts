@@ -161,28 +161,33 @@ describe("RuntimeStoreProbe", () => {
   describe("crash recovery", () => {
     const points: FailurePoint[] = ["before-transaction", "inside-transaction", "after-commit"];
 
-    it.each(points)("exposes only whole states after crashing at %s", (point) => {
-      const directory = mkdtempSync(path.join(tmpdir(), "agent-life-crash-"));
-      const filename = path.join(directory, "state.sqlite");
-      try {
-        const crashed = spawnSync(process.execPath, ["--import", "tsx", CRASH_WORKER, filename, point], {
-          cwd: fileURLToPath(new URL("..", import.meta.url)),
-          encoding: "utf8",
-        });
-        expect(crashed.status, crashed.stderr).toBe(point === "after-commit" ? 3 : 1);
+    it.each(points)(
+      "exposes only whole states after crashing at %s",
+      (point) => {
+        const directory = mkdtempSync(path.join(tmpdir(), "agent-life-crash-"));
+        const filename = path.join(directory, "state.sqlite");
+        try {
+          const crashed = spawnSync(process.execPath, ["--import", "tsx", CRASH_WORKER, filename, point], {
+            cwd: fileURLToPath(new URL("..", import.meta.url)),
+            encoding: "utf8",
+          });
+          expect(crashed.status, crashed.stderr).toBe(point === "after-commit" ? 3 : 1);
 
-        const store = new RuntimeStoreProbe(filename);
-        store.registerPayloadSchema("1", "probe", PROBE_SCHEMA);
-        const committed = point === "after-commit";
-        expect(store.count("snapshots")).toBe(committed ? 1 : 0);
-        expect(store.count("payloads")).toBe(committed ? 1 : 0);
-        expect(store.count("idempotency_commits")).toBe(committed ? 1 : 0);
-        expect(store.count("phase_records")).toBe(committed ? 1 : 0);
-        expect(store.latestSnapshot("timeline-a")).toEqual(committed ? envelope(1, 1) : undefined);
-        store.close();
-      } finally {
-        rmSync(directory, { recursive: true, force: true });
-      }
-    });
+          const store = new RuntimeStoreProbe(filename);
+          store.registerPayloadSchema("1", "probe", PROBE_SCHEMA);
+          const committed = point === "after-commit";
+          expect(store.count("snapshots")).toBe(committed ? 1 : 0);
+          expect(store.count("payloads")).toBe(committed ? 1 : 0);
+          expect(store.count("idempotency_commits")).toBe(committed ? 1 : 0);
+          expect(store.count("phase_records")).toBe(committed ? 1 : 0);
+          expect(store.latestSnapshot("timeline-a")).toEqual(committed ? envelope(1, 1) : undefined);
+          store.close();
+        } finally {
+          rmSync(directory, { recursive: true, force: true });
+        }
+        // Each case starts a real process with tsx, which costs seconds under a loaded suite.
+      },
+      60_000,
+    );
   });
 });

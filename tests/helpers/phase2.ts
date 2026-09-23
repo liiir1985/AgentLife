@@ -2,9 +2,10 @@ import type { RuntimeConfig } from "../../src/config/config-builder.js";
 import { CoreRuntime, packInput, type PublishResult } from "../../src/config/core-runtime.js";
 import { ContentPackLoader } from "../../src/content/content-pack-loader.js";
 import { SimulationRunner } from "../../src/simulation/runner.js";
-import type { SimulationSettings } from "../../src/simulation/types.js";
+import type { ActionPlan, SimulationSettings, TickSummary } from "../../src/simulation/types.js";
 import type { SystemSpec } from "../../src/config/system-spec.js";
 import { createSystemSpecs } from "../../src/systems/index.js";
+import { scriptedModel, type CognitionScript } from "./cognition.js";
 import { copyDemoPack, loadPack, removeDirectory } from "./demo-pack.js";
 
 /**
@@ -82,6 +83,17 @@ export interface SimulationOptions {
   readonly systems?: readonly SystemSpec[];
 }
 
+/**
+ * The scripted cognition model of a phase 2/3 timeline.
+ *
+ * The faux provider streams its answer chunk by chunk, and with a token rate every
+ * chunk costs a timer: one tick of the demo timeline resolves one cognition round
+ * and would spend most of a second inside the provider. A rate of zero makes the
+ * provider hand the answer back on the microtask queue, so these tests stay about
+ * the simulation rather than about streaming.
+ */
+const PHASE2_COGNITION: CognitionScript = Object.freeze({ tokensPerSecond: 0 });
+
 /** A running simulation over the untouched demo content. */
 export async function createSimulation(options: SimulationOptions = {}): Promise<DemoSimulation> {
   const { core, config } = await publishDemo(options.systems);
@@ -91,6 +103,7 @@ export async function createSimulation(options: SimulationOptions = {}): Promise
     runner: SimulationRunner.create(core, {
       timelineId: options.timelineId ?? "timeline-test",
       settings: { ...PHASE2_SETTINGS, ...(options.settings ?? {}) },
+      models: scriptedModel(PHASE2_COGNITION),
     }),
   };
 }
@@ -108,6 +121,7 @@ export async function createSimulationWith(
     runner: SimulationRunner.create(core, {
       timelineId: options.timelineId ?? "timeline-test",
       settings: { ...PHASE2_SETTINGS, ...(options.settings ?? {}) },
+      models: scriptedModel(PHASE2_COGNITION),
     }),
   };
 }
@@ -125,6 +139,23 @@ export function testPlan(
   steps: readonly TestStep[],
 ) {
   return { planId, entityId, source: "diagnostic" as const, formedVersion: "", conflict, steps };
+}
+
+/**
+ * Runs one tick to its publication and hands back what it published.
+ *
+ * A tick may stop on a cognition barrier - the demo companion is an AI participant
+ * - and `runTickToPublication` resolves it with the scripted model, so the tick a
+ * test asks for is a tick that really happened. Anything else than a published tick
+ * is a test failure, not a state to assert on.
+ */
+export async function runPublishedTick(
+  runner: SimulationRunner,
+  plans: readonly ActionPlan[] = [],
+): Promise<TickSummary> {
+  const result = await runner.runTickToPublication({ plans });
+  if (result.status !== "completed") throw new Error(`the tick did not publish: ${result.status}`);
+  return result.summary;
 }
 
 export function worldOf(runner: SimulationRunner) {

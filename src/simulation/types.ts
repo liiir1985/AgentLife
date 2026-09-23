@@ -41,8 +41,8 @@ export const TICK_STAGES: readonly TickStage[] = [
   "publish",
 ];
 
-/** Stages phase 2 records as an explicit no-op. */
-export const NO_OP_STAGES: readonly TickStage[] = ["perception", "cognitive-demand", "cognitive-barrier", "memory"];
+/** The four stages perception, cognition and memory fill: 8 to 11. */
+export const COGNITION_STAGES: readonly TickStage[] = ["perception", "cognitive-demand", "cognitive-barrier", "memory"];
 
 export type RunMode = "single-step" | "continuous" | "fast-forward" | "barrier" | "paused" | "idle" | "failed";
 
@@ -116,9 +116,10 @@ export type WorldEventKind =
   | "influence-rejected"
   | "process-established"
   | "process-advanced"
-  | "process-ended";
+  | "process-ended"
+  | "utterance";
 
-/** An audit record of an objective world change; never a character experience. */
+/** An audit record of one objective world change; never a character experience. */
 export interface WorldEvent {
   readonly eventId: string;
   readonly tick: number;
@@ -128,6 +129,8 @@ export interface WorldEvent {
   readonly stateRef: string | null;
   readonly from: SimpleValue | null;
   readonly to: SimpleValue | null;
+  /** What was actually said; `null` for every kind but an utterance. */
+  readonly text: string | null;
 }
 
 export interface WorldState {
@@ -168,7 +171,7 @@ export type ActionStatus =
 
 export type ActionPolicy = "parallel" | "queue" | "replace";
 
-export type ActionSource = "diagnostic" | "behaviour-tree" | "cognition";
+export type ActionSource = "diagnostic" | "player-command" | "behaviour-tree" | "cognition";
 
 export interface ActionStep {
   readonly action: string;
@@ -267,7 +270,7 @@ export interface RuleBarrier {
 
 export interface TickFailure {
   readonly stage: TickStage;
-  readonly code: "propagation-limit" | "action-rejected" | "world-rejected" | "config-mismatch";
+  readonly code: "propagation-limit" | "action-rejected" | "world-rejected" | "config-mismatch" | "cognition-failed";
   readonly detail: string;
 }
 
@@ -287,6 +290,306 @@ export interface ActivityState {
   readonly scheduled: readonly ScheduledCheck[];
 }
 
+/**
+ * What one observer actually perceived.
+ *
+ * A subject is the current structured description of one object in the
+ * observer's own terms: an observer-local reference, the resolution level the
+ * observation reached and the rendered description. The protected anchor is kept
+ * for continuity and for mapping a reference back to the entity the services
+ * work with; it is never shown to the observer and never used to look the
+ * subject up elsewhere.
+ */
+export interface ObservationSubject {
+  readonly anchor: string;
+  readonly reference: string;
+  readonly role: ObservationRole;
+  /** Whether the observer itself carries the subject. */
+  readonly held: boolean;
+  readonly level: string;
+  /** Whether the reached resolution allows attempting recognition at all. */
+  readonly recognisable: boolean;
+  readonly description: string;
+  /** Recognised local name; only ever set at a recognisable resolution. */
+  readonly identity: string | null;
+}
+
+/** Role one observed object plays in the observer's current view. */
+export type ObservationRole = "place" | "exit" | "character" | "item";
+
+/** One subject's continuity record: the last description plus its observation tick. */
+export interface ObservedSubject extends ObservationSubject {
+  /** Tick the subject was last observed as present. */
+  readonly lastTick: number;
+  /** Tick an observation about the subject was last submitted. */
+  readonly lastEmittedTick: number;
+}
+
+export type ObservationKind =
+  "appearance" | "continuing" | "change" | "disappearance" | "reappearance" | "event" | "outcome";
+
+/** One structured observation; the authoritative record of what was perceived. */
+export interface Observation {
+  readonly observationId: string;
+  readonly tick: number;
+  /** Perception channel the observation arrived through. */
+  readonly channel: string;
+  readonly kind: ObservationKind;
+  readonly subject: ObservationSubject | null;
+  /** Objective event this observation is about, when it reports one. */
+  readonly eventId: string | null;
+  readonly text: string;
+  readonly salience: number;
+}
+
+/** One observer's perception instance. */
+export interface ObserverPerception {
+  /** Current description of every object the observer can still see or hear. */
+  readonly subjects: Readonly<Record<string, ObservedSubject>>;
+  /** Observations formed and not yet consumed by that observer's cognition. */
+  readonly pending: readonly Observation[];
+  /** Observer-local reference per anchor; allocated once and kept while known. */
+  readonly references: Readonly<Record<string, string>>;
+  readonly referencesUsed: number;
+  /** Tick until which a stable subject stays silent, keyed by anchor. */
+  readonly suppressedUntil: Readonly<Record<string, number>>;
+  /** Objective events already turned into observations; never processed twice. */
+  readonly processedEvents: readonly string[];
+  /** State version and attention version the last perception run was based on. */
+  readonly materialVersion: string;
+  readonly attentionVersion: string;
+}
+
+export interface PerceptionState {
+  readonly version: string;
+  readonly observers: Readonly<Record<string, ObserverPerception>>;
+}
+
+/**
+ * One item admitted into an entity's Working Memory.
+ *
+ * Only what was admitted may enter a cognition call: `text` is the rendered line
+ * the model reads, `reference` is the observer-local name it may quote back, and
+ * `anchor` is what the service maps that quote onto.
+ */
+export interface WorkingMemoryEntry {
+  readonly entryId: string;
+  readonly kind: "observation" | "intention";
+  readonly sourceId: string;
+  readonly admittedTick: number;
+  readonly salience: number;
+  readonly text: string;
+  readonly anchor: string | null;
+  readonly reference: string | null;
+  /** What kind of object the line is about, so an action can address it correctly. */
+  readonly role: ObservationRole | null;
+}
+
+export interface WorkingMemoryRecord {
+  readonly entries: readonly WorkingMemoryEntry[];
+  readonly sequence: number;
+  /** Entries the last confirmation consumed; diagnostics, never a delete list. */
+  readonly consumed: readonly string[];
+}
+
+export interface WorkingMemoryState {
+  readonly version: string;
+  readonly records: Readonly<Record<string, WorkingMemoryRecord>>;
+}
+
+export type IntentionStatus = "active" | "paused" | "satisfied" | "abandoned";
+
+/** One prospective state the cognition of an entity holds. */
+export interface IntentionRecord {
+  readonly intentionId: string;
+  readonly content: string;
+  readonly source: "cognition" | "user";
+  readonly status: IntentionStatus;
+  readonly createdTick: number;
+  readonly reviewedTick: number;
+  /** How often cognition actually considered or followed it. */
+  readonly useCount: number;
+}
+
+export type IdleKind = "external-event" | "review-condition" | "ongoing-activity";
+
+/** What an entity with nothing to do right now committed itself to wait for. */
+export interface IdleCommitment {
+  readonly kind: IdleKind;
+  readonly detail: string;
+  /** Verifiable event an `external-event` commitment waits for. */
+  readonly event: string | null;
+  /** Tick at which the commitment is reviewed again. */
+  readonly reviewTick: number;
+  /** Hard bound: after this tick the wait is over and cognition runs again. */
+  readonly untilTick: number;
+}
+
+export interface CognitionRecord {
+  readonly characterId: string;
+  /** Observer-local references the entity currently attends to. */
+  readonly attention: readonly string[];
+  readonly understanding: string;
+  readonly questions: readonly string[];
+  readonly persistence: string;
+  readonly intentions: readonly IntentionRecord[];
+  /** Identity counter for intentions this entity has ever created. */
+  readonly intentionSequence: number;
+  readonly idle: IdleCommitment | null;
+  readonly lastDecisionTick: number;
+  /** Decisions accepted so far; an entity without one still owes an initial decision. */
+  readonly decisions: number;
+  /** Identity of the request currently allowed to commit, for late-response isolation. */
+  readonly pendingRequestId: string | null;
+  readonly attempts: number;
+}
+
+export interface CognitionState {
+  readonly version: string;
+  readonly records: Readonly<Record<string, CognitionRecord>>;
+}
+
+export type CognitionDemandReason =
+  "initial" | "observation" | "outcome" | "idle-review" | "idle-expiry" | "player-command";
+
+/** Why one entity has to think before the tick may go on. */
+export interface CognitionDemand {
+  readonly demandId: string;
+  readonly characterId: string;
+  readonly reason: CognitionDemandReason;
+  readonly detail: string;
+  /** Observation identities the demand is based on. */
+  readonly observations: readonly string[];
+}
+
+export type ParticipantState = "waiting" | "requested" | "decided" | "skipped" | "failed";
+
+export interface CognitionParticipant {
+  readonly characterId: string;
+  readonly control: "cognition" | "user";
+  readonly state: ParticipantState;
+  readonly requestId: string | null;
+  readonly attempts: number;
+  readonly detail: string;
+}
+
+/** One intention the model wants created, restated, paused, satisfied or dropped. */
+export interface IntentionChange {
+  /** Existing intention, or `null` to create a new one. */
+  readonly intentionId: string | null;
+  readonly content: string;
+  readonly status: IntentionStatus;
+}
+
+/**
+ * One body step as the model expressed it: `target` and `destination` name
+ * observer-local references, which the service maps onto protected anchors
+ * before anything is handed to the body.
+ */
+export interface CognitiveStep {
+  readonly action: string;
+  readonly target?: string;
+  readonly destination?: string;
+  readonly inputs?: Readonly<Record<string, string>>;
+}
+
+/** What one participant decided; the service validates every field before committing. */
+export interface CognitiveDecision {
+  readonly characterId: string;
+  readonly requestId: string;
+  readonly attention: readonly string[];
+  readonly understanding: string;
+  readonly questions: readonly string[];
+  readonly persistence: string;
+  readonly intentionChanges: readonly IntentionChange[];
+  /** Text the entity wants to say; becomes the declaring action's utterance step. */
+  readonly speech: string | null;
+  readonly steps: readonly CognitiveStep[];
+  readonly idle: IdleCommitment | null;
+  /** Observation references the entity confirms it actually used. */
+  readonly consumedObservations: readonly string[];
+  /** Intention identities the entity actually considered or followed. */
+  readonly consideredIntentions: readonly string[];
+}
+
+export type CognitionRoundStatus = "open" | "resolved" | "failed";
+
+/** One global cognition barrier: the participants, their demands and their decisions. */
+export interface CognitionRound {
+  readonly roundId: string;
+  readonly tick: number;
+  readonly stateVersion: string;
+  readonly participants: readonly CognitionParticipant[];
+  readonly demands: readonly CognitionDemand[];
+  readonly decisions: Readonly<Record<string, CognitiveDecision>>;
+  readonly plans: readonly ActionPlan[];
+  readonly status: CognitionRoundStatus;
+  readonly failure: string | null;
+}
+
+/** One observation as a cognition request carries it. */
+export interface CognitionObservationInput {
+  readonly observationId: string;
+  /** How the model may name the object; `null` when the line is about no object. */
+  readonly reference: string | null;
+  readonly text: string;
+  /** `place`, `exit`, `character` or `item`, so an action can name the right object. */
+  readonly role: ObservationRole | null;
+}
+
+/** One intention as a cognition request carries it. */
+export interface CognitionIntentionInput {
+  readonly intentionId: string;
+  readonly content: string;
+  readonly status: IntentionStatus;
+}
+
+/** One action a decision may request. */
+export interface CognitionActionInput {
+  readonly action: string;
+  readonly name: string;
+  readonly description: string;
+}
+
+/**
+ * The complete input of one cognition request.
+ *
+ * It carries only what was admitted into Working Memory plus the entity's own
+ * intentions and the actions its body may run. Nothing here is a world state, an
+ * identity or another entity's private text.
+ */
+export interface CognitionInput {
+  readonly characterId: string;
+  readonly requestId: string;
+  readonly roundId: string;
+  readonly tick: number;
+  readonly stateVersion: string;
+  readonly systemPrompt: string;
+  readonly situation: string;
+  /** Observer-local references the entity currently attends to. */
+  readonly attention: readonly string[];
+  /** What the entity committed itself to wait for, if anything. */
+  readonly idle: IdleCommitment | null;
+  readonly observations: readonly CognitionObservationInput[];
+  readonly intentions: readonly CognitionIntentionInput[];
+  readonly actions: readonly CognitionActionInput[];
+  readonly maxSteps: number;
+  readonly idleWaitLimitTicks: number;
+  /** Attempt number, counting from 1. */
+  readonly attempt: number;
+  /** Why the previous attempt was refused; `null` on the first attempt. */
+  readonly rejection: string | null;
+  readonly timeoutMs: number;
+}
+
+/** What one cognition request produced. */
+export interface CognitionModelResult {
+  readonly status: "decided" | "failed" | "timed-out" | "cancelled";
+  readonly detail: string;
+  /** Untrusted draft; the coordinator validates every reference before use. */
+  readonly decision: CognitiveDecision | null;
+}
+
 export interface TickSummary {
   readonly tick: number;
   readonly stages: readonly StageRecord[];
@@ -294,6 +597,10 @@ export interface TickSummary {
   readonly actionOutcomes: readonly string[];
   readonly influenceOutcomes: readonly InfluenceOutcome[];
   readonly eventCount: number;
+  /** Observations this tick submitted to any observer's pending stream. */
+  readonly observations: number;
+  /** How the cognition round of this tick ended; `null` when nobody had to think. */
+  readonly cognition: string | null;
 }
 
 export interface SimulationState {
@@ -307,6 +614,11 @@ export interface SimulationState {
   readonly world: WorldState;
   readonly characters: CharacterState;
   readonly body: BodyState;
+  readonly perception: PerceptionState;
+  readonly memory: WorkingMemoryState;
+  readonly cognition: CognitionState;
+  /** The cognition round of the tick in progress, while the barrier holds it. */
+  readonly round: CognitionRound | null;
   readonly behaviours: Readonly<Record<string, BehaviorRuntimeState>>;
   readonly activity: ActivityState;
   readonly actions: readonly ActionInstance[];
