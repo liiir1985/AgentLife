@@ -226,8 +226,45 @@ fields:
 `;
 }
 
+/** The demo stamina value at another starting value. */
+export function staminaValue(initial: number): string {
+  return `id: stamina
+type: agentlife.body/value
+public: true
+fields:
+  name: 体力
+  type: number
+  initial: ${String(initial)}
+  unit: points
+  policy:
+    rounding:
+      mode: half-away-from-zero
+      precision: 1
+    range:
+      min: 0
+      max: 100
+      boundary: inclusive
+    overflow: saturate
+`;
+}
+
+/** One settings field as YAML: a scalar stays a scalar, a mapping becomes a block. */
+function settingsField(key: string, value: unknown, indent: string): string {
+  if (typeof value !== "object" || value === null) return `${key}: ${String(value)}`;
+  const entries = Object.entries(value as Readonly<Record<string, unknown>>);
+  if (entries.length === 0) return `${key}: {}`;
+  const inner = `${indent}  `;
+  const body = entries
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([nested, entry]) => settingsField(nested, entry, inner))
+    .join(`\n${inner}`);
+  return `${key}:\n${inner}${body}`;
+}
+
 /** The demo cognition settings with different bounds. */
-export function cognitionSettings(fields: Readonly<Record<string, SimpleValue>>): string {
+export function cognitionSettings(
+  fields: Readonly<Record<string, SimpleValue | Readonly<Record<string, unknown>>>>,
+): string {
   const base: Record<string, SimpleValue> = {
     name: "演示认知设置",
     description: "阶段 4 的认知边界。",
@@ -240,8 +277,8 @@ export function cognitionSettings(fields: Readonly<Record<string, SimpleValue>>)
     idleReviewTicks: 3,
     idleWaitLimitTicks: 12,
   };
-  const merged = { ...base, ...fields };
-  const lines = Object.entries(merged).map(([key, value]) => `${key}: ${String(value)}`);
+  const merged: Record<string, SimpleValue | Readonly<Record<string, unknown>>> = { ...base, ...fields };
+  const lines = Object.entries(merged).map(([key, value]) => settingsField(key, value, "  "));
   return `id: cognition-settings
 type: agentlife.cognition/settings
 public: true

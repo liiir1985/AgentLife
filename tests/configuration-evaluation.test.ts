@@ -296,8 +296,9 @@ describe("deterministic evaluation", () => {
       const values = Object.fromEntries(first.trace.stateChanges.map((entry) => [entry.stateRef, entry.newValue]));
       expect(values["agentlife.body/values.move-cost"]).toBe(5.7);
       expect(values["agentlife.body/values.move-cost-factor"]).toBe(2.52);
-      // 25 points of stamina is tired: cognition narrows to what actually happens,
-      // and the body drops the abilities that need strength.
+      // 25 points of stamina is tired: the body puts cognition on the restricted
+      // tier, where content lets it hold fewer observations, and drops the
+      // abilities that need strength.
       expect(values["agentlife.body/cognitive-participation"]).toBe("restricted");
       expect(values["agentlife.body/current-mode"]).toBe("agentlife.demo/drowsy");
       // `value-changed` no longer writes stamina; only advancing an action costs it.

@@ -36,9 +36,6 @@ export interface DemandInput {
   readonly admitted: Readonly<Record<string, readonly Observation[]>>;
 }
 
-/** Demand reasons a body that only allows restricted cognition still receives. */
-const RESTRICTED_REASONS: readonly CognitionDemandReason[] = ["observation", "outcome"];
-
 const REASON_ORDER: readonly CognitionDemandReason[] = [
   "initial",
   "idle-expiry",
@@ -105,6 +102,10 @@ export class CognitionService {
    * change at or above the configured change salience), when the re-review moment
    * of its idle commitment arrived, or when the bounded wait ran out. A body that
    * forbids cognition is never asked, and a stable scene is never re-evaluated.
+   *
+   * Participation beyond `forbidden` never narrows *why* an entity is asked: a
+   * restricted body owes the same decision as a full one, and pays for its tier
+   * later, at Working Memory admission, where content declares how much it holds.
    */
   demands(input: DemandInput): readonly CognitionDemand[] {
     const settings = cognitionSettings(this.config);
@@ -152,10 +153,8 @@ export class CognitionService {
         reasons.push("observation");
         details.push(`${notable.length} notable change(s)`);
       }
-      const usable =
-        participation === "restricted" ? reasons.filter((reason) => RESTRICTED_REASONS.includes(reason)) : reasons;
-      if (usable.length === 0) continue;
-      const reason = REASON_ORDER.find((candidate) => usable.includes(candidate)) ?? usable[0];
+      if (reasons.length === 0) continue;
+      const reason = REASON_ORDER.find((candidate) => reasons.includes(candidate)) ?? reasons[0];
       demands.push(
         Object.freeze({
           demandId: `${characterId}/tick-${input.tick}/demand`,

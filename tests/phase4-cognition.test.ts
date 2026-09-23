@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { idleDecision, type ScriptedDraft } from "../src/agent/scripted-cognition.js";
 import { CognitionService } from "../src/simulation/cognition-service.js";
-import { cognitionSettings } from "../src/simulation/config-view.js";
+import { cognitionSettings, workingMemoryCapacity } from "../src/simulation/config-view.js";
 import { cognitionActionNames } from "../src/simulation/cognition-coordinator.js";
 import type {
   CognitionDemand,
@@ -17,6 +17,7 @@ import {
   cognitionSettings as settingsFile,
   dispose,
   phase4Simulation,
+  staminaValue,
 } from "./helpers/phase4.js";
 
 /**
@@ -290,7 +291,7 @@ function actionIds(state: SimulationState): readonly string[] {
  * what reached its Working Memory are the only inputs that can change the answer.
  */
 describe("the demands a body's participation allows", () => {
-  it("never asks a body that forbids cognition and narrows a restricted one to what happened", async () => {
+  it("asks a restricted body for exactly what it asks a full one", async () => {
     const simulation = await phase4Simulation();
     try {
       const state = simulation.runner.state();
@@ -338,12 +339,6 @@ describe("the demands a body's participation allows", () => {
       ): readonly CognitionDemandReason[] =>
         demandsOn(entityId, participation, admitted, record).map((demand) => demand.reason);
 
-      // Nothing has reached the body yet, so a full participant still owes its first
-      // decision. "Has not decided yet" is not something that happened to it, so the
-      // same body under restricted participation owes nothing here.
-      expect(reasonsFor(COMPANION, "allowed", [])).toEqual(["initial"]);
-      expect(reasonsFor(COMPANION, "restricted", [])).toEqual([]);
-
       // What did happen reaches a restricted body as it reaches a full one: it keeps
       // reacting to its own results and to the events it could perceive.
       const decided: CognitionRecord = { ...fresh, decisions: 1 };
@@ -355,9 +350,8 @@ describe("the demands a body's participation allows", () => {
       expect(reacting[0]?.observations).toEqual(["o1", "o2"]);
       expect(reasonsFor(COMPANION, "allowed", [event, outcome], decided)).toEqual(["outcome"]);
 
-      // A commitment to wait is re-reviewed on its own schedule, but a body that may
-      // only react is asked again when something arrives, never because the wait came
-      // around: idle-review and idle-expiry are not reasons a restricted body has.
+      // A commitment to wait is re-reviewed on its own schedule, however tired the
+      // body is. Both reasons are the system's, and both are still reachable.
       const waiting: CognitionRecord = {
         ...fresh,
         decisions: 1,
@@ -381,8 +375,21 @@ describe("the demands a body's participation allows", () => {
       };
       expect(reasonsFor(COMPANION, "allowed", [], waiting)).toEqual(["idle-review"]);
       expect(reasonsFor(COMPANION, "allowed", [], expired)).toEqual(["idle-expiry"]);
-      expect(reasonsFor(COMPANION, "restricted", [], waiting)).toEqual([]);
-      expect(reasonsFor(COMPANION, "restricted", [], expired)).toEqual([]);
+
+      // Restricted is not a narrower list of reasons: a limited body owes exactly the
+      // decision a full one owes, and pays for its tier later, at Working Memory
+      // admission. This is the direct negation of a filter that used to live here.
+      const situations: readonly (readonly [string, CognitionRecord, readonly Observation[]])[] = [
+        ["a body that never decided", fresh, []],
+        ["something that just happened", decided, [event, outcome]],
+        ["a commitment to wait", waiting, []],
+        ["a wait that ran out", expired, []],
+      ];
+      for (const [situation, record, admitted] of situations) {
+        const allowed = reasonsFor(COMPANION, "allowed", admitted, record);
+        expect(allowed, situation).not.toEqual([]);
+        expect(reasonsFor(COMPANION, "restricted", admitted, record), situation).toEqual(allowed);
+      }
 
       // A body that forbids cognition is never asked, not even for what happened to
       // it, and a body the player controls is never asked to think at all.
@@ -390,6 +397,106 @@ describe("the demands a body's participation allows", () => {
       expect(reasonsFor(COMPANION, "forbidden", [], waiting)).toEqual([]);
       expect(state.characters.characters[PLAYER]?.control).toBe("user");
       expect(reasonsFor(PLAYER, "allowed", [event])).toEqual([]);
+    } finally {
+      dispose(simulation);
+    }
+  }, 40_000);
+});
+
+/**
+ * The bound a participation tier buys.
+ *
+ * Every case runs the same scene twice with one declared number changed, so the
+ * only possible cause of a difference is that number: the mechanism is the
+ * system's, the value is content's.
+ */
+describe("the Working Memory bound a participation tier declares", () => {
+  /** The demo scene with the body pinned at one tier and the settings replaced. */
+  const scene = (stamina: number, limits: Readonly<Record<string, Readonly<Record<string, number>>>>) =>
+    phase4Simulation({
+      overrides: {
+        "values/stamina.yaml": staminaValue(stamina),
+        "cognitionSettings/cognition-settings.yaml": settingsFile({ participationLimits: limits }),
+      },
+      script: { draft: idleDecision },
+    });
+
+  const heldBy = (simulation: Awaited<ReturnType<typeof scene>>, entityId: string): number =>
+    (simulation.runner.state().memory.records[entityId]?.entries ?? []).length;
+
+  it("holds no more observations than the tier declares", async () => {
+    // 40 points of stamina is tired: the demo rule derives restricted participation.
+    const narrow = await scene(40, { restricted: { workingMemoryCapacity: 1 } });
+    const wide = await scene(40, { restricted: { workingMemoryCapacity: 5 } });
+    try {
+      await narrow.runner.runTickToPublication();
+      await wide.runner.runTickToPublication();
+      expect(narrow.runner.state().body.bodies[COMPANION]?.participation).toBe("restricted");
+      expect(wide.runner.state().body.bodies[COMPANION]?.participation).toBe("restricted");
+      expect(heldBy(narrow, COMPANION)).toBe(1);
+      expect(heldBy(wide, COMPANION)).toBeGreaterThan(heldBy(narrow, COMPANION));
+    } finally {
+      dispose(narrow);
+      dispose(wide);
+    }
+  }, 40_000);
+
+  it("gives a tier the settings do not list the full-effort capacity", async () => {
+    const unlisted = await scene(40, { forbidden: { workingMemoryCapacity: 0 } });
+    const silent = await scene(40, {});
+    const explicit = await scene(40, { restricted: { workingMemoryCapacity: 6 } });
+    try {
+      for (const simulation of [unlisted, silent, explicit]) await simulation.runner.runTickToPublication();
+      // A tier nobody declares a bound for behaves exactly like a tier given the
+      // full-effort capacity: the fallback is the base, not a refusal.
+      expect(heldBy(unlisted, COMPANION)).toBe(heldBy(explicit, COMPANION));
+      expect(heldBy(silent, COMPANION)).toBe(heldBy(explicit, COMPANION));
+      expect(heldBy(silent, COMPANION)).toBeGreaterThan(1);
+    } finally {
+      dispose(unlisted);
+      dispose(silent);
+      dispose(explicit);
+    }
+  }, 40_000);
+
+  it("never asks a body that forbids cognition and leaves its bound to content", async () => {
+    // 10 points of stamina is spent: cognition is offline, no engine-side zeroing.
+    const unrealised = await scene(10, { restricted: { workingMemoryCapacity: 1 } });
+    const offline = await scene(10, { forbidden: { workingMemoryCapacity: 0 } });
+    try {
+      await unrealised.runner.runTickToPublication();
+      await offline.runner.runTickToPublication();
+      for (const simulation of [unrealised, offline])
+        expect(simulation.runner.state().body.bodies[COMPANION]?.participation).toBe("forbidden");
+      // The tier name alone costs nothing: with no number declared for it the body
+      // still holds what arrived, and holds nothing only because content said zero.
+      expect(heldBy(unrealised, COMPANION)).toBeGreaterThan(1);
+      expect(heldBy(offline, COMPANION)).toBe(0);
+      expect(offline.runner.state().perception.observers[COMPANION]?.pending ?? []).toEqual([]);
+      // Nobody owed a decision, so the round never opened for either body.
+      for (const simulation of [unrealised, offline])
+        expect(simulation.runner.state().cognition.records[COMPANION]?.decisions).toBe(0);
+    } finally {
+      dispose(unrealised);
+      dispose(offline);
+    }
+  }, 40_000);
+
+  it("resolves a tier to what the settings declare, or to the full-effort capacity", async () => {
+    const simulation = await phase4Simulation({
+      overrides: {
+        "cognitionSettings/cognition-settings.yaml": settingsFile({
+          participationLimits: { restricted: { workingMemoryCapacity: 1 } },
+        }),
+      },
+    });
+    try {
+      const settings = cognitionSettings(simulation.config);
+      expect(workingMemoryCapacity(settings, "restricted")).toBe(1);
+      expect(workingMemoryCapacity(settings, "allowed")).toBe(settings?.observationCapacity);
+      // A tier word no content declares a bound for is the base, never an error.
+      expect(workingMemoryCapacity(settings, "a-tier-nobody-declared")).toBe(settings?.observationCapacity);
+      expect(workingMemoryCapacity(undefined, "allowed")).toBe(0);
     } finally {
       dispose(simulation);
     }

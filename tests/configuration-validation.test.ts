@@ -15,6 +15,7 @@ import {
 import type { SystemSpec } from "../src/config/system-spec.js";
 import { loadPack } from "./helpers/demo-pack.js";
 import { Type } from "typebox";
+import { cognitionSettings, workingMemoryCapacity } from "../src/simulation/config-view.js";
 import { defineValueContainer } from "../src/config/value-shapes.js";
 
 interface RefusalCase {
@@ -952,6 +953,34 @@ fields:
     code: "structure-invalid",
     message: "is not declared by settings",
   },
+  {
+    name: "a participation limit that is not a whole number of observations",
+    overrides: {
+      "cognitionSettings/cognition-settings.yaml": `id: cognition-settings
+type: agentlife.cognition/settings
+public: true
+fields:
+  name: 演示认知设置
+  description: 阶段 4 的认知边界。
+  observationCapacity: 6
+  participationLimits:
+    restricted:
+      workingMemoryCapacity: 2.5
+  intentionReservation: 2
+  attentionCapacity: 3
+  maxPlanSteps: 3
+  maxAttempts: 2
+  requestTimeoutSeconds: 60
+  idleReviewTicks: 3
+  idleWaitLimitTicks: 12
+  allowedActions:
+    - agentlife.demo/walk
+    - agentlife.demo/say
+`,
+    },
+    code: "structure-invalid",
+    message: "participationLimits.restricted.workingMemoryCapacity",
+  },
 ];
 describe("configuration validation", () => {
   it.each(CASES.map((scenario) => [scenario.name, scenario] as const))("rejects %s", async (_name, scenario) => {
@@ -962,6 +991,43 @@ describe("configuration validation", () => {
       expect(causeCodes(result.diagnostics)).toContain(scenario.code);
       expect(messages(result.diagnostics)).toContain(scenario.message);
       expect(registry.current()).toBeUndefined();
+    } finally {
+      removeDirectory(directory);
+    }
+  });
+
+  it("accepts a participation tier the body vocabulary does not have", async () => {
+    const { result, directory } = await applyDemoPack(createRegistry(), {
+      // The tier words belong to the body system, and the cognition settings only
+      // carry them: a word no pack derives is inert, not invalid. Declaring a bound
+      // for it is how content says what that tier would cost if it ever appeared.
+      "cognitionSettings/cognition-settings.yaml": `id: cognition-settings
+type: agentlife.cognition/settings
+public: true
+fields:
+  name: 演示认知设置
+  description: 阶段 4 的认知边界。
+  observationCapacity: 6
+  participationLimits:
+    napping:
+      workingMemoryCapacity: 3
+  intentionReservation: 2
+  attentionCapacity: 3
+  maxPlanSteps: 3
+  maxAttempts: 2
+  requestTimeoutSeconds: 60
+  idleReviewTicks: 3
+  idleWaitLimitTicks: 12
+  allowedActions:
+    - agentlife.demo/walk
+    - agentlife.demo/say
+`,
+    });
+    try {
+      expect(result.status, messages(result.diagnostics)).toBe("valid");
+      const settings = result.config === undefined ? undefined : cognitionSettings(result.config);
+      expect(workingMemoryCapacity(settings, "napping")).toBe(3);
+      expect(workingMemoryCapacity(settings, "restricted")).toBe(settings?.observationCapacity);
     } finally {
       removeDirectory(directory);
     }
