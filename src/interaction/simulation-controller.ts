@@ -1,6 +1,6 @@
 import type { RuntimeConfig } from "../config/config-builder.js";
 import type { SessionTrace } from "../diagnostics/session-trace.js";
-import { cognitionSettings } from "../simulation/config-view.js";
+import { cognitionSettings, workingMemoryCapacity } from "../simulation/config-view.js";
 import { stateVersionOf, type ActionPlan, type CognitionRound, type SimulationState } from "../simulation/types.js";
 import { SimulationRunner, type TickResult } from "../simulation/runner.js";
 import { checkSnapshot, decodeSnapshot, encodeSnapshot, snapshotOf } from "../simulation/save.js";
@@ -416,7 +416,7 @@ export class SimulationController {
 
   managementSnapshot(): ManagementSnapshot {
     const state = this.runner.state();
-    const capacity = cognitionSettings(this.config)?.observationCapacity ?? 0;
+    const settings = cognitionSettings(this.config);
     return Object.freeze({
       state,
       status: this.status(),
@@ -458,7 +458,11 @@ export class SimulationController {
           .map(([characterId, record]) => ({
             characterId,
             entries: record.entries.length,
-            capacity,
+            // The bound is the entity's own: a body whose tier declares fewer
+            // entries must show that bound, not the full-effort one. An entity
+            // without a body record was admitted at the full-effort capacity,
+            // and the row reports what admission actually used.
+            capacity: workingMemoryCapacity(settings, state.body.bodies[characterId]?.participation ?? "allowed"),
             consumed: record.consumed.length,
           })),
       ),

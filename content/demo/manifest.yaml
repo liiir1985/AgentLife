@@ -8,7 +8,7 @@ systems:
   - agentlife.character@1.2.0
   - agentlife.interaction@1.1.0
   - agentlife.perception@1.0.0
-  - agentlife.cognition@1.1.0
+  - agentlife.cognition@1.2.0
 sections:
   world: agentlife.world/world
   locations: agentlife.world/location

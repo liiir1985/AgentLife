@@ -11,6 +11,10 @@ import type { SystemCheck, SystemItem, SystemSpec } from "../config/system-spec.
  * runtime must respect (short plan length, bounded idle wait, model attempts,
  * request timeout) and names the actions a decision may request.
  *
+ * Participation is a body's permission, and what a tier costs is a number content
+ * declares here: a body allowed limited participation holds fewer observations at
+ * once. The system provides the mechanism, the pack decides the value.
+ *
  * Which provider and model answer that call is decided by the system-level
  * configuration, not by any pack: content says what may be decided, never who
  * thinks.
@@ -23,12 +27,34 @@ import type { SystemCheck, SystemItem, SystemSpec } from "../config/system-spec.
 /** A short body plan is what one decision may carry; three steps is the bound. */
 const MAX_PLAN_STEPS = 3;
 
+/** What one participation tier costs: how many observations it may hold at once. */
+const PARTICIPATION_LIMIT_SCHEMA = Type.Object(
+  {
+    /** Working Memory capacity for admitted observations under this tier. */
+    workingMemoryCapacity: Type.Integer({ minimum: 0 }),
+  },
+  { additionalProperties: false },
+);
+
+/**
+ * Working Memory bounds declared per body participation tier.
+ *
+ * The keys are the body's vocabulary, and this system deliberately does not own
+ * it: a tier word no content declares a limit for is simply the full-effort
+ * capacity, never a refusal. A tier this item does not list keeps
+ * `observationCapacity`, so a pack that never mentions participation behaves
+ * exactly as it did before the map existed.
+ */
+const PARTICIPATION_LIMITS_SCHEMA = Type.Record(Type.String(), PARTICIPATION_LIMIT_SCHEMA);
+
 const COGNITION_SCHEMA = Type.Object(
   {
     name: Type.String(),
     description: Type.String(),
-    /** Working Memory capacity for admitted observations. */
+    /** Working Memory capacity for admitted observations at full effort. */
     observationCapacity: Type.Integer({ minimum: 1 }),
+    /** What each participation tier allows instead; an unlisted tier keeps the line above. */
+    participationLimits: Type.Optional(PARTICIPATION_LIMITS_SCHEMA),
     /** Working Memory capacity reserved for intention references. */
     intentionReservation: Type.Integer({ minimum: 0 }),
     /** Subjects one entity may hold in attention at once. */
@@ -74,7 +100,7 @@ export function createCognitionSpec(): SystemSpec {
   return {
     name: "cognition",
     namespace: "agentlife.cognition",
-    version: "1.1.0",
+    version: "1.2.0",
     kernel: ">=1.0.0 <2.0.0",
     requires: ["agentlife.perception", "agentlife.body"],
     items: [
@@ -86,6 +112,7 @@ export function createCognitionSpec(): SystemSpec {
           "name",
           "description",
           "observationCapacity",
+          "participationLimits",
           "intentionReservation",
           "attentionCapacity",
           "maxPlanSteps",
@@ -99,6 +126,11 @@ export function createCognitionSpec(): SystemSpec {
           name: "replace",
           description: "replace",
           observationCapacity: "replace",
+          // Shallow, one level: a layer that names only one tier keeps the tiers
+          // another layer declared. Its limit is one level deep as well — when a
+          // tier carries a second field later, a layer overriding only one of them
+          // replaces that whole tier and has to restate its sibling.
+          participationLimits: "merge",
           intentionReservation: "replace",
           attentionCapacity: "replace",
           maxPlanSteps: "replace",

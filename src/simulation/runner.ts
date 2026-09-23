@@ -25,6 +25,7 @@ import {
   cognitionSettings,
   itemLabel,
   localViewMembers,
+  workingMemoryCapacity,
 } from "./config-view.js";
 import { WorkingMemoryService } from "./memory-service.js";
 import { PerceptionService, type PerceptionFrame } from "./perception-service.js";
@@ -510,6 +511,10 @@ export class SimulationRunner {
     let memoryState = this.current.memory;
     let cognitionState = this.current.cognition;
     const observers = this.observerIds(this.current.characters);
+    // Read once, after every body writer of this tick has run: admission and the
+    // demands below have to see the same participation tier per entity.
+    const cognitionSpec = cognitionSettings(config);
+    const participation = this.participationOf(bodyRuntime);
     const admitted: Record<string, readonly Observation[]> = {};
     if (!stageTruncated) {
       const materialVersion = `${world.version}/${bodyRuntime.body.version}/${startingTick}`;
@@ -554,7 +559,7 @@ export class SimulationRunner {
         const result = this.workingMemory.admitObservations(memoryState, {
           characterId: observer,
           tick: startingTick,
-          capacity: cognitionSettings(config)?.observationCapacity ?? 0,
+          capacity: workingMemoryCapacity(cognitionSpec, participation[observer] ?? "allowed"),
           observations: admittedNow,
           references: this.perception.observer(perceptionState, observer)?.references ?? {},
         });
@@ -594,7 +599,7 @@ export class SimulationRunner {
           tick: startingTick,
           cognition: cognitionState,
           characters: this.current.characters.characters,
-          participation: this.participationOf(bodyRuntime),
+          participation,
           admitted,
         });
     this.trace?.record("cognitive-demands", { demands });

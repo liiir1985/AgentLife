@@ -5,6 +5,14 @@ fields:
   name: 演示认知设置
   description: 短计划、有限等待、模型次数与容量都写在内容里；模型选择由系统配置决定。
   observationCapacity: 6
+  # 认知参与等级决定一次能装进 Working Memory 的观察数量：满效率是上面的 6，
+  # 累了（restricted）只装得下 2，认知下线（forbidden）什么都留不住。没列出的
+  # 等级按 6 走——数值归内容，机制归系统。
+  participationLimits:
+    restricted:
+      workingMemoryCapacity: 2
+    forbidden:
+      workingMemoryCapacity: 0
   intentionReservation: 2
   attentionCapacity: 3
   maxPlanSteps: 3

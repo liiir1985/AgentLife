@@ -84,6 +84,17 @@ function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
+/** Per-tier Working Memory bounds, read in stable tier order. */
+function asParticipationLimits(value: unknown): Readonly<Record<string, ParticipationLimitSpec>> {
+  const limits: Record<string, ParticipationLimitSpec> = {};
+  const declared = asRecord(value);
+  for (const tier of Object.keys(declared).sort())
+    limits[tier] = Object.freeze({
+      workingMemoryCapacity: asNumber(Reflect.get(asRecord(declared[tier]), "workingMemoryCapacity")) ?? 0,
+    });
+  return Object.freeze(limits);
+}
+
 /** Resolved config items of one declared type, in stable ref order. */
 export function itemsOf(config: RuntimeConfig, typeRef: ItemTypeRef): readonly MergedItem[] {
   return config.items.filter((item) => item.typeRef === typeRef);
@@ -517,10 +528,16 @@ export function perceptionSettings(config: RuntimeConfig): PerceptionSettingsSpe
   };
 }
 
+/** Bounds one participation tier declares. */
+export interface ParticipationLimitSpec {
+  readonly workingMemoryCapacity: number;
+}
+
 /** Bounds one cognition settings item declares. */
 export interface CognitionSettingsSpec {
   readonly ref: string;
   readonly observationCapacity: number;
+  readonly participationLimits: Readonly<Record<string, ParticipationLimitSpec>>;
   readonly intentionReservation: number;
   readonly attentionCapacity: number;
   readonly maxPlanSteps: number;
@@ -537,6 +554,7 @@ export function cognitionSettings(config: RuntimeConfig): CognitionSettingsSpec 
   return {
     ref: item.ref,
     observationCapacity: asNumber(item.values["observationCapacity"]) ?? 0,
+    participationLimits: asParticipationLimits(item.values["participationLimits"]),
     intentionReservation: asNumber(item.values["intentionReservation"]) ?? 0,
     attentionCapacity: asNumber(item.values["attentionCapacity"]) ?? 0,
     maxPlanSteps: asNumber(item.values["maxPlanSteps"]) ?? 0,
@@ -546,6 +564,19 @@ export function cognitionSettings(config: RuntimeConfig): CognitionSettingsSpec 
     idleWaitLimitTicks: asNumber(item.values["idleWaitLimitTicks"]) ?? 0,
     allowedActions: asStrings(item.values.allowedActions),
   };
+}
+
+/**
+ * The Working Memory capacity one body's participation tier allows.
+ *
+ * The tier names the cost; content declares it. A tier the settings item does not
+ * list keeps the full-effort `observationCapacity`, so a pack that never mentions
+ * participation behaves exactly as it did before the map existed. The tier word is
+ * content's: a word no pack declares a limit for is simply the base, never an error.
+ */
+export function workingMemoryCapacity(settings: CognitionSettingsSpec | undefined, participation: string): number {
+  if (settings === undefined) return 0;
+  return settings.participationLimits[participation]?.workingMemoryCapacity ?? settings.observationCapacity;
 }
 
 /** The authored prompt a cognition request is started with. */
