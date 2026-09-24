@@ -18,7 +18,7 @@
 
 总设计及详细设计索引位于 `Readme.md`。具体语义以各详细设计文档为准，本交接只记录阶段结论和后续约束。
 
-实现层面已按 `docs/implementation-roadmap.md` 完成**阶段 0：技术 Spike**（工程入口 + 五组组件验证）、**阶段 1：内容、配置与规则基础**（内容包规范与演示内容、七阶段验证、不可变运行配置与触发索引、三种映射与五种组合、SQLite 版本化迁移与存档接口）、**阶段 2：确定性模拟内核**（Tick 阶段、动作生命周期、行为树计划、世界裁定）、**阶段 3：可玩 TUI 竖切**（固定区块、动作菜单与参数向导、存档与监视面板）与**阶段 4：感知与 Pi 认知**（感知可达性/通道/分辨率/连续观察/重复抑制、授权玩家视图、最小 Working Memory、认知状态与意图、全局认知屏障、AI 认知 Agent、屏障保存与存档版本 3）。结论、退出条件证据、硬约束与暂缓范围见 `docs/phase-0-spike-report.md` 与 `docs/phase-1-report.md` ~ `docs/phase-4-report.md`。当前处于阶段 5 起点（主观记忆闭环），领域运行状态已存在于 `src/simulation` 与 `src/interaction`。
+实现层面已按 `docs/implementation-roadmap.md` 完成**阶段 0：技术 Spike**、**阶段 1：内容、配置与规则基础**、**阶段 2：确定性模拟内核**、**阶段 3：可玩 TUI 竖切**、**阶段 4：感知与 Pi 认知**和**阶段 5：主观记忆闭环**。阶段 5 包括 Working → Recent → Long-term、独立主观档案、受限检索、身份回接、存档版本 4 及玩家记忆入口。各阶段证据与暂缓范围见 `docs/phase-0-spike-report.md` 至 `docs/phase-5-report.md`；阶段 6 的 Fast Forward 调度尚未实施。
 
 阶段 1 交付的运行时能力集中在 `src/config`（身份/诊断/数值与映射/取值与条件/扩展注册/值族与词汇展开/内容包解析/解析与来源/七阶段验证/编译/确定性求值/原子更新/演示运行器）与 `src/storage`（迁移、`RuntimeStore`、配置提交崩溃注入），领域词汇以扩展形式注册在 `src/domains`（world/body/character），演示内容为仓库内的 `content/demo`。规则只产生候选效果并返回完整追踪；领域提交、动作生命周期、过程推进与 Tick 阶段仍属阶段 2。进入阶段 2 前先读 `docs/phase-1-report.md` 的 §13 硬约束，以及 §15 记录的阶段 1 偏差（**值族取代硬编码指标词汇**：值由内容定义展开为 `agentlife.body/values.<id>`、`agentlife.body/channels.<id>.*`、`agentlife.world/environment.<id>`；契约值单写方；组合方式由规则声明）。
 
@@ -264,3 +264,5 @@ AI 没有提交立即行动时，必须等待可验证外部事件、登记确�
 **阶段 2：确定性模拟内核**与**阶段 3：可玩 TUI 竖切**分别完成 Tick 阶段与动作生命周期、行为树计划、世界裁定、稳定边界保存与加载续做，以及固定区块界面、地点/人物/物品/结果渲染、动作菜单与参数向导、`/step`、`/run`、`/pause`、`/save`、`/load`、`/status`、`/monitor` 与普通/管理视图的信息隔离；结论见 `docs/phase-2-report.md` 与 `docs/phase-3-report.md`。
 
 **阶段 4：感知与 Pi 认知**已完成（`pnpm phase4:verify` 全绿，25 个测试文件 247 passed | 1 skipped；`pnpm phase4:demo` 两次运行的原时间线继续与加载后继续摘要一致）：感知可达性与条件、分辨率等级与内容化投影、出现/持续/变化/消失/重现/事件/自身结果观察、观察者局部引用与重复抑制、说话动作完成后才产生可听见事件、授权玩家视图与动作候选筛选、最小 Working Memory（准入、容量裁剪、确认释放）、认知状态与多条意图、空闲契约、认知需求与全局屏障（等待模型与玩家期间冻结 Tick）、同轮计划稳定排序的统一交接、Pi 认知 Agent（严格原始参数校验、请求身份、迟到响应隔离、重试与失败停止）、屏障保存与存档版本 3（版本 2 拒绝）。结论、验收对照、已知限制与偏差见 `docs/phase-4-report.md`；身份关联、Recent/Long-term 记忆与巩固属阶段 5，进入前先读该报告的 §4 已知限制与 `docs/memory-system.md`。
+
+**阶段 5：主观记忆闭环**已完成：记忆配置与状态契约、Working 衰减和来源核验、Recent 编码及删除、Memory Agent 巩固为 Long-term、角色私有档案、有限混合检索、感知身份关联、玩家 `M` 记忆入口、存档版本 4。Embedding 提供器、模型、地址和表示版本位于根目录 `config/agentlife.yaml`，不属于 content 包；HTTP 服务由用户安装和运行。详细交付和验证限制见 `docs/phase-5-report.md`。阶段 6 仍需实现 Fast Forward 完整调度。

@@ -2,11 +2,13 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   FAUX_MODEL_TARGET,
+  FAUX_EMBEDDING_TARGET,
   SYSTEM_CONFIG_PATH,
   loadSystemConfig,
   modelTarget,
   parseSystemConfig,
   resolveModel,
+  resolveEmbedding,
 } from "../src/config/system-config.js";
 import { withTempDirectory, writePack } from "./helpers/demo-pack.js";
 
@@ -158,6 +160,25 @@ describe("system configuration", () => {
   it("returns the scripted target in faux mode without reading any file", () => {
     const missing = path.join(SYSTEM_CONFIG_PATH, "absent.yaml");
     expect(resolveModel("cognition", { mode: "faux", path: missing })).toBe(FAUX_MODEL_TARGET);
+    expect(resolveEmbedding({ mode: "faux", path: missing })).toBe(FAUX_EMBEDDING_TARGET);
+  });
+
+  it("selects embedding from system settings and rejects an undeclared representation", () => {
+    const document = `${configured("deepseek/deepseek-flash")}embedding:
+  provider: ollama
+  model: embeddinggemma
+  endpoint: http://localhost:11434/api/embed
+  representation-version: embeddinggemma-v1
+`;
+    expect(parseSystemConfig(document).embedding).toEqual({
+      provider: "ollama",
+      model: "embeddinggemma",
+      endpoint: "http://localhost:11434/api/embed",
+      representationVersion: "embeddinggemma-v1",
+    });
+    expect(() => parseSystemConfig(document.replace("embeddinggemma-v1", ""))).toThrow(
+      /embedding.representation-version/,
+    );
   });
 
   it("loads a configuration from a path and reports a path that cannot be read", async () => {

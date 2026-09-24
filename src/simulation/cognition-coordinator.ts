@@ -1,5 +1,5 @@
 import type { RuntimeConfig } from "../config/config-builder.js";
-import type { CognitionModelPort } from "../agent/cognition-agent.js";
+import type { CognitionModelPort, MemorySearchPort } from "../agent/cognition-agent.js";
 import type { SessionTrace } from "../diagnostics/session-trace.js";
 import {
   actionUtteranceField,
@@ -7,6 +7,7 @@ import {
   cognitionSettings,
   itemDescription,
   itemLabel,
+  memorySettings,
   observableEvents,
 } from "./config-view.js";
 import type { CognitionService } from "./cognition-service.js";
@@ -22,6 +23,7 @@ import type {
   IdleCommitment,
   Observation,
   WorkingMemoryEntry,
+  RecalledMemory,
 } from "./types.js";
 
 /**
@@ -55,6 +57,7 @@ export interface RoundInput {
   readonly situations: Readonly<Record<string, string>>;
   /** The cognition state this round was opened against. */
   readonly cognition: CognitionState;
+  readonly searchMemories?: (characterId: string, query: string) => Promise<readonly RecalledMemory[]>;
 }
 
 export interface RoundResolution {
@@ -204,11 +207,20 @@ export class CognitionCoordinator {
       const input = this.inputFor(open, characterId, requestId, attempt, rejection);
       const identity = { entityId: characterId, roundId, requestId };
       this.trace?.record("cognition-attempt-start", { input }, identity);
-      const result = await this.models.request(input);
+      const recalled = new Set<string>();
+      const memorySearch: MemorySearchPort | undefined =
+        open.input.searchMemories === undefined
+          ? undefined
+          : async (_request, query) => {
+              const found = await open.input.searchMemories!(characterId, query);
+              for (const memory of found) recalled.add(memory.traceId);
+              return found;
+            };
+      const result = await this.models.request(input, memorySearch);
       this.trace?.record("cognition-model-result", result, identity);
       if (this.open === undefined || this.open.input.roundId !== roundId) return;
       if (result.status === "decided" && result.decision !== null) {
-        const checked = this.validate(open, characterId, result.decision);
+        const checked = this.validate(open, characterId, result.decision, recalled);
         if (checked.ok) {
           open.decisions.set(characterId, checked.decision);
           open.plans.push(...this.plansOf(open, checked.decision));
@@ -228,6 +240,7 @@ export class CognitionCoordinator {
       open.notes.push(`${characterId} attempt ${attempt} ${result.status}: ${result.detail}`);
       this.update(characterId, { state: "waiting", detail: rejection });
       this.trace?.record("cognition-attempt-end", { status: result.status, reason: rejection }, identity);
+      if (result.status === "memory-failed") break;
     }
     open.failure = `${characterId} submitted no usable decision: ${rejection ?? "no attempt was made"}`;
     this.update(characterId, { state: "failed", detail: open.failure });
@@ -294,6 +307,7 @@ export class CognitionCoordinator {
       attempt,
       rejection,
       timeoutMs: (settings?.requestTimeoutSeconds ?? 60) * 1_000,
+      memorySearchLimit: memorySettings(this.config)?.searchCallsPerDecision ?? 0,
     });
   }
 
@@ -348,6 +362,7 @@ export class CognitionCoordinator {
     open: OpenRound,
     characterId: string,
     draft: CognitiveDecision,
+    recalled: ReadonlySet<string>,
   ): { readonly ok: true; readonly decision: CognitiveDecision } | { readonly ok: false; readonly reason: string } {
     const settings = cognitionSettings(this.config);
     if (settings === undefined) return { ok: false, reason: "cognition is not configured" };
@@ -361,6 +376,35 @@ export class CognitionCoordinator {
     for (const reference of draft.consumedObservations)
       if (reference === "" || !references.has(reference))
         return { ok: false, reason: `consumption names ${reference}, which was never admitted` };
+    const consumed = new Set(draft.consumedObservations);
+    for (const encoding of draft.memoryEncoding ?? []) {
+      if (
+        encoding.text.trim() === "" ||
+        encoding.sourceReferences.length === 0 ||
+        encoding.sourceReferences.some((reference) => !consumed.has(reference))
+      )
+        return { ok: false, reason: "memory encoding must cite observations this decision used" };
+    }
+    for (const claim of draft.profileClaims ?? []) {
+      if (
+        !references.has(claim.subjectReference) ||
+        claim.sourceReferences.some((reference) => !consumed.has(reference)) ||
+        claim.sourceReferences.length === 0 ||
+        claim.confidence < 0 ||
+        claim.confidence > 1
+      )
+        return { ok: false, reason: "profile claim has no permitted observed source" };
+    }
+    for (const candidate of draft.profileReconnections ?? [])
+      if (
+        candidate.profileId.trim() === "" ||
+        !references.has(candidate.subjectReference) ||
+        candidate.sourceReferences.length === 0 ||
+        candidate.sourceReferences.some((reference) => !consumed.has(reference))
+      )
+        return { ok: false, reason: "profile reconnection has no permitted observed source" };
+    for (const traceId of draft.usedMemories ?? [])
+      if (!recalled.has(traceId)) return { ok: false, reason: `memory ${traceId} was not recalled in this request` };
     const held = new Set(
       (this.cognition.record(open.input.cognition, characterId)?.intentions ?? []).map(
         (intention) => intention.intentionId,
@@ -416,6 +460,12 @@ export class CognitionCoordinator {
         steps: Object.freeze(steps),
         consumedObservations: Object.freeze([...draft.consumedObservations]),
         consideredIntentions: Object.freeze([...draft.consideredIntentions]),
+        ...(draft.memoryEncoding === undefined ? {} : { memoryEncoding: Object.freeze([...draft.memoryEncoding]) }),
+        ...(draft.profileClaims === undefined ? {} : { profileClaims: Object.freeze([...draft.profileClaims]) }),
+        ...(draft.profileReconnections === undefined
+          ? {}
+          : { profileReconnections: Object.freeze([...draft.profileReconnections]) }),
+        ...(draft.usedMemories === undefined ? {} : { usedMemories: Object.freeze([...draft.usedMemories]) }),
       }),
     };
   }

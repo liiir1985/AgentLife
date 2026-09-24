@@ -4,8 +4,15 @@ import type { RuntimeConfig } from "../config/config-builder.js";
 import type { CoreRuntime } from "../config/core-runtime.js";
 import type { ProcessChangeRequest, RuleResult, StateChangeRequest } from "../config/rule-engine.js";
 import type { SystemIndex } from "../config/system-index.js";
+import { FAUX_EMBEDDING_TARGET, type EmbeddingTarget } from "../config/system-config.js";
 import type { SimpleValue } from "../config/value-expr.js";
 import type { CognitionModelPort } from "../agent/cognition-agent.js";
+import {
+  OllamaEmbeddingProvider,
+  ScriptedEmbeddingProvider,
+  type EmbeddingProvider,
+} from "../agent/embedding-provider.js";
+import { ScriptedMemoryAgent, type ConsolidationResult, type MemoryAgentPort } from "../agent/memory-agent.js";
 import type { SessionTrace } from "../diagnostics/session-trace.js";
 import { BodyService, type BodyRuntime } from "./body-service.js";
 import { CharacterService } from "./character-service.js";
@@ -24,6 +31,7 @@ import {
   characterModules,
   cognitionSettings,
   itemLabel,
+  memorySettings,
   localViewMembers,
   workingMemoryCapacity,
 } from "./config-view.js";
@@ -88,6 +96,9 @@ export interface RunnerOptions {
   readonly settings?: Partial<SimulationSettings>;
   /** The cognition model the AI participants are decided with; required once an AI entity exists. */
   readonly models?: CognitionModelPort;
+  readonly embeddings?: EmbeddingProvider;
+  readonly embeddingTarget?: EmbeddingTarget;
+  readonly memoryAgent?: MemoryAgentPort;
   readonly trace?: SessionTrace;
 }
 
@@ -146,7 +157,10 @@ export class SimulationRunner {
   private readonly settings: SimulationSettings;
   private readonly adapters = new Map<string, BehaviorTreeAdapter>();
   private readonly perception: PerceptionService;
-  private readonly workingMemory = new WorkingMemoryService();
+  private readonly workingMemory: WorkingMemoryService;
+  private readonly embeddings: EmbeddingProvider;
+  private readonly embeddingTarget: EmbeddingTarget;
+  private readonly memoryAgent: MemoryAgentPort;
   private readonly cognition: CognitionService;
   private readonly rounds: CognitionCoordinator;
   private held: HeldTick | undefined;
@@ -171,6 +185,15 @@ export class SimulationRunner {
       runRules: (request) => this.core.runRules(request),
     };
     this.perception = new PerceptionService(config);
+    const memoryConfig = memorySettings(config);
+    this.workingMemory = new WorkingMemoryService(memoryConfig?.entryLoads);
+    this.embeddingTarget = options.embeddingTarget ?? FAUX_EMBEDDING_TARGET;
+    this.embeddings =
+      options.embeddings ??
+      (this.embeddingTarget.provider === "ollama"
+        ? new OllamaEmbeddingProvider(this.embeddingTarget.endpoint, this.embeddingTarget.model)
+        : new ScriptedEmbeddingProvider());
+    this.memoryAgent = options.memoryAgent ?? new ScriptedMemoryAgent();
     this.cognition = new CognitionService(config);
     const characterState = characters.initialize();
     this.rounds = new CognitionCoordinator(
@@ -193,6 +216,7 @@ export class SimulationRunner {
       simTime: { tick: 0, seconds: 0 },
       phase: "publish" as const,
       configId: config.configId,
+      embeddingVersion: this.embeddingTarget.representationVersion,
       runMode: "single-step" as RunMode,
       settings: this.settings,
       world: worldState,
@@ -527,6 +551,14 @@ export class SimulationRunner {
           attention: this.cognition.record(cognitionState, observer)?.attention ?? [],
           world: this.world.perceptionMaterial(world, observer, startingTick, this.current.world.environment),
           body: this.body.perceptionMaterial(bodyRuntime, this.current.actions, observer),
+          identifySubject: (anchor, resolution) =>
+            this.workingMemory.recognize(
+              memoryState,
+              observer,
+              anchor,
+              resolution,
+              memorySettings(config)?.recognitionThreshold ?? 1,
+            ),
         };
         const result = this.perception.observe(perceptionState, frame);
         perceptionState = result.state;
@@ -614,7 +646,12 @@ export class SimulationRunner {
 
     // 10. The barrier: the tick is held exactly where it is while its participants
     //     decide, and nothing simulated advances until every one of them settled.
-    if (demands.length > 0 && !stageTruncated) {
+    const consolidationSettings = memorySettings(config);
+    const consolidationDue =
+      consolidationSettings !== undefined &&
+      startingTick % consolidationSettings.consolidationIntervalTicks === 0 &&
+      Object.values(memoryState.records).some((record) => record.recent.length > 0);
+    if ((demands.length > 0 || consolidationDue) && !stageTruncated) {
       this.roundSequence += 1;
       const entries: Record<string, readonly WorkingMemoryEntry[]> = {};
       const situations: Record<string, string> = {};
@@ -637,6 +674,68 @@ export class SimulationRunner {
         entries,
         situations,
         cognition: cognitionState,
+        searchMemories: async (characterId, query) => {
+          const settings = memorySettings(config);
+          if (settings === undefined) return [];
+          const vector = (await this.embeddings.embed([query]))[0];
+          if (vector === undefined) throw new Error("embedding service returned no query vector");
+          const candidates = this.workingMemory.search(memoryState, {
+            characterId,
+            text: query,
+            vector,
+            embeddingVersion: this.embeddingTarget.representationVersion,
+            threshold: settings.recallThreshold,
+            candidateLimit: settings.searchCandidateLimit,
+            resultLimit: settings.searchResultLimit,
+            contextAnchors:
+              memoryState.records[characterId]?.entries
+                .map((entry) => entry.anchor)
+                .filter((anchor): anchor is string => anchor !== null) ?? [],
+            weights: {
+              structure: settings.structureWeight,
+              association: settings.associationWeight,
+              semantic: settings.semanticWeight,
+              context: settings.contextWeight,
+              accessibility: settings.accessibilityWeight,
+            },
+          });
+          const ranked = await this.memoryAgent.rerank(query, candidates);
+          const byId = new Map(candidates.map((trace) => [trace.traceId, trace]));
+          if (ranked.some((id) => !byId.has(id)))
+            throw new Error("memory agent returned a candidate it was not allowed to see");
+          const selected = ranked.slice(0, settings.searchResultLimit).flatMap((id) => {
+            const trace = byId.get(id);
+            return trace === undefined ? [] : [trace];
+          });
+          if (
+            this.held === undefined ||
+            this.held.startingTick !== startingTick ||
+            this.current.timelineId !== input.roundId.split("/tick-")[0]
+          )
+            throw new Error("memory search belongs to a cognition round that is no longer active");
+          const admitted = this.workingMemory.admitRecollections(
+            memoryState,
+            characterId,
+            startingTick,
+            selected,
+            workingMemoryCapacity(cognitionSpec, participation[characterId] ?? "allowed"),
+          );
+          memoryState = admitted.state;
+          perceptionState = this.perception.confirmConsumed(
+            perceptionState,
+            characterId,
+            admitted.evictedObservationIds,
+          );
+          this.held = { ...this.held, memory: memoryState, perception: perceptionState };
+          return selected
+            .filter((trace) => admitted.admittedTraceIds.includes(trace.traceId))
+            .map((trace) => ({
+              traceId: trace.traceId,
+              text: trace.text,
+              formedTick: trace.formedTick,
+              sourceIds: trace.sourceIds,
+            }));
+        },
       };
       const round = this.rounds.openRound(input);
       this.trace?.record("cognitive-barrier", { round, situations, entries }, { roundId: round.roundId });
@@ -667,6 +766,7 @@ export class SimulationRunner {
         simTime: { tick: startingTick, seconds: startingTick * this.settings.tickSeconds },
         phase: "cognitive-barrier" as const,
         configId: config.configId,
+        embeddingVersion: this.embeddingTarget.representationVersion,
         runMode: "barrier" as RunMode,
         settings: this.settings,
         world,
@@ -687,7 +787,24 @@ export class SimulationRunner {
       return { status: "cognitive-barrier", round };
     }
     stages.push({ stage: "cognitive-barrier", status: "no-op", detail: "no barrier was needed" });
-    stages.push({ stage: "memory", status: "no-op", detail: "nothing was consumed" });
+    const maintenance = memorySettings(config);
+    if (maintenance !== undefined && !stageTruncated)
+      memoryState = this.workingMemory.expire(
+        memoryState,
+        startingTick,
+        maintenance.workingLifetimeTicks,
+        maintenance.recentLifetimeTicks,
+        maintenance.accessibilityDecayPerTick,
+      );
+    stages.push({
+      stage: "memory",
+      status: maintenance === undefined || stageTruncated ? "no-op" : "done",
+      detail: stageTruncated
+        ? "memory was not reached"
+        : maintenance === undefined
+          ? "no memory settings"
+          : "working and recent memories maintained",
+    });
 
     // 12. Publish the new stable state and the tick summary.
     return this.publish({
@@ -709,7 +826,10 @@ export class SimulationRunner {
   }
 
   /** Finishes the held tick: consumption, intention maintenance and the batch handoff. */
-  completeCognition(): TickResult | null {
+  completeCognition(
+    preparedVectors: ReadonlyMap<string, readonly number[]> = new Map(),
+    consolidations: ReadonlyMap<string, readonly ConsolidationResult[]> = new Map(),
+  ): TickResult | null {
     const held = this.held;
     if (held === undefined) return null;
     const resolution = this.rounds.resolution();
@@ -749,39 +869,7 @@ export class SimulationRunner {
         { entityId: decision.characterId, requestId: decision.requestId, roundId: resolution.round.roundId },
       );
     }
-    for (const [characterId, references] of Object.entries(resolution.consumptions)) {
-      const entries = this.workingMemory.contextFor(memoryState, characterId);
-      const acknowledgedEvents = new Set(
-        this.perception
-          .pendingObservations(perceptionState, characterId)
-          .filter((observation) => observation.kind === "event" || observation.kind === "outcome")
-          .map((observation) => observation.observationId),
-      );
-      const entryIds = [
-        ...new Set([
-          ...this.cognition.usedEntries(entries, references),
-          ...entries.filter((entry) => acknowledgedEvents.has(entry.sourceId)).map((entry) => entry.entryId),
-        ]),
-      ];
-      const confirmed = this.workingMemory.confirmUsage(memoryState, { characterId, entryIds });
-      memoryState = confirmed.state;
-      const observationIds = confirmed.confirmed
-        .map((entryId) => entries.find((entry) => entry.entryId === entryId)?.sourceId)
-        .filter((sourceId): sourceId is string => sourceId !== undefined);
-      perceptionState = this.perception.confirmConsumed(perceptionState, characterId, observationIds);
-      this.trace?.record(
-        "memory-consumption",
-        { references, confirmed: confirmed.confirmed, observationIds },
-        { entityId: characterId, roundId: resolution.round.roundId },
-      );
-    }
-    stages.push({
-      stage: "memory",
-      status: resolution.decisions.length === 0 && Object.keys(resolution.consumptions).length === 0 ? "no-op" : "done",
-      detail: `${resolution.decisions.length} decision(s), ${resolution.plans.length} plan(s), ${Object.keys(resolution.consumptions).length} consumption(s)`,
-    });
-
-    // 12. The batch handoff: every plan of the round reaches the same body validation.
+    // Body validates the complete plan batch before this boundary commits memory.
     let bodyRuntime = held.body;
     for (const plan of resolution.plans) {
       const attempt = this.body.acceptPlan(bodyRuntime, held.characters, plan, held.world, {
@@ -797,6 +885,143 @@ export class SimulationRunner {
         { entityId: plan.entityId, roundId: resolution.round.roundId },
       );
     }
+    for (const [characterId, references] of Object.entries(resolution.consumptions)) {
+      const entries = this.workingMemory.contextFor(memoryState, characterId);
+      const decision = resolution.decisions.find((candidate) => candidate.characterId === characterId);
+      const settings = memorySettings(this.config);
+      if (decision !== undefined && settings !== undefined) {
+        try {
+          for (const [index, encoding] of (decision.memoryEncoding ?? []).entries()) {
+            const vector = preparedVectors.get(`${characterId}/encoding-${index}`);
+            if (vector === undefined) throw new Error("encoding vector was not prepared");
+            const participation = held.body.body.bodies[characterId]?.participation ?? "allowed";
+            const reflection = this.workingMemory.admitReflection(
+              memoryState,
+              characterId,
+              held.startingTick,
+              encoding.sourceReferences,
+              encoding.text,
+              workingMemoryCapacity(cognitionSettings(this.config), participation),
+            );
+            memoryState = reflection.state;
+            if (!reflection.admitted) continue;
+            const encoded = this.workingMemory.encode(memoryState, {
+              characterId,
+              tick: held.startingTick,
+              references: encoding.sourceReferences,
+              text: encoding.text,
+              ...(encoding.sourceKind === undefined ? {} : { sourceKind: encoding.sourceKind }),
+              vector,
+              embeddingVersion: this.embeddingTarget.representationVersion,
+            });
+            memoryState = encoded.state;
+            for (const claim of decision.profileClaims ?? [])
+              if (claim.sourceReferences.every((reference) => encoding.sourceReferences.includes(reference)))
+                memoryState = this.workingMemory.claimProfile(memoryState, characterId, claim, encoded.trace.traceId);
+            for (const candidate of decision.profileReconnections ?? [])
+              if (candidate.sourceReferences.every((reference) => encoding.sourceReferences.includes(reference)))
+                memoryState = this.workingMemory.reconnectProfile(
+                  memoryState,
+                  characterId,
+                  candidate.profileId,
+                  candidate.subjectReference,
+                  encoded.trace.traceId,
+                );
+          }
+          memoryState = this.workingMemory.reinforce(
+            memoryState,
+            characterId,
+            decision.usedMemories ?? [],
+            held.startingTick,
+          );
+        } catch (error) {
+          const failure: TickFailure = {
+            stage: "memory",
+            code: "memory-failed",
+            detail: error instanceof Error ? error.message : String(error),
+          };
+          this.rounds.close(failure.detail);
+          this.held = undefined;
+          const failed = this.publishFailed(held, failure, resolution.round);
+          return { status: "failed", summary: failed, failure };
+        }
+      }
+      const acknowledgedEvents = new Set(
+        this.perception
+          .pendingObservations(perceptionState, characterId)
+          .filter((observation) => observation.kind === "event" || observation.kind === "outcome")
+          .map((observation) => observation.observationId),
+      );
+      const entryIds = [
+        ...new Set([
+          ...this.cognition.usedEntries(entries, references),
+          ...entries
+            .filter((entry) => entry.kind === "recollection" && (decision?.usedMemories ?? []).includes(entry.sourceId))
+            .map((entry) => entry.entryId),
+        ]),
+      ];
+      const confirmed = this.workingMemory.confirmUsage(memoryState, { characterId, entryIds });
+      memoryState = confirmed.state;
+      memoryState = this.workingMemory.releaseUnretained(memoryState, characterId, [...acknowledgedEvents]);
+      const observationIds = confirmed.confirmed
+        .map((entryId) => entries.find((entry) => entry.entryId === entryId))
+        .filter((entry) => entry?.kind === "observation")
+        .map((entry) => entry!.sourceId)
+        .filter((sourceId): sourceId is string => sourceId !== undefined);
+      perceptionState = this.perception.confirmConsumed(perceptionState, characterId, [
+        ...observationIds,
+        ...acknowledgedEvents,
+      ]);
+      this.trace?.record(
+        "memory-consumption",
+        { references, confirmed: confirmed.confirmed, observationIds },
+        { entityId: characterId, roundId: resolution.round.roundId },
+      );
+    }
+    const memoryConfig = memorySettings(this.config);
+    if (memoryConfig !== undefined) {
+      try {
+        for (const [characterId, results] of [...consolidations.entries()].sort(([left], [right]) =>
+          left.localeCompare(right),
+        ))
+          for (const [index, result] of results.entries()) {
+            const vector = preparedVectors.get(`${characterId}/consolidation-${index}`);
+            if (vector === undefined) throw new Error("consolidation vector was not prepared");
+            memoryState = this.workingMemory.consolidate(
+              memoryState,
+              characterId,
+              result.sourceIds,
+              result.text,
+              held.startingTick,
+              vector,
+              this.embeddingTarget.representationVersion,
+            );
+          }
+      } catch (error) {
+        const failure: TickFailure = {
+          stage: "memory",
+          code: "memory-failed",
+          detail: error instanceof Error ? error.message : String(error),
+        };
+        this.rounds.close(failure.detail);
+        this.held = undefined;
+        const failed = this.publishFailed(held, failure, resolution.round);
+        return { status: "failed", summary: failed, failure };
+      }
+      memoryState = this.workingMemory.expire(
+        memoryState,
+        held.startingTick,
+        memoryConfig.workingLifetimeTicks,
+        memoryConfig.recentLifetimeTicks,
+        memoryConfig.accessibilityDecayPerTick,
+      );
+    }
+    stages.push({
+      stage: "memory",
+      status: resolution.decisions.length === 0 && Object.keys(resolution.consumptions).length === 0 ? "no-op" : "done",
+      detail: `${resolution.decisions.length} decision(s), ${resolution.plans.length} plan(s), ${Object.keys(resolution.consumptions).length} consumption(s)`,
+    });
+
     this.rounds.close();
     this.held = undefined;
     return this.publish({
@@ -825,6 +1050,99 @@ export class SimulationRunner {
     return this.rounds.resolveAiParticipants();
   }
 
+  /** Prepares semantic representations before publishing a tick with new memories. */
+  async completeCognitionWithMemory(): Promise<TickResult | null> {
+    const resolution = this.rounds.resolution();
+    if (resolution === null || this.held === undefined) return null;
+    const vectors = new Map<string, readonly number[]>();
+    const consolidations = new Map<string, readonly ConsolidationResult[]>();
+    try {
+      for (const decision of resolution.decisions) {
+        const encodings = decision.memoryEncoding ?? [];
+        if (encodings.length === 0) continue;
+        const embedded = await this.embeddings.embed(encodings.map((encoding) => encoding.text));
+        for (const [index, vector] of embedded.entries())
+          vectors.set(`${decision.characterId}/encoding-${index}`, vector);
+      }
+      const settings = memorySettings(this.config);
+      if (settings !== undefined && this.held.startingTick % settings.consolidationIntervalTicks === 0)
+        for (const characterId of Object.keys(this.held.memory.records).sort()) {
+          const candidates = this.held.memory.records[characterId]!.recent.slice(0, settings.consolidationBatchSize);
+          if (candidates.length === 0) continue;
+          const results = await this.memoryAgent.consolidate(characterId, candidates);
+          consolidations.set(characterId, results);
+          const embedded = await this.embeddings.embed(results.map((result) => result.text));
+          for (const [index, vector] of embedded.entries())
+            vectors.set(`${characterId}/consolidation-${index}`, vector);
+        }
+    } catch (error) {
+      const held = this.held;
+      const failure: TickFailure = {
+        stage: "memory",
+        code: "embedding-failed",
+        detail: error instanceof Error ? error.message : String(error),
+      };
+      this.rounds.close(failure.detail);
+      this.held = undefined;
+      const failed = this.publishFailed(held, failure, resolution.round);
+      return { status: "failed", summary: failed, failure };
+    }
+    return this.completeCognition(vectors, consolidations);
+  }
+
+  /** A player's explicit reflection at a stable boundary uses the same memory gate. */
+  async rememberPlayerObservation(
+    characterId: string,
+    reference: string,
+    text: string,
+  ): Promise<{ readonly ok: boolean; readonly message: string }> {
+    if (this.held !== undefined || this.current.phase !== "publish")
+      return { ok: false, message: "当前模拟边界尚未稳定" };
+    if (this.current.characters.characters[characterId]?.control !== "user")
+      return { ok: false, message: "只有该玩家角色可以提交自己的记忆" };
+    const source = this.workingMemory.entryForReference(this.current.memory, characterId, reference);
+    if (source?.kind !== "observation") return { ok: false, message: "该观察不在角色当前的 Working Memory 中" };
+    const settings = memorySettings(this.config);
+    if (settings === undefined) return { ok: false, message: "当前没有记忆配置" };
+    const basis = this.current;
+    try {
+      const vector = (await this.embeddings.embed([text]))[0];
+      if (vector === undefined) throw new Error("embedding service returned no vector");
+      if (this.current !== basis) return { ok: false, message: "模拟状态已改变，请重新选择观察" };
+      const capacity = workingMemoryCapacity(
+        cognitionSettings(this.config),
+        basis.body.bodies[characterId]?.participation ?? "allowed",
+      );
+      const reflection = this.workingMemory.admitReflection(
+        basis.memory,
+        characterId,
+        basis.tick,
+        [reference],
+        text,
+        capacity,
+      );
+      if (!reflection.admitted) return { ok: false, message: "当前 Working Memory 容量不足以容纳这段反思" };
+      const encoded = this.workingMemory.encode(reflection.state, {
+        characterId,
+        tick: basis.tick,
+        references: [reference],
+        text,
+        vector,
+        embeddingVersion: this.embeddingTarget.representationVersion,
+      });
+      const used =
+        encoded.state.records[characterId]?.entries
+          .filter((entry) => entry.entryId === source.entryId || (entry.kind === "reflection" && entry.text === text))
+          .map((entry) => entry.entryId) ?? [];
+      const memory = this.workingMemory.confirmUsage(encoded.state, { characterId, entryIds: used }).state;
+      const perception = this.perception.confirmConsumed(basis.perception, characterId, [source.sourceId]);
+      this.current = Object.freeze({ ...basis, memory, perception });
+      return { ok: true, message: "这段经历已形成近期记忆" };
+    } catch (error) {
+      return { ok: false, message: `记忆处理失败：${error instanceof Error ? error.message : String(error)}` };
+    }
+  }
+
   /**
    * Runs one tick and, when it stopped for cognition, lets every AI participant
    * decide before publishing it. A barrier that still waits for the player is
@@ -834,7 +1152,7 @@ export class SimulationRunner {
     const result = this.runTick(input);
     if (result.status !== "cognitive-barrier") return result;
     await this.resolveCognition();
-    return this.completeCognition() ?? result;
+    return (await this.completeCognitionWithMemory()) ?? result;
   }
 
   /** The plan the player chose while the barrier is open joins this round. */
@@ -942,6 +1260,7 @@ export class SimulationRunner {
       round,
       summary,
       configId: config.configId,
+      embeddingVersion: this.embeddingTarget.representationVersion,
     });
     return summary;
   }
@@ -964,6 +1283,7 @@ export class SimulationRunner {
       simTime: { tick: nextTick, seconds: nextTick * this.settings.tickSeconds },
       phase: nextPhase,
       configId: config.configId,
+      embeddingVersion: this.embeddingTarget.representationVersion,
       settings: this.settings,
       world: held.world,
       characters: held.characters,
@@ -1026,12 +1346,20 @@ export class SimulationRunner {
     const config = this.requireConfig();
     if (state.configId !== config.configId)
       throw new Error(`save refers to config ${state.configId}, the runtime publishes ${config.configId}`);
+    if (state.embeddingVersion !== this.embeddingTarget.representationVersion)
+      throw new Error(
+        `save uses embedding version ${state.embeddingVersion}, expected ${this.embeddingTarget.representationVersion}`,
+      );
     // A loaded timeline keeps nothing from the one it replaces: in-flight model
     // requests, an held barrier and every adapter belong to the old timeline.
     this.rounds.cancelAll();
     this.held = undefined;
     this.adapters.clear();
     this.current = Object.freeze({ ...state, runMode: "single-step", summary: state.summary });
+  }
+
+  embeddingService(): EmbeddingTarget {
+    return this.embeddingTarget;
   }
 
   private behaviourStates(): Readonly<Record<string, ReturnType<BehaviorTreeAdapter["exportState"]>>> {

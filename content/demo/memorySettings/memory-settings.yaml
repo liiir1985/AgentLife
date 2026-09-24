@@ -1,0 +1,26 @@
+id: memory-settings
+type: agentlife.memory/settings
+public: true
+fields:
+  name: 演示记忆设置
+  description: 近期记忆、巩固、检索及主观辨认的有限边界。
+  workingLifetimeTicks: 5
+  entryLoads:
+    observation: 1
+    recollection: 1
+    reflection: 1
+    intention: 1
+  recentLifetimeTicks: 24
+  accessibilityDecayPerTick: 0.01
+  consolidationIntervalTicks: 6
+  consolidationBatchSize: 4
+  searchCandidateLimit: 8
+  searchResultLimit: 3
+  searchCallsPerDecision: 2
+  recallThreshold: 0.35
+  recognitionThreshold: 0.65
+  structureWeight: 0.3
+  associationWeight: 0.15
+  semanticWeight: 0.4
+  contextWeight: 0.15
+  accessibilityWeight: 0.2

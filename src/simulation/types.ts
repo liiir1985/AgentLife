@@ -282,7 +282,14 @@ export interface RuleBarrier {
 
 export interface TickFailure {
   readonly stage: TickStage;
-  readonly code: "propagation-limit" | "action-rejected" | "world-rejected" | "config-mismatch" | "cognition-failed";
+  readonly code:
+    | "propagation-limit"
+    | "action-rejected"
+    | "world-rejected"
+    | "config-mismatch"
+    | "cognition-failed"
+    | "memory-failed"
+    | "embedding-failed";
   readonly detail: string;
 }
 
@@ -324,6 +331,9 @@ export interface ObservationSubject {
   readonly description: string;
   /** Recognised local name; only ever set at a recognisable resolution. */
   readonly identity: string | null;
+  /** Present only when this observer's memory justified recognition. */
+  readonly profileId?: string;
+  readonly recognitionConfidence?: number;
 }
 
 /** Role one observed object plays in the observer's current view. */
@@ -386,7 +396,7 @@ export interface PerceptionState {
  */
 export interface WorkingMemoryEntry {
   readonly entryId: string;
-  readonly kind: "observation" | "intention";
+  readonly kind: "observation" | "intention" | "recollection" | "reflection";
   readonly sourceId: string;
   readonly admittedTick: number;
   readonly salience: number;
@@ -402,6 +412,77 @@ export interface WorkingMemoryRecord {
   readonly sequence: number;
   /** Entries the last confirmation consumed; diagnostics, never a delete list. */
   readonly consumed: readonly string[];
+  readonly recent: readonly MemoryTrace[];
+  readonly longTerm: readonly MemoryTrace[];
+  readonly profiles: readonly SubjectiveProfile[];
+  readonly traceSequence: number;
+  readonly archived: readonly ArchivedMemory[];
+}
+
+/** Management-only history, intentionally absent from search and recognition. */
+export interface ArchivedMemory {
+  readonly trace: MemoryTrace;
+  readonly reason: "expired" | "consolidated";
+  readonly removedTick: number;
+}
+
+/** A subjective experience that the character actually encoded. */
+export interface MemoryTrace {
+  readonly traceId: string;
+  readonly characterId: string;
+  readonly text: string;
+  readonly sourceKind: "observed" | "heard" | "inferred" | "reflected";
+  readonly sourceIds: readonly string[];
+  readonly subjectAnchor: string | null;
+  readonly formedTick: number;
+  readonly lastUsedTick: number;
+  readonly lastDecayTick: number;
+  readonly accessibility: number;
+  readonly suppression: number;
+  readonly vector: readonly number[];
+  readonly embeddingVersion: string;
+}
+
+/** A character's belief about one entity, supported by existing traces. */
+export interface SubjectiveProfile {
+  readonly profileId: string;
+  readonly subjectAnchor: string;
+  readonly assertions: readonly ProfileAssertion[];
+}
+
+export interface ProfileAssertion {
+  readonly assertionId: string;
+  readonly field: string;
+  readonly value: string;
+  readonly confidence: number;
+  readonly supportingTraceIds: readonly string[];
+}
+
+export interface MemoryEncoding {
+  readonly sourceReferences: readonly string[];
+  readonly text: string;
+  readonly sourceKind?: MemoryTrace["sourceKind"];
+}
+
+export interface ProfileClaim {
+  readonly subjectReference: string;
+  readonly field: string;
+  readonly value: string;
+  readonly sourceReferences: readonly string[];
+  readonly confidence: number;
+}
+
+export interface ProfileReconnection {
+  readonly profileId: string;
+  readonly subjectReference: string;
+  readonly sourceReferences: readonly string[];
+}
+
+export interface RecalledMemory {
+  readonly traceId: string;
+  readonly text: string;
+  readonly formedTick: number;
+  readonly sourceIds: readonly string[];
 }
 
 export interface WorkingMemoryState {
@@ -522,6 +603,11 @@ export interface CognitiveDecision {
   readonly consumedObservations: readonly string[];
   /** Intention identities the entity actually considered or followed. */
   readonly consideredIntentions: readonly string[];
+  /** Optional while scripted phase-4 decisions are kept compatible. */
+  readonly memoryEncoding?: readonly MemoryEncoding[];
+  readonly profileClaims?: readonly ProfileClaim[];
+  readonly profileReconnections?: readonly ProfileReconnection[];
+  readonly usedMemories?: readonly string[];
 }
 
 export type CognitionRoundStatus = "open" | "resolved" | "failed";
@@ -594,11 +680,12 @@ export interface CognitionInput {
   /** Why the previous attempt was refused; `null` on the first attempt. */
   readonly rejection: string | null;
   readonly timeoutMs: number;
+  readonly memorySearchLimit?: number;
 }
 
 /** What one cognition request produced. */
 export interface CognitionModelResult {
-  readonly status: "decided" | "failed" | "timed-out" | "cancelled";
+  readonly status: "decided" | "failed" | "timed-out" | "cancelled" | "memory-failed";
   readonly detail: string;
   /** Untrusted draft; the coordinator validates every reference before use. */
   readonly decision: CognitiveDecision | null;
@@ -623,6 +710,7 @@ export interface SimulationState {
   readonly simTime: SimTime;
   readonly phase: TickStage;
   readonly configId: string;
+  readonly embeddingVersion: string;
   readonly runMode: RunMode;
   readonly settings: SimulationSettings;
   readonly world: WorldState;

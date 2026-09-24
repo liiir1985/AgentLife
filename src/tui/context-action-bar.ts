@@ -45,7 +45,7 @@ export class ContextActionBar implements Component {
     const current = this.current();
     const text = `◀  ${values
       .map((entry) => (entry.command.ref === current?.command.ref ? `[${entry.command.name}]` : entry.command.name))
-      .join("   ")}  ▶`;
+      .join("   ")}  ▶   M 记忆`;
     return [text.slice(0, width)];
   }
 }

@@ -3,6 +3,7 @@ import { createBodySpec } from "./body-spec.js";
 import { createCharacterSpec } from "./character-spec.js";
 import { createCognitionSpec } from "./cognition-spec.js";
 import { createInteractionSpec } from "./interaction-spec.js";
+import { createMemorySpec } from "./memory-spec.js";
 import { createPerceptionSpec } from "./perception-spec.js";
 import { createWorldSpec } from "./world-spec.js";
 
@@ -20,6 +21,7 @@ export function createSystemSpecs(): readonly SystemSpec[] {
     createInteractionSpec(),
     createPerceptionSpec(),
     createCognitionSpec(),
+    createMemorySpec(),
   ];
 }
 
@@ -28,6 +30,7 @@ export {
   createCharacterSpec,
   createCognitionSpec,
   createInteractionSpec,
+  createMemorySpec,
   createPerceptionSpec,
   createWorldSpec,
 };

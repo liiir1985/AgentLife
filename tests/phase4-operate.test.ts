@@ -221,7 +221,7 @@ describe("operating the lamp", () => {
       // Detail is the level the appearance declares as recognisable, so the name it
       // projects is available now and was not a moment ago.
       expect(seen(simulation, LAMP)?.name).toBe("一盏黄铜油灯");
-      expect(seen(simulation, COMPANION)?.name).toBe("阿禾");
+      expect(seen(simulation, COMPANION)?.name).toBe("一个挽着袖子、手上带着修剪痕迹的人");
       expect(seen(simulation, COMPANION)?.recognisable).toBe(true);
     } finally {
       dispose(simulation);

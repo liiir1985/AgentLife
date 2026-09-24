@@ -44,10 +44,9 @@ describe("perception", () => {
         perceivedView(simulation.config, simulation.runner.state(), PLAYER).entities.find(
           (entity) => entity.anchor === WARDEN,
         );
-      // Enough light reaches the finest declared level, so the warden's projected
-      // identity is what the observer names him by.
+      // Enough light permits recognition, but there is no subjective memory yet.
       expect(seen(lit)?.recognisable).toBe(true);
-      expect(seen(lit)?.name).toBe("门口的护卫");
+      expect(seen(lit)?.name).toBe("一个拄着长杆、盯着路口的男人");
       // Two levels down, the projection for that level carries no identity at all.
       expect(seen(dim)?.recognisable).toBe(false);
       expect(seen(dim)?.name).toBe("一个立在路口的人影");
@@ -88,8 +87,8 @@ fields:
       await simulation.runner.runTickToPublication();
       const view = perceivedView(simulation.config, simulation.runner.state(), PLAYER);
       const seen = view.entities.find((entity) => entity.anchor === COMPANION);
-      // The appearance content declares the only name an observer may ever see.
-      expect(seen?.name).toBe("阿禾");
+      // A content appearance does not create a subjective name before memory does.
+      expect(seen?.name).toBe("一个挽着袖子、手上带着修剪痕迹的人");
       const rendered = JSON.stringify(view) + JSON.stringify(observationsOf(simulation.runner.state(), PLAYER));
       expect(rendered).not.toContain("秘密姓名");
       expect(rendered).not.toContain("一段秘密身世");

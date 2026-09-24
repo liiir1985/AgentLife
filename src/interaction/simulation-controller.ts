@@ -1,6 +1,6 @@
 import type { RuntimeConfig } from "../config/config-builder.js";
 import type { SessionTrace } from "../diagnostics/session-trace.js";
-import { cognitionSettings, workingMemoryCapacity } from "../simulation/config-view.js";
+import { cognitionSettings, memorySettings, workingMemoryCapacity } from "../simulation/config-view.js";
 import { stateVersionOf, type ActionPlan, type CognitionRound, type SimulationState } from "../simulation/types.js";
 import { SimulationRunner, type TickResult } from "../simulation/runner.js";
 import { checkSnapshot, decodeSnapshot, encodeSnapshot, snapshotOf } from "../simulation/save.js";
@@ -67,6 +67,9 @@ export interface MemoryPanelRow {
   readonly entries: number;
   readonly capacity: number;
   readonly consumed: number;
+  readonly recent: number;
+  readonly longTerm: number;
+  readonly profiles: number;
 }
 
 export interface ManagementSnapshot {
@@ -268,6 +271,26 @@ export class SimulationController {
     return result;
   }
 
+  /** Only lines already admitted to the player's Working Memory are offered. */
+  playerMemoryChoices(): readonly { readonly reference: string; readonly text: string }[] {
+    const record = this.runner.state().memory.records[this.options.playerId];
+    return Object.freeze(
+      (record?.entries ?? [])
+        .filter((entry) => entry.kind === "observation" && entry.reference !== null)
+        .map((entry) => ({ reference: entry.reference!, text: entry.text })),
+    );
+  }
+
+  async rememberPlayerObservation(
+    reference: string,
+    text: string,
+  ): Promise<{ readonly ok: boolean; readonly message: string }> {
+    const result = await this.runner.rememberPlayerObservation(this.options.playerId, reference, text);
+    this.detail = result.message;
+    this.changed();
+    return result;
+  }
+
   step(): TickResult {
     this.clearTimer();
     const open = this.runner.openRound();
@@ -367,7 +390,7 @@ export class SimulationController {
     const round = this.runner.openRound();
     if (round === null) return;
     await this.runner.resolveCognition();
-    const finished = this.runner.completeCognition();
+    const finished = await this.runner.completeCognitionWithMemory();
     if (finished === null) {
       const still = this.runner.openRound();
       if (still !== null) this.detail = `等待决定：${this.roundDetail(still)}`;
@@ -378,8 +401,8 @@ export class SimulationController {
   }
 
   /** A player decision may have been the last one the round was waiting for. */
-  private afterJoin(): void {
-    const finished = this.runner.completeCognition();
+  private async afterJoin(): Promise<void> {
+    const finished = await this.runner.completeCognitionWithMemory();
     if (finished !== null) this.afterTick(finished);
   }
 
@@ -464,9 +487,17 @@ export class SimulationController {
             // and the row reports what admission actually used.
             capacity: workingMemoryCapacity(settings, state.body.bodies[characterId]?.participation ?? "allowed"),
             consumed: record.consumed.length,
+            recent: record.recent.length,
+            longTerm: record.longTerm.length,
+            profiles: record.profiles.length,
           })),
       ),
       diagnostics: Object.freeze([
+        ...(memorySettings(this.config) === undefined
+          ? []
+          : [
+              `embedding ${this.runner.embeddingService().provider}/${this.runner.embeddingService().model} · ${state.embeddingVersion}`,
+            ]),
         ...this.runner.roundNotes(),
         ...(state.round === null ? [] : [`round ${state.round.roundId} ${state.round.status}`]),
       ]),
@@ -536,7 +567,7 @@ export class SimulationController {
     if (document === undefined) return { ok: false, message: `找不到存档 ${saveId}` };
     const decoded = decodeSnapshot(document);
     if (!decoded.ok) return { ok: false, message: decoded.reason };
-    const check = checkSnapshot(decoded.snapshot, this.config);
+    const check = checkSnapshot(decoded.snapshot, this.config, this.runner.embeddingService().representationVersion);
     if (!check.ok) return { ok: false, message: check.reason };
     this.clearTimer();
     this.pending.splice(0);

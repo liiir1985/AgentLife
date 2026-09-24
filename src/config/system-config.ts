@@ -52,7 +52,23 @@ export interface SystemConfig {
   readonly defaultTarget: ModelTarget;
   /** Parsed subsystem sections, keyed by subsystem name. */
   readonly consumers: Readonly<Record<string, ModelTarget>>;
+  readonly embedding?: EmbeddingTarget;
 }
+
+/** System-owned representation service; content packs cannot select it. */
+export interface EmbeddingTarget {
+  readonly provider: "ollama" | "faux";
+  readonly model: string;
+  readonly endpoint: string;
+  readonly representationVersion: string;
+}
+
+export const FAUX_EMBEDDING_TARGET: EmbeddingTarget = Object.freeze({
+  provider: "faux",
+  model: "scripted-embedding",
+  endpoint: "",
+  representationVersion: "scripted-embedding-v1",
+});
 
 /** Automatic mode does not read the configuration: every subsystem uses the scripted model. */
 export type ModelMode = "configured" | "faux";
@@ -138,7 +154,8 @@ export function parseSystemConfig(document: string, subject: string = SYSTEM_CON
   }
   if (!isMapping(parsed) || parsed.models === undefined) return fail("系统配置文件缺少 models 段");
   for (const key of Object.keys(parsed))
-    if (key !== "models" && !MODEL_CONSUMERS.includes(key)) return fail(`系统配置文件有未声明的顶层字段 ${key}`);
+    if (key !== "models" && key !== "embedding" && !MODEL_CONSUMERS.includes(key))
+      return fail(`系统配置文件有未声明的顶层字段 ${key}`);
 
   const models = parsed.models;
   if (!isMapping(models)) return fail("系统配置文件缺少 models 段");
@@ -195,7 +212,29 @@ export function parseSystemConfig(document: string, subject: string = SYSTEM_CON
         : { ...selected, cost: costOf(section.cost, `系统配置的 ${consumer}`, fail) };
   }
 
-  return { models: { providers, defaultModel: fallback }, defaultTarget, consumers };
+  let embedding: EmbeddingTarget | undefined;
+  if (parsed.embedding !== undefined) {
+    const section = parsed.embedding;
+    if (!isMapping(section)) return fail("系统配置的 embedding 段必须是映射");
+    for (const key of Object.keys(section))
+      if (!["provider", "model", "endpoint", "representation-version"].includes(key))
+        return fail(`系统配置的 embedding 段有未声明的字段 ${key}`);
+    const provider = textOf(section.provider);
+    const model = textOf(section.model);
+    const endpoint = textOf(section.endpoint);
+    const representationVersion = textOf(section["representation-version"]);
+    if (provider !== "ollama") return fail("系统配置的 embedding.provider 必须是 ollama");
+    if (!MODEL_NAME.test(model)) return fail("系统配置的 embedding.model 必须是非空模型名");
+    if (!/^https?:\/\//.test(endpoint)) return fail("系统配置的 embedding.endpoint 必须是 HTTP 地址");
+    if (representationVersion.trim() === "") return fail("系统配置的 embedding.representation-version 不能为空");
+    embedding = { provider, model, endpoint, representationVersion };
+  }
+  return {
+    models: { providers, defaultModel: fallback },
+    defaultTarget,
+    consumers,
+    ...(embedding === undefined ? {} : { embedding }),
+  };
 }
 
 /** Reads and parses the system configuration at `path`, which must exist. */
@@ -226,4 +265,12 @@ export function resolveModel(
 ): ModelTarget {
   if (options.mode === "faux") return FAUX_MODEL_TARGET;
   return modelTarget(loadSystemConfig(options.path ?? SYSTEM_CONFIG_PATH), consumer);
+}
+
+/** Selects the separately owned embedding service or the deterministic faux provider. */
+export function resolveEmbedding(options: { readonly mode?: ModelMode; readonly path?: string } = {}): EmbeddingTarget {
+  if (options.mode === "faux") return FAUX_EMBEDDING_TARGET;
+  const target = loadSystemConfig(options.path ?? SYSTEM_CONFIG_PATH).embedding;
+  if (target === undefined) throw new Error("系统配置文件缺少 embedding 段");
+  return target;
 }

@@ -111,6 +111,11 @@ export interface PerceptionFrame {
   readonly attention: readonly string[];
   readonly world: WorldPerceptionMaterial;
   readonly body: BodyPerceptionMaterial;
+  /** Minimal observer-private recognition supplied by memory, never world identity. */
+  readonly identifySubject?: (
+    anchor: string,
+    resolution: number,
+  ) => { readonly profileId: string; readonly name: string; readonly confidence: number } | null;
 }
 
 export interface PerceptionResult {
@@ -289,6 +294,12 @@ class ObserverRun {
     if (usable === undefined) return null;
     const recognisable = appearance.recognisable === null ? undefined : this.ranks.get(appearance.recognisable);
     const recognised = recognisable !== undefined && rank >= recognisable.rank;
+    const identity = recognised
+      ? this.frame.identifySubject?.(
+          material.anchor,
+          Math.min(1, rank / Math.max(1, ...[...this.ranks.values()].map((entry) => entry.rank))),
+        )
+      : null;
     return Object.freeze({
       anchor: material.anchor,
       reference,
@@ -297,9 +308,10 @@ class ObserverRun {
       level: usable.level,
       recognisable: recognised,
       description: usable.detail,
-      identity: recognised
-        ? (appearance.projections.find((projection) => projection.level === appearance.recognisable)?.identity ?? null)
-        : null,
+      identity: identity?.name ?? null,
+      ...(identity === null || identity === undefined
+        ? {}
+        : { profileId: identity.profileId, recognitionConfidence: identity.confidence }),
     });
   }
 

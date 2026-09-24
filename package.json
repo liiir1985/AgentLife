@@ -19,7 +19,9 @@
     "spike:storage": "vitest run tests/runtime-store-probe.test.ts",
     "spike:behavior": "vitest run tests/behavior-tree-adapter.test.ts",
     "config:verify": "vitest run tests/rule-kernel.test.ts tests/configuration-validation.test.ts",
-    "store:verify": "vitest run tests/runtime-store.test.ts"
+    "store:verify": "vitest run tests/runtime-store.test.ts",
+    "phase5:verify": "tsc --noEmit && prettier --check . && vitest run tests/phase5-memory.test.ts tests/phase4-cognition.test.ts tests/phase4-perception.test.ts tests/phase4-save.test.ts",
+    "phase5:demo": "tsx src/simulation/phase5-demo.ts"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.86.1",

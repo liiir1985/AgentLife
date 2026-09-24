@@ -211,6 +211,8 @@ const SUBJECT_FIELDS = {
   recognisable: Type.Boolean(),
   description: Type.String(),
   identity: NULLABLE_STRING,
+  profileId: Type.Optional(Type.String()),
+  recognitionConfidence: Type.Optional(Type.Number()),
 };
 
 /** One subject's structured description in one observer's own terms. */
@@ -273,7 +275,12 @@ const PERCEPTION_SCHEMA = Type.Object(
 const WORKING_MEMORY_ENTRY_SCHEMA = Type.Object(
   {
     entryId: Type.String(),
-    kind: Type.Union([Type.Literal("observation"), Type.Literal("intention")]),
+    kind: Type.Union([
+      Type.Literal("observation"),
+      Type.Literal("intention"),
+      Type.Literal("recollection"),
+      Type.Literal("reflection"),
+    ]),
     sourceId: Type.String(),
     admittedTick: Type.Number(),
     salience: Type.Number(),
@@ -285,11 +292,65 @@ const WORKING_MEMORY_ENTRY_SCHEMA = Type.Object(
   { additionalProperties: false },
 );
 
+const MEMORY_TRACE_SCHEMA = Type.Object(
+  {
+    traceId: Type.String(),
+    characterId: Type.String(),
+    text: Type.String(),
+    sourceKind: Type.Union([
+      Type.Literal("observed"),
+      Type.Literal("heard"),
+      Type.Literal("inferred"),
+      Type.Literal("reflected"),
+    ]),
+    sourceIds: Type.Array(Type.String()),
+    subjectAnchor: NULLABLE_STRING,
+    formedTick: Type.Number(),
+    lastUsedTick: Type.Number(),
+    lastDecayTick: Type.Number(),
+    accessibility: Type.Number(),
+    suppression: Type.Number(),
+    vector: Type.Array(Type.Number()),
+    embeddingVersion: Type.String(),
+  },
+  { additionalProperties: false },
+);
+
+const PROFILE_ASSERTION_SCHEMA = Type.Object(
+  {
+    assertionId: Type.String(),
+    field: Type.String(),
+    value: Type.String(),
+    confidence: Type.Number(),
+    supportingTraceIds: Type.Array(Type.String()),
+  },
+  { additionalProperties: false },
+);
+
+const SUBJECTIVE_PROFILE_SCHEMA = Type.Object(
+  { profileId: Type.String(), subjectAnchor: Type.String(), assertions: Type.Array(PROFILE_ASSERTION_SCHEMA) },
+  { additionalProperties: false },
+);
+
 const WORKING_MEMORY_RECORD_SCHEMA = Type.Object(
   {
     entries: Type.Array(WORKING_MEMORY_ENTRY_SCHEMA),
     sequence: Type.Number(),
     consumed: Type.Array(Type.String()),
+    recent: Type.Array(MEMORY_TRACE_SCHEMA),
+    longTerm: Type.Array(MEMORY_TRACE_SCHEMA),
+    profiles: Type.Array(SUBJECTIVE_PROFILE_SCHEMA),
+    traceSequence: Type.Number(),
+    archived: Type.Array(
+      Type.Object(
+        {
+          trace: MEMORY_TRACE_SCHEMA,
+          reason: Type.Union([Type.Literal("expired"), Type.Literal("consolidated")]),
+          removedTick: Type.Number(),
+        },
+        { additionalProperties: false },
+      ),
+    ),
   },
   { additionalProperties: false },
 );
@@ -432,6 +493,52 @@ const COGNITIVE_DECISION_SCHEMA = Type.Object(
     idle: Type.Union([Type.Null(), IDLE_COMMITMENT_SCHEMA]),
     consumedObservations: Type.Array(Type.String()),
     consideredIntentions: Type.Array(Type.String()),
+    memoryEncoding: Type.Optional(
+      Type.Array(
+        Type.Object(
+          {
+            sourceReferences: Type.Array(Type.String()),
+            text: Type.String(),
+            sourceKind: Type.Optional(
+              Type.Union([
+                Type.Literal("observed"),
+                Type.Literal("heard"),
+                Type.Literal("inferred"),
+                Type.Literal("reflected"),
+              ]),
+            ),
+          },
+          { additionalProperties: false },
+        ),
+      ),
+    ),
+    profileClaims: Type.Optional(
+      Type.Array(
+        Type.Object(
+          {
+            subjectReference: Type.String(),
+            field: Type.String(),
+            value: Type.String(),
+            sourceReferences: Type.Array(Type.String()),
+            confidence: Type.Number(),
+          },
+          { additionalProperties: false },
+        ),
+      ),
+    ),
+    profileReconnections: Type.Optional(
+      Type.Array(
+        Type.Object(
+          {
+            profileId: Type.String(),
+            subjectReference: Type.String(),
+            sourceReferences: Type.Array(Type.String()),
+          },
+          { additionalProperties: false },
+        ),
+      ),
+    ),
+    usedMemories: Type.Optional(Type.Array(Type.String())),
   },
   { additionalProperties: false },
 );
@@ -460,6 +567,7 @@ export const saveStateSchema: TSchema = Type.Object(
     simTime: Type.Object({ tick: Type.Number(), seconds: Type.Number() }, { additionalProperties: false }),
     phase: Type.String(),
     configId: Type.String(),
+    embeddingVersion: Type.String(),
     runMode: Type.String(),
     settings: SETTINGS_SCHEMA,
     world: WORLD_SCHEMA,
@@ -597,12 +705,24 @@ export function decodeSnapshot(stored: unknown): SnapshotRead {
 }
 
 /** A save may only be loaded against the runtime config and systems it was made with. */
-export function checkSnapshot(snapshot: SaveSnapshot, config: RuntimeConfig): SnapshotCheck {
+export function checkSnapshot(snapshot: SaveSnapshot, config: RuntimeConfig, embeddingVersion?: string): SnapshotCheck {
   if (snapshot.configId !== config.configId)
     return {
       ok: false,
       reason: `save refers to config ${snapshot.configId}, the runtime publishes ${config.configId}`,
     };
+  if (embeddingVersion !== undefined && snapshot.state.embeddingVersion !== embeddingVersion)
+    return {
+      ok: false,
+      reason: `save uses embedding version ${snapshot.state.embeddingVersion}, expected ${embeddingVersion}`,
+    };
+  for (const record of Object.values(snapshot.state.memory.records))
+    for (const trace of [...record.recent, ...record.longTerm])
+      if (trace.embeddingVersion !== snapshot.state.embeddingVersion)
+        return {
+          ok: false,
+          reason: `memory ${trace.traceId} uses embedding version ${trace.embeddingVersion}, expected ${snapshot.state.embeddingVersion}`,
+        };
   if (snapshot.systems.length !== config.systems.length)
     return { ok: false, reason: "save and runtime config declare different systems" };
   for (const system of config.systems) {

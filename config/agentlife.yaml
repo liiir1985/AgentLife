@@ -24,3 +24,10 @@ models:
 #     output: 8
 #     cacheRead: 0.04
 #     cacheWrite: 0.04
+
+# Embedding 服务由用户安装和运行；这里仅选择已提供服务及表示版本。
+embedding:
+  provider: ollama
+  model: embeddinggemma
+  endpoint: http://localhost:11434/api/embed
+  representation-version: embeddinggemma-v1

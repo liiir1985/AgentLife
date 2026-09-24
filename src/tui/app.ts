@@ -2,8 +2,10 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { ProcessTerminal } from "@earendil-works/pi-tui";
 import { PiCognitionAgent } from "../agent/cognition-agent.js";
+import { ScriptedEmbeddingProvider } from "../agent/embedding-provider.js";
+import { PiMemoryAgent, ScriptedMemoryAgent } from "../agent/memory-agent.js";
 import { idleDecision } from "../agent/scripted-cognition.js";
-import { resolveModel } from "../config/system-config.js";
+import { resolveEmbedding, resolveModel } from "../config/system-config.js";
 import { SessionInspector } from "../diagnostics/session-inspector.js";
 import { SessionCost } from "../diagnostics/session-cost.js";
 import { SessionLog } from "../diagnostics/session-trace.js";
@@ -38,7 +40,15 @@ const agent = new PiCognitionAgent({
   sessionCost,
   ...(target.provider === "faux" ? { draft: idleDecision, tokensPerSecond: 100_000 } : {}),
 });
-const runner = SimulationRunner.create(core, { timelineId: "timeline-phase4", models: agent, trace: sessionLog });
+const runner = SimulationRunner.create(core, {
+  timelineId: "timeline-phase5",
+  models: agent,
+  embeddingTarget: resolveEmbedding(process.argv.includes("--use_faux") ? { mode: "faux" } : {}),
+  trace: sessionLog,
+  memoryAgent:
+    target.provider === "faux" ? new ScriptedMemoryAgent() : new PiMemoryAgent(target.provider, target.model),
+  ...(target.provider === "faux" ? { embeddings: new ScriptedEmbeddingProvider() } : {}),
+});
 const controller = new SimulationController(
   runner,
   config,

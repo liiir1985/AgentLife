@@ -39,7 +39,7 @@ export const RUNTIME_CONFIG_PAYLOAD_TYPE = "runtime-config";
  * the cognition round, so a version-2 payload is refused by `decodeSnapshot`
  * rather than migrated: phase 4 does not continue phase-3 saves.
  */
-export const SIMULATION_SAVE_VERSION = "3";
+export const SIMULATION_SAVE_VERSION = "4";
 export const SIMULATION_SAVE_TYPE = "simulation-save";
 
 export const simulationSaves = sqliteTable("simulation_saves", {

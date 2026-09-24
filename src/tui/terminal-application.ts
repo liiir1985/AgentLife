@@ -34,7 +34,14 @@ const LOG_LIMIT = 500;
 const NOTIFICATION_MS = 2_000;
 const SHORTCUTS = "←/→ 选择  Enter 确认  Space 运行/暂停  / 管理  F2 调试";
 
-type FocusMode = "action-bar" | "entity-parameter" | "text-parameter" | "management-input" | "monitor";
+type FocusMode =
+  | "action-bar"
+  | "entity-parameter"
+  | "text-parameter"
+  | "memory-select"
+  | "memory-text"
+  | "management-input"
+  | "monitor";
 type NarrowTab = "location" | "entities" | "log";
 type MonitorTab = "status" | "session-log";
 
@@ -399,6 +406,10 @@ export class TerminalApplication {
       this.openManagementInput();
       return { consume: true };
     }
+    if (data.toLocaleLowerCase() === "m") {
+      this.openMemorySelection();
+      return { consume: true };
+    }
     if (matchesKey(data, "tab") || matchesKey(data, "shift+tab")) {
       const tabs: NarrowTab[] = ["location", "entities", "log"];
       const index = tabs.indexOf(this.tab);
@@ -527,6 +538,48 @@ export class TerminalApplication {
     this.overlay = this.tui.showOverlay(box, { width: "60%", maxHeight: 5, anchor: "bottom-center" });
     this.activeInput = input;
     this.mode = "text-parameter";
+    this.tui.setFocus(input);
+    this.tui.renderNow(true);
+  }
+
+  /** The player explicitly chooses a currently held observation to remember. */
+  private openMemorySelection(): void {
+    this.controller.pause();
+    const choices = this.controller.playerMemoryChoices();
+    if (choices.length === 0) {
+      this.notify("当前没有可用的观察供你记住");
+      return;
+    }
+    const list = new SelectList(
+      choices.map((choice) => ({ value: choice.reference, label: choice.reference, description: choice.text })),
+      7,
+      SELECT_THEME,
+    );
+    list.onSelect = (item) => this.openMemoryText(item.value);
+    list.onCancel = () => this.closeOverlayToActions();
+    const box = new Box(1, 1);
+    box.addChild(new VStack([new Text("选择要记住的观察", 0, 0), list], { gap: 1 }));
+    this.overlay = this.tui.showOverlay(box, { width: "70%", maxHeight: "70%", anchor: "center" });
+    this.mode = "memory-select";
+    this.tui.setFocus(list);
+    this.tui.renderNow(true);
+  }
+
+  private openMemoryText(reference: string): void {
+    this.closeOverlay();
+    const input = new Input({ prompt: "> ", placeholder: "用自己的话记住这段经历" });
+    input.onSubmit = (text) => {
+      void this.controller.rememberPlayerObservation(reference, text).then((result) => {
+        this.closeOverlayToActions();
+        this.notify(result.message);
+      });
+    };
+    input.onEscape = () => this.closeOverlayToActions();
+    const box = new Box(1, 1);
+    box.addChild(new VStack([new Text("记忆：" + reference, 0, 0), input], { gap: 1 }));
+    this.overlay = this.tui.showOverlay(box, { width: "70%", maxHeight: 5, anchor: "bottom-center" });
+    this.activeInput = input;
+    this.mode = "memory-text";
     this.tui.setFocus(input);
     this.tui.renderNow(true);
   }
@@ -688,10 +741,12 @@ export class TerminalApplication {
         `  ${row.characterId} 注意：${listOf(row.attention)}｜理解：${row.understanding === "" ? "无" : row.understanding}｜疑问：${listOf(row.questions)}｜持续：${row.persistence === "" ? "无" : row.persistence}｜意图：${listOf(row.intentions)}｜空闲：${row.idle ?? "无"}｜决定 ${row.decisions}｜请求 ${row.pendingRequestId ?? "无"}`,
       );
     lines.push("");
-    lines.push("Working Memory（容量、已准入与消费数量；不含私密文本）");
+    lines.push("Working Memory 与持久痕迹（容量、痕迹与档案数量；不含私密文本）");
     if (snapshot.workingMemory.length === 0) lines.push("  （无）");
     for (const row of snapshot.workingMemory)
-      lines.push(`  ${row.characterId} · 已准入 ${row.entries}/${row.capacity} · 已消费 ${row.consumed}`);
+      lines.push(
+        `  ${row.characterId} · Working ${row.entries}/${row.capacity} · 已消费 ${row.consumed} · Recent ${row.recent} · Long-term ${row.longTerm} · 档案 ${row.profiles}`,
+      );
     lines.push("");
     lines.push("Diagnostics");
     if (snapshot.diagnostics.length === 0) lines.push("  （无）");

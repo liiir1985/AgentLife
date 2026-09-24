@@ -2,6 +2,7 @@ import type { RuntimeConfig } from "../../src/config/config-builder.js";
 import { CoreRuntime, packInput, type PublishResult } from "../../src/config/core-runtime.js";
 import { ContentPackLoader } from "../../src/content/content-pack-loader.js";
 import type { CognitionModelPort } from "../../src/agent/cognition-agent.js";
+import { ScriptedEmbeddingProvider } from "../../src/agent/embedding-provider.js";
 import type { SessionTrace } from "../../src/diagnostics/session-trace.js";
 import type { SessionCost } from "../../src/diagnostics/session-cost.js";
 import { SimulationRunner, type TickResult } from "../../src/simulation/runner.js";
@@ -67,6 +68,7 @@ export async function phase4Simulation(options: Phase4Options = {}): Promise<Pha
     directory,
     runner: SimulationRunner.create(core, {
       timelineId: options.timelineId ?? "timeline-phase4",
+      embeddings: new ScriptedEmbeddingProvider(),
       models:
         options.models ??
         scriptedModel({

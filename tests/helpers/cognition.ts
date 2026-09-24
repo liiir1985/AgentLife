@@ -3,6 +3,7 @@ import { idleDecision, type ScriptedDraft } from "../../src/agent/scripted-cogni
 import { FAUX_MODEL_TARGET } from "../../src/config/system-config.js";
 import type { SessionTrace } from "../../src/diagnostics/session-trace.js";
 import type { SessionCost } from "../../src/diagnostics/session-cost.js";
+import type { CognitionInput } from "../../src/simulation/types.js";
 
 /**
  * Test-side cognition.
@@ -16,6 +17,7 @@ import type { SessionCost } from "../../src/diagnostics/session-cost.js";
 export interface CognitionScript {
   readonly tokensPerSecond?: number;
   readonly draft?: ScriptedDraft;
+  readonly fauxMemoryQuery?: (input: CognitionInput) => string | null;
   readonly trace?: SessionTrace;
   readonly sessionCost?: SessionCost;
 }
@@ -27,6 +29,7 @@ export function scriptedModel(script: CognitionScript = {}): PiCognitionAgent {
     model: FAUX_MODEL_TARGET.model,
     tokensPerSecond: script.tokensPerSecond ?? 100_000,
     draft: script.draft ?? idleDecision,
+    ...(script.fauxMemoryQuery === undefined ? {} : { fauxMemoryQuery: script.fauxMemoryQuery }),
     ...(script.trace === undefined ? {} : { trace: script.trace }),
     ...(script.sessionCost === undefined ? {} : { sessionCost: script.sessionCost }),
   });

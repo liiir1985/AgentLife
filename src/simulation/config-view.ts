@@ -62,7 +62,8 @@ export type ItemTypeRef =
   | "agentlife.perception/channel"
   | "agentlife.perception/settings"
   | "agentlife.cognition/settings"
-  | "agentlife.cognition/prompt";
+  | "agentlife.cognition/prompt"
+  | "agentlife.memory/settings";
 
 function asString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
@@ -584,6 +585,54 @@ export function cognitionPrompt(config: RuntimeConfig): string | undefined {
   const item = itemsOf(config, "agentlife.cognition/prompt")[0];
   const text = item === undefined ? undefined : asString(item.values.text);
   return text === undefined || text.trim() === "" ? undefined : text;
+}
+
+/** Content-owned bounds for one character's subjective memory. */
+export interface MemorySettingsSpec {
+  readonly workingLifetimeTicks: number;
+  readonly entryLoads: Readonly<Record<"observation" | "recollection" | "reflection" | "intention", number>>;
+  readonly recentLifetimeTicks: number;
+  readonly accessibilityDecayPerTick: number;
+  readonly consolidationIntervalTicks: number;
+  readonly consolidationBatchSize: number;
+  readonly searchCandidateLimit: number;
+  readonly searchResultLimit: number;
+  readonly searchCallsPerDecision: number;
+  readonly recallThreshold: number;
+  readonly recognitionThreshold: number;
+  readonly structureWeight: number;
+  readonly associationWeight: number;
+  readonly semanticWeight: number;
+  readonly contextWeight: number;
+  readonly accessibilityWeight: number;
+}
+
+export function memorySettings(config: RuntimeConfig): MemorySettingsSpec | undefined {
+  const values = itemsOf(config, "agentlife.memory/settings")[0]?.values;
+  if (values === undefined) return undefined;
+  return {
+    workingLifetimeTicks: asNumber(values.workingLifetimeTicks) ?? 0,
+    entryLoads: {
+      observation: asNumber(asRecord(values.entryLoads).observation) ?? 1,
+      recollection: asNumber(asRecord(values.entryLoads).recollection) ?? 1,
+      reflection: asNumber(asRecord(values.entryLoads).reflection) ?? 1,
+      intention: asNumber(asRecord(values.entryLoads).intention) ?? 1,
+    },
+    recentLifetimeTicks: asNumber(values.recentLifetimeTicks) ?? 0,
+    accessibilityDecayPerTick: asNumber(values.accessibilityDecayPerTick) ?? 0,
+    consolidationIntervalTicks: asNumber(values.consolidationIntervalTicks) ?? 0,
+    consolidationBatchSize: asNumber(values.consolidationBatchSize) ?? 0,
+    searchCandidateLimit: asNumber(values.searchCandidateLimit) ?? 0,
+    searchResultLimit: asNumber(values.searchResultLimit) ?? 0,
+    searchCallsPerDecision: asNumber(values.searchCallsPerDecision) ?? 0,
+    recallThreshold: asNumber(values.recallThreshold) ?? 0,
+    recognitionThreshold: asNumber(values.recognitionThreshold) ?? 0,
+    structureWeight: asNumber(values.structureWeight) ?? 0,
+    associationWeight: asNumber(values.associationWeight) ?? 0,
+    semanticWeight: asNumber(values.semanticWeight) ?? 0,
+    contextWeight: asNumber(values.contextWeight) ?? 0,
+    accessibilityWeight: asNumber(values.accessibilityWeight) ?? 0,
+  };
 }
 
 /**

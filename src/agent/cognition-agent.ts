@@ -22,11 +22,14 @@ import type {
   IdleCommitment,
   IntentionStatus,
   ObservationRole,
+  RecalledMemory,
 } from "../simulation/types.js";
+
+export type MemorySearchPort = (input: CognitionInput, query: string) => Promise<readonly RecalledMemory[]>;
 
 /** One cognition request as the runtime issues it. */
 export interface CognitionModelPort {
-  request(input: CognitionInput): Promise<CognitionModelResult>;
+  request(input: CognitionInput, memorySearch?: MemorySearchPort): Promise<CognitionModelResult>;
   /** Aborts the request with this identity; its result then reports "cancelled". */
   cancel(requestId: string): void;
 }
@@ -36,6 +39,8 @@ export interface PiCognitionAgentOptions {
   readonly model: string;
   /** Used only when the provider is "faux": the tool arguments the scripted model returns. */
   readonly draft?: (input: CognitionInput) => unknown;
+  /** Scripted demonstrations may exercise the same bounded search tool first. */
+  readonly fauxMemoryQuery?: (input: CognitionInput) => string | null;
   readonly tokensPerSecond?: number;
   readonly trace?: SessionTrace;
   readonly sessionCost?: SessionCost;
@@ -52,6 +57,7 @@ const FAUX_PROVIDER = "faux";
 
 /** The only tool a cognition model may call; it can neither read the world nor write state. */
 const SUBMIT_TOOL_NAME = "submit_cognitive_decision";
+const MemorySearchParameters = Type.Object({ query: Type.String() }, { additionalProperties: false });
 
 /** Long enough that a request stays in flight while a newer one supersedes it or its budget runs out. */
 const NARRATIVE_TEXT = "the request narrates without submitting a decision ".repeat(12);
@@ -129,6 +135,52 @@ const DecisionParameters = Type.Object(
       Type.String({ description: "本次决定实际用到的观察引用名，取自观察行行首（如 o2）" }),
     ),
     consideredIntentions: Type.Array(Type.String()),
+    memoryEncoding: Type.Optional(
+      Type.Array(
+        Type.Object(
+          {
+            sourceReferences: Type.Array(Type.String()),
+            text: Type.String(),
+            sourceKind: Type.Optional(
+              Type.Union([
+                Type.Literal("observed"),
+                Type.Literal("heard"),
+                Type.Literal("inferred"),
+                Type.Literal("reflected"),
+              ]),
+            ),
+          },
+          { additionalProperties: false },
+        ),
+      ),
+    ),
+    profileClaims: Type.Optional(
+      Type.Array(
+        Type.Object(
+          {
+            subjectReference: Type.String(),
+            field: Type.String(),
+            value: Type.String(),
+            sourceReferences: Type.Array(Type.String()),
+            confidence: Type.Number(),
+          },
+          { additionalProperties: false },
+        ),
+      ),
+    ),
+    profileReconnections: Type.Optional(
+      Type.Array(
+        Type.Object(
+          {
+            profileId: Type.String(),
+            subjectReference: Type.String(),
+            sourceReferences: Type.Array(Type.String()),
+          },
+          { additionalProperties: false },
+        ),
+      ),
+    ),
+    usedMemories: Type.Optional(Type.Array(Type.String())),
   },
   { additionalProperties: false },
 );
@@ -144,6 +196,7 @@ interface ActiveRequest {
   abortReason: "cancelled" | "timed-out" | undefined;
   /** True once a tool call of this request was refused, so its failure reads as a refusal. */
   refused: boolean;
+  memoryFailure: string | null;
 }
 
 /** The provider collection and model one request streams through. */
@@ -193,17 +246,17 @@ export class PiCognitionAgent implements CognitionModelPort {
   }
 
   /** Runs one request. The promise settles with a result; a failure is never an exception. */
-  async request(input: CognitionInput): Promise<CognitionModelResult> {
+  async request(input: CognitionInput, memorySearch?: MemorySearchPort): Promise<CognitionModelResult> {
     this.supersede();
     try {
-      return await this.attempt(input);
+      return await this.attempt(input, memorySearch);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       return { status: "failed", detail: `the cognition request failed: ${reason}`, decision: null };
     }
   }
 
-  private async attempt(input: CognitionInput): Promise<CognitionModelResult> {
+  private async attempt(input: CognitionInput, memorySearch?: MemorySearchPort): Promise<CognitionModelResult> {
     const target = await this.modelTarget(input);
     if ("detail" in target) return { status: "failed", detail: target.detail, decision: null };
 
@@ -214,6 +267,7 @@ export class PiCognitionAgent implements CognitionModelPort {
       decision: undefined,
       abortReason: undefined,
       refused: false,
+      memoryFailure: null,
     };
     this.active = request;
     const identity = { entityId: input.characterId, roundId: input.roundId, requestId: input.requestId };
@@ -237,11 +291,34 @@ export class PiCognitionAgent implements CognitionModelPort {
       },
     };
 
+    let searchCalls = 0;
+    const searchTool: AgentTool<typeof MemorySearchParameters> = {
+      name: "memory_search",
+      label: "Search Personal Memory",
+      description: "Search this character's own memories using a subjective cue",
+      parameters: MemorySearchParameters,
+      execute: async (_toolCallId, args) => {
+        searchCalls += 1;
+        if (memorySearch === undefined || searchCalls > (input.memorySearchLimit ?? 0))
+          return {
+            content: [{ type: "text" as const, text: "memory search unavailable or budget exhausted" }],
+            details: { accepted: false },
+          };
+        let found: readonly RecalledMemory[];
+        try {
+          found = await memorySearch(input, args.query);
+        } catch (error) {
+          request.memoryFailure = error instanceof Error ? error.message : String(error);
+          throw error;
+        }
+        return { content: [{ type: "text" as const, text: JSON.stringify(found) }], details: { accepted: true } };
+      },
+    };
     const agent = new Agent({
       initialState: {
         model: target.model,
         systemPrompt: input.systemPrompt,
-        tools: [tool],
+        tools: memorySearch === undefined ? [tool] : [searchTool, tool],
       },
       streamFn: (model, context, options) => {
         this.options.trace?.record("llm-request", { model: model.id, messages: context.messages }, identity);
@@ -252,6 +329,12 @@ export class PiCognitionAgent implements CognitionModelPort {
       // over-specified call is blocked instead of becoming a decision.
       beforeToolCall: async (context) => {
         const raw: unknown = context.toolCall.arguments;
+        if (context.toolCall.name === "memory_search" && memorySearch !== undefined) {
+          if (!Value.Check(searchTool.parameters, raw))
+            return this.refuse(request, "memory search arguments are invalid");
+          if (this.active !== request) return this.refuse(request, "memory search arrived after the request ended");
+          return undefined;
+        }
         if (context.toolCall.name !== SUBMIT_TOOL_NAME) {
           return this.refuse(request, `${context.toolCall.name} is not permitted for a cognition request`);
         }
@@ -306,7 +389,8 @@ export class PiCognitionAgent implements CognitionModelPort {
     }
 
     const status: CognitionModelResult["status"] =
-      request.abortReason ?? (request.decision === undefined ? "failed" : "decided");
+      request.abortReason ??
+      (request.memoryFailure !== null ? "memory-failed" : request.decision === undefined ? "failed" : "decided");
     this.options.trace?.record(
       "llm-transcript",
       {
@@ -381,10 +465,14 @@ export class PiCognitionAgent implements CognitionModelPort {
       ...(this.options.tokensPerSecond === undefined ? {} : { tokensPerSecond: this.options.tokensPerSecond }),
     });
     const drafted: unknown = this.options.draft?.(input);
+    const query = this.options.fauxMemoryQuery?.(input);
     faux.setResponses(
       drafted === undefined || drafted === null
         ? [fauxAssistantMessage(fauxText(NARRATIVE_TEXT))]
         : [
+            ...(query === undefined || query === null
+              ? []
+              : [fauxAssistantMessage(fauxToolCall("memory_search", { query }), { stopReason: "toolUse" })]),
             fauxAssistantMessage(fauxToolCall(SUBMIT_TOOL_NAME, drafted as JsonObject), { stopReason: "toolUse" }),
             fauxAssistantMessage(fauxText(NARRATIVE_TEXT)),
           ],
@@ -506,6 +594,32 @@ function decisionFromSubmission(input: CognitionInput, submitted: SubmittedDecis
     idle: idleFromSubmission(input, submitted.idle),
     consumedObservations: [...submitted.consumedObservations],
     consideredIntentions: [...submitted.consideredIntentions],
+    ...(submitted.memoryEncoding === undefined
+      ? {}
+      : {
+          memoryEncoding: submitted.memoryEncoding.map((encoding) => ({
+            sourceReferences: [...encoding.sourceReferences],
+            text: encoding.text,
+            ...(encoding.sourceKind === undefined ? {} : { sourceKind: encoding.sourceKind }),
+          })),
+        }),
+    ...(submitted.profileClaims === undefined
+      ? {}
+      : {
+          profileClaims: submitted.profileClaims.map((claim) => ({
+            ...claim,
+            sourceReferences: [...claim.sourceReferences],
+          })),
+        }),
+    ...(submitted.profileReconnections === undefined
+      ? {}
+      : {
+          profileReconnections: submitted.profileReconnections.map((candidate) => ({
+            ...candidate,
+            sourceReferences: [...candidate.sourceReferences],
+          })),
+        }),
+    ...(submitted.usedMemories === undefined ? {} : { usedMemories: [...submitted.usedMemories] }),
   };
 }
 
@@ -522,6 +636,7 @@ function idleFromSubmission(input: CognitionInput, idle: SubmittedDecision["idle
 
 /** A readable reason for every outcome that is not a decision. */
 function resultDetail(request: ActiveRequest, failure: unknown): string {
+  if (request.memoryFailure !== null) return `necessary memory search failed: ${request.memoryFailure}`;
   if (request.abortReason === "cancelled") return "the request was cancelled before a decision was accepted";
   if (request.abortReason === "timed-out") {
     return `the model did not submit a decision within ${request.input.timeoutMs} ms`;

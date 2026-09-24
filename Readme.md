@@ -328,6 +328,8 @@ Skill 只生产结构化候选和诊断，不负责持久化、用户审阅、�
 * [时间与整体调度系统设计](docs/time-orchestration-system.md)
 * [配置生成 Skill 设计](docs/configuration-authoring-skill.md)
 * [第一版实现步骤规划](docs/implementation-roadmap.md)
+* [阶段 5 详细执行计划：主观记忆闭环](docs/phase-5-execution-plan.md)
+* [阶段 5 报告：主观记忆闭环](docs/phase-5-report.md)
 * [Core 与确定性求值系统：开发者架构指南](docs/core-deterministic-evaluation-guide.md)
 * [Core 命名规范与重命名方案](docs/core-naming-guide.md)
 * [阶段 0 Spike 报告](docs/phase-0-spike-report.md)
