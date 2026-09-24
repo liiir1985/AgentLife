@@ -178,6 +178,16 @@ fields:
       const kiln = perceivedView(simulation.config, simulation.runner.state(), PLAYER);
       expect(kiln.place?.anchor).toBe(KILN);
       expect(kiln.exits.map((exit) => exit.anchor)).toEqual([SQUARE]);
+      expect(
+        observationsOf(simulation.runner.state(), PLAYER).some(
+          (observation) => observation.subject?.anchor === KILN && observation.text.includes("你到了"),
+        ),
+      ).toBe(true);
+      expect(
+        observationsOf(simulation.runner.state(), PLAYER).some(
+          (observation) => observation.kind === "disappearance" && observation.subject?.anchor === SQUARE,
+        ),
+      ).toBe(false);
     } finally {
       dispose(simulation);
     }

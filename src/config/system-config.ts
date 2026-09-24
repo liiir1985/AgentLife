@@ -57,7 +57,7 @@ export interface SystemConfig {
 
 /** System-owned representation service; content packs cannot select it. */
 export interface EmbeddingTarget {
-  readonly provider: "ollama" | "faux";
+  readonly provider: "ollama" | "openai-compatible" | "faux";
   readonly model: string;
   readonly endpoint: string;
   readonly representationVersion: string;
@@ -223,7 +223,8 @@ export function parseSystemConfig(document: string, subject: string = SYSTEM_CON
     const model = textOf(section.model);
     const endpoint = textOf(section.endpoint);
     const representationVersion = textOf(section["representation-version"]);
-    if (provider !== "ollama") return fail("系统配置的 embedding.provider 必须是 ollama");
+    if (provider !== "ollama" && provider !== "openai-compatible")
+      return fail("系统配置的 embedding.provider 必须是 ollama 或 openai-compatible");
     if (!MODEL_NAME.test(model)) return fail("系统配置的 embedding.model 必须是非空模型名");
     if (!/^https?:\/\//.test(endpoint)) return fail("系统配置的 embedding.endpoint 必须是 HTTP 地址");
     if (representationVersion.trim() === "") return fail("系统配置的 embedding.representation-version 不能为空");

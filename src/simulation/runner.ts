@@ -9,6 +9,7 @@ import type { SimpleValue } from "../config/value-expr.js";
 import type { CognitionModelPort } from "../agent/cognition-agent.js";
 import {
   OllamaEmbeddingProvider,
+  OpenAICompatibleEmbeddingProvider,
   ScriptedEmbeddingProvider,
   type EmbeddingProvider,
 } from "../agent/embedding-provider.js";
@@ -192,7 +193,9 @@ export class SimulationRunner {
       options.embeddings ??
       (this.embeddingTarget.provider === "ollama"
         ? new OllamaEmbeddingProvider(this.embeddingTarget.endpoint, this.embeddingTarget.model)
-        : new ScriptedEmbeddingProvider());
+        : this.embeddingTarget.provider === "openai-compatible"
+          ? new OpenAICompatibleEmbeddingProvider(this.embeddingTarget.endpoint, this.embeddingTarget.model)
+          : new ScriptedEmbeddingProvider());
     this.memoryAgent = options.memoryAgent ?? new ScriptedMemoryAgent();
     this.cognition = new CognitionService(config);
     const characterState = characters.initialize();
@@ -673,6 +676,27 @@ export class SimulationRunner {
         admitted,
         entries,
         situations,
+        ongoingPlans: Object.freeze(
+          Object.fromEntries(
+            Object.keys(entries).map((characterId) => [
+              characterId,
+              Object.freeze([
+                ...new Map(
+                  bodyRuntime.actions
+                    .filter(
+                      (action) =>
+                        action.entityId === characterId &&
+                        action.plan.source === "cognition" &&
+                        (action.status === "running" ||
+                          action.status === "queued" ||
+                          action.status === "waiting-world"),
+                    )
+                    .map((action) => [action.plan.planId, action.plan] as const),
+                ).values(),
+              ]),
+            ]),
+          ),
+        ),
         cognition: cognitionState,
         searchMemories: async (characterId, query) => {
           const settings = memorySettings(config);
@@ -1202,6 +1226,21 @@ export class SimulationRunner {
     ];
     if (activity.action !== "")
       parts.push(`当前动作：${itemLabel(this.config, activity.action)}（${activity.status}）`);
+    const ongoing = runtime.actions.filter(
+      (action) =>
+        action.entityId === characterId &&
+        (action.status === "running" || action.status === "queued" || action.status === "waiting-world"),
+    );
+    if (ongoing.length > 0)
+      parts.push(
+        `已有 ${ongoing.length} 项执行中或排队动作：${ongoing
+          .slice(0, 4)
+          .map(
+            (action) =>
+              `${itemLabel(this.config, action.action)}${action.destination === null ? "" : `到${itemLabel(this.config, action.destination)}`}（${action.status}）`,
+          )
+          .join("、")}`,
+      );
     return `${parts.join("；")}。`;
   }
 

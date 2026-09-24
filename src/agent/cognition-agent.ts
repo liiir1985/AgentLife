@@ -122,36 +122,41 @@ const IdleParameters = Type.Object(
 const DecisionParameters = Type.Object(
   {
     attention: Type.Array(
-      Type.String({ description: "当前主要关注的对象引用名，取自观察行行首（如 o2）；没有则留空数组" }),
+      Type.String({
+        description: "当前关注的对象引用；可沿用输入中的旧注意，新引用须出现在本轮观察行行首；没有则留空数组",
+      }),
     ),
-    understanding: Type.String(),
-    questions: Type.Array(Type.String()),
-    persistence: Type.String(),
-    intentionChanges: Type.Array(IntentionChangeParameters),
+    understanding: Type.String({ description: "依据本轮可用信息形成的当前主观理解，不把推测写成观察事实" }),
+    questions: Type.Array(Type.String(), { description: "仍不确定、以后需要观察或询问的问题" }),
+    persistence: Type.String({ description: "眼前这一步之后仍要坚持的打算" }),
+    intentionChanges: Type.Array(IntentionChangeParameters, { description: "只提交本轮确实要改变的意图" }),
     speech: Type.Union([Type.String(), Type.Null()]),
     steps: Type.Array(StepParameters),
-    idle: Type.Union([IdleParameters, Type.Null()]),
+    idle: Type.Union([IdleParameters, Type.Null()], {
+      description: "speech 或 steps 非空时必须为 null；完全不行动时填写有限等待",
+    }),
     consumedObservations: Type.Array(
-      Type.String({ description: "本次决定实际用到的观察引用名，取自观察行行首（如 o2）" }),
+      Type.String({ description: "本次决定实际用到的本轮观察引用名，取自观察行行首（如 o2）" }),
     ),
-    consideredIntentions: Type.Array(Type.String()),
+    consideredIntentions: Type.Array(Type.String(), { description: "本次确实权衡过的已有意图 ID" }),
     memoryEncoding: Type.Optional(
       Type.Array(
         Type.Object(
           {
-            sourceReferences: Type.Array(Type.String()),
-            text: Type.String(),
+            sourceReferences: Type.Array(Type.String(), {
+              description: "这条新记忆的本轮观察来源，必须同时列在 consumedObservations 中；不得为空",
+            }),
+            text: Type.String({ description: "值得保留的主观经历或由本轮观察形成的新认识" }),
             sourceKind: Type.Optional(
-              Type.Union([
-                Type.Literal("observed"),
-                Type.Literal("heard"),
-                Type.Literal("inferred"),
-                Type.Literal("reflected"),
-              ]),
+              Type.Union(
+                [Type.Literal("observed"), Type.Literal("heard"), Type.Literal("inferred"), Type.Literal("reflected")],
+                { description: "内容来自亲眼观察、听闻、推测或反思；不确定时可省略" },
+              ),
             ),
           },
           { additionalProperties: false },
         ),
+        { description: "可选的新近期记忆候选；回忆旧记忆本身不需要填写" },
       ),
     ),
     profileClaims: Type.Optional(
@@ -180,7 +185,11 @@ const DecisionParameters = Type.Object(
         ),
       ),
     ),
-    usedMemories: Type.Optional(Type.Array(Type.String())),
+    usedMemories: Type.Optional(
+      Type.Array(Type.String(), {
+        description: "本次理解、说话或行动确实使用的 memory_search 结果 traceId；仅检索到的不填写",
+      }),
+    ),
   },
   { additionalProperties: false },
 );
@@ -295,7 +304,7 @@ export class PiCognitionAgent implements CognitionModelPort {
     const searchTool: AgentTool<typeof MemorySearchParameters> = {
       name: "memory_search",
       label: "Search Personal Memory",
-      description: "Search this character's own memories using a subjective cue",
+      description: "用当前线索查询此角色自己的旧记忆；只在过去经历有助于当前决定时调用，结果不必全部使用",
       parameters: MemorySearchParameters,
       execute: async (_toolCallId, args) => {
         searchCalls += 1;
@@ -562,7 +571,9 @@ export function cognitionRequestMessage(input: CognitionInput): string {
   }
   lines.push(
     `边界：最多 ${input.maxSteps} 个动作步骤；一次空闲等待不得超过 ${input.idleWaitLimitTicks} tick。` +
-      `空闲承诺的 waitTicks 与 reviewInTicks 都从现在算起，是相对 tick 数，不是 tick 号。`,
+      `空闲承诺的 waitTicks 与 reviewInTicks 都从现在算起，是相对 tick 数，不是 tick 号。` +
+      `只要 speech 非空或 steps 非空，idle 就填 null；两者都空时必须提交有限 idle。` +
+      `本轮没列出的旧对象不等于消失；只有本轮观察引用可以进入 consumedObservations 和新记忆编码。`,
   );
   if (input.rejection !== null) {
     lines.push(`第 ${input.attempt} 次尝试：上一次提交被拒绝——${input.rejection}`);

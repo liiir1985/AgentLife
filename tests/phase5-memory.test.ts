@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { OllamaEmbeddingProvider, ScriptedEmbeddingProvider } from "../src/agent/embedding-provider.js";
+import {
+  OllamaEmbeddingProvider,
+  OpenAICompatibleEmbeddingProvider,
+  ScriptedEmbeddingProvider,
+} from "../src/agent/embedding-provider.js";
 import { idleDecision } from "../src/agent/scripted-cognition.js";
 import { WorkingMemoryService } from "../src/simulation/memory-service.js";
 import { checkSnapshot, decodeSnapshot, encodeSnapshot, snapshotOf } from "../src/simulation/save.js";
@@ -55,6 +59,33 @@ describe("subjective memory", () => {
         model: "embeddinggemma",
         input: ["灯", "人"],
         truncate: false,
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+  it("reads OpenAI-compatible vectors by their response indexes", async () => {
+    const request = vi.fn(async (_url: unknown, _init?: RequestInit) =>
+      Response.json({
+        data: [
+          { index: 1, embedding: [0, 1] },
+          { index: 0, embedding: [1, 0] },
+        ],
+      }),
+    );
+    vi.stubGlobal("fetch", request);
+    try {
+      const vectors = await new OpenAICompatibleEmbeddingProvider(
+        "http://127.0.0.1:1234/v1/embeddings",
+        "text-embedding-embeddinggemma-300m",
+      ).embed(["灯", "人"]);
+      expect(vectors).toEqual([
+        [1, 0],
+        [0, 1],
+      ]);
+      expect(JSON.parse(String(request.mock.calls[0]?.[1]?.body))).toEqual({
+        model: "text-embedding-embeddinggemma-300m",
+        input: ["灯", "人"],
       });
     } finally {
       vi.unstubAllGlobals();
@@ -263,6 +294,24 @@ describe("subjective memory", () => {
       expect(result.ok, result.message).toBe(true);
       expect(simulation.runner.state().tick).toBe(beforeTick);
       expect(simulation.runner.state().memory.records[FIRST]?.recent).toHaveLength(1);
+      expect(simulation.runner.state().memory.records[SECOND]?.recent).toHaveLength(0);
+    } finally {
+      dispose(simulation);
+    }
+  });
+
+  it("keeps a valid cognitive decision when its optional memory candidate has no consumed source", async () => {
+    const simulation = await phase4Simulation({
+      script: {
+        draft: (input: CognitionInput) => ({
+          ...(idleDecision(input) as Record<string, unknown>),
+          memoryEncoding: [{ sourceReferences: ["o99"], text: "没有实际来源的记忆" }],
+        }),
+      },
+    });
+    try {
+      const result = await simulation.runner.runTickToPublication();
+      expect(result.status).toBe("completed");
       expect(simulation.runner.state().memory.records[SECOND]?.recent).toHaveLength(0);
     } finally {
       dispose(simulation);

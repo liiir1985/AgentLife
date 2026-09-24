@@ -194,6 +194,8 @@ describe("system configuration", () => {
   it("resolves the shipped configuration against the models the provider catalog knows", async () => {
     const config = loadSystemConfig();
     expect(resolveModel("cognition").provider).toBe(config.defaultTarget.provider);
+    expect(resolveEmbedding()).toEqual(config.embedding);
+    expect(config.embedding?.provider).toBe("openai-compatible");
     // Imported here rather than at the top: the generated catalog is large and only this
     // case reads it.
     const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");

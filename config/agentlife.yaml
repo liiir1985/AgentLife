@@ -27,7 +27,7 @@ models:
 
 # Embedding 服务由用户安装和运行；这里仅选择已提供服务及表示版本。
 embedding:
-  provider: ollama
-  model: embeddinggemma
-  endpoint: http://localhost:11434/api/embed
+  provider: openai-compatible
+  model: text-embedding-embeddinggemma-300m
+  endpoint: http://127.0.0.1:1234/v1/embeddings
   representation-version: embeddinggemma-v1

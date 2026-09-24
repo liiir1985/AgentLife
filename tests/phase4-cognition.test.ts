@@ -63,6 +63,85 @@ describe("working memory and the cognition barrier", () => {
     }
   }, 40_000);
 
+  it("keeps the immediate action and drops a simultaneous idle proposal", async () => {
+    const simulation = await phase4Simulation({
+      script: {
+        draft: (input: CognitionInput) => ({
+          ...(idleDecision(input) as Record<string, unknown>),
+          speech: "等我看看",
+          steps: [{ action: "wave" }],
+        }),
+      },
+    });
+    try {
+      const result = await simulation.runner.runTickToPublication();
+      expect(result.status).toBe("completed");
+      expect(simulation.runner.state().cognition.records[COMPANION]?.idle).toBeNull();
+      expect(simulation.runner.state().actions.some((action) => action.entityId === COMPANION)).toBe(true);
+    } finally {
+      dispose(simulation);
+    }
+  }, 40_000);
+
+  it("uses current exits for travel and does not queue the same travel goal twice", async () => {
+    let decisions = 0;
+    const simulation = await phase4Simulation({
+      overrides: { "characters/companion.yaml": companionCharacter(SQUARE) },
+      script: {
+        draft: (input: CognitionInput) => {
+          decisions += 1;
+          const exit = input.observations.find((observation) => observation.role === "exit");
+          if (exit?.reference === null || exit === undefined) return idleDecision(input);
+          return {
+            ...(idleDecision(input) as Record<string, unknown>),
+            steps: [{ action: "walk", destination: exit.reference }],
+            idle: null,
+          };
+        },
+      },
+    });
+    try {
+      await simulation.runner.runTickToPublication({
+        plans: [commandPlan("player-say", PLAYER, "agentlife.demo/say", { inputs: { utterance: "等等我" } })],
+      });
+      await simulation.runner.runTickToPublication();
+      const travel = simulation.runner
+        .state()
+        .actions.filter((action) => action.entityId === COMPANION && action.action === "agentlife.demo/walk");
+      expect(travel).toHaveLength(1);
+      expect(decisions).toBeGreaterThanOrEqual(2);
+    } finally {
+      dispose(simulation);
+    }
+  }, 40_000);
+
+  it("refuses travel to an item even when that item was observed", async () => {
+    let itemWasAdmitted = false;
+    const simulation = await phase4Simulation({
+      overrides: { "characters/companion.yaml": companionCharacter(SQUARE) },
+      script: {
+        draft: (input: CognitionInput) => {
+          const item = input.observations.find((observation) => observation.role === "item");
+          if (item?.reference === null || item === undefined) return idleDecision(input);
+          itemWasAdmitted = true;
+          return {
+            ...(idleDecision(input) as Record<string, unknown>),
+            steps: [{ action: "walk", destination: item.reference }],
+            idle: null,
+          };
+        },
+      },
+    });
+    try {
+      const result = await simulation.runner.runTickToPublication();
+      expect(itemWasAdmitted).toBe(true);
+      expect(result.status).toBe("failed");
+      if (result.status === "failed") expect(result.failure.detail).toContain("not a current exit");
+    } finally {
+      dispose(simulation);
+    }
+  }, 40_000);
+
   it("delivers a heard utterance once even when the model leaves consumption empty", async () => {
     const heard: string[] = [];
     const simulation = await phase4Simulation({

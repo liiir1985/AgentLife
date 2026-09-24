@@ -334,7 +334,7 @@ class ObserverRun {
     // An object that comes into or leaves the observer's hands changed, even though
     // its appearance is the same one it had a moment ago.
     const carried = previous !== undefined && previous.held !== subject.held;
-    const changed = described || carried;
+    const changed = described || carried || (previous !== undefined && previous.role !== subject.role);
     const attended = this.attentionAnchors.has(material.anchor) && this.attentionChanged;
     const silent =
       previous !== undefined && !changed && !attended && (this.suppressed[material.anchor] ?? 0) > this.frame.tick;
@@ -361,9 +361,13 @@ class ObserverRun {
         kind === "appearance"
           ? `${this.display(subject)}${material.held ? "现在在你手上" : "出现在这里"}`
           : kind === "change"
-            ? described && before !== null
-              ? `${before}变了：${subject.description}`
-              : `${this.display(subject)}${subject.held ? "现在在你手上" : "不在你手上了"}`
+            ? previous?.role === "exit" && subject.role === "place"
+              ? `你到了${this.display(subject)}`
+              : previous?.role === "place" && subject.role === "exit"
+                ? `${this.display(subject)}现在是离开此地的出口`
+                : described && before !== null
+                  ? `${before}变了：${subject.description}`
+                  : `${this.display(subject)}${subject.held ? "现在在你手上" : "不在你手上了"}`
             : kind === "continuing"
               ? `${this.display(subject)}还在那里`
               : `${this.display(subject)}又出现了：${subject.description}`;
@@ -518,6 +522,8 @@ class ObserverRun {
   /** Reports every tracked subject that is no longer part of the material. */
   private reportDisappearances(channel: string): void {
     const place = this.frame.world.place;
+    const previousPlace = Object.values(this.previous.subjects).find((subject) => subject.role === "place")?.anchor;
+    const observerMoved = previousPlace !== undefined && place !== null && previousPlace !== place.anchor;
     // Continuity is decided by the material, not by what this tick could report: a
     // subject that stays in it keeps its tracking even when it is unreadable now,
     // while a place left behind and an exit that is no longer adjacent lose theirs.
@@ -529,6 +535,9 @@ class ObserverRun {
     for (const [anchor, tracked] of Object.entries({ ...this.subjects })) {
       if (tracked.lastTick === this.frame.tick || present.has(anchor)) continue;
       delete this.subjects[anchor];
+      // Leaving a place changes the observer's view; its people and objects did
+      // not thereby disappear from that place. The new place is reported above.
+      if (observerMoved) continue;
       this.sequence += 1;
       const subject: ObservationSubject = Object.freeze({
         anchor,

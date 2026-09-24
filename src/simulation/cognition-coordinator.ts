@@ -55,6 +55,8 @@ export interface RoundInput {
   readonly entries: Readonly<Record<string, readonly WorkingMemoryEntry[]>>;
   /** Short factual frame per participant: where it is and what it is doing. */
   readonly situations: Readonly<Record<string, string>>;
+  /** Own cognition plans still running or queued when this barrier opened. */
+  readonly ongoingPlans?: Readonly<Record<string, readonly ActionPlan[]>>;
   /** The cognition state this round was opened against. */
   readonly cognition: CognitionState;
   readonly searchMemories?: (characterId: string, query: string) => Promise<readonly RecalledMemory[]>;
@@ -226,8 +228,13 @@ export class CognitionCoordinator {
           open.plans.push(...this.plansOf(open, checked.decision));
           open.consumptions.set(characterId, checked.decision.consumedObservations);
           open.notes.push(`${characterId} decided at attempt ${attempt}: ${this.summaryOf(checked.decision)}`);
+          open.notes.push(...checked.notes.map((note) => `${characterId}: ${note}`));
           this.update(characterId, { state: "decided", detail: this.summaryOf(checked.decision) });
-          this.trace?.record("cognition-attempt-end", { status: "accepted", decision: checked.decision }, identity);
+          this.trace?.record(
+            "cognition-attempt-end",
+            { status: "accepted", decision: checked.decision, notes: checked.notes },
+            identity,
+          );
           return;
         }
         rejection = checked.reason;
@@ -296,11 +303,15 @@ export class CognitionCoordinator {
           })),
       ),
       actions: Object.freeze(
-        [...cognitionActionNames(settings?.allowedActions ?? [])].map(([name, action]) => ({
-          action: name,
-          name: itemLabel(this.config, action),
-          description: itemDescription(this.config, action),
-        })),
+        [...cognitionActionNames(settings?.allowedActions ?? [])].map(([name, action]) => {
+          const command = this.actionCommand(action);
+          return {
+            action: name,
+            name: itemLabel(this.config, action),
+            description:
+              command === undefined ? itemDescription(this.config, action) : String(command.values.description),
+          };
+        }),
       ),
       maxSteps: settings?.maxPlanSteps ?? 1,
       idleWaitLimitTicks: settings?.idleWaitLimitTicks ?? 1,
@@ -320,6 +331,27 @@ export class CognitionCoordinator {
     return undefined;
   }
 
+  /** Uses the same content-authored action meaning as the player command menu. */
+  private actionCommand(action: string): RuntimeConfig["items"][number] | undefined {
+    return this.config.items.find(
+      (item) => item.typeRef === "agentlife.interaction/action-command" && item.values.action === action,
+    );
+  }
+
+  private isTravelAction(action: string): boolean {
+    const args = this.actionCommand(action)?.values.arguments;
+    return (
+      Array.isArray(args) &&
+      args.some(
+        (raw) =>
+          typeof raw === "object" &&
+          raw !== null &&
+          !Array.isArray(raw) &&
+          (raw as Record<string, unknown>).candidates === "current-exits",
+      )
+    );
+  }
+
   /** Turns one validated decision into the body plans of this round. */
   private plansOf(open: OpenRound, decision: CognitiveDecision): readonly ActionPlan[] {
     const entries = open.input.entries[decision.characterId] ?? [];
@@ -335,6 +367,16 @@ export class CognitionCoordinator {
       if (decision.speech !== null && step.action === speech?.action) continue;
       const target = step.target === undefined ? undefined : anchorOf(step.target);
       const destination = step.destination === undefined ? undefined : anchorOf(step.destination);
+      if (
+        destination !== undefined &&
+        this.isTravelAction(step.action) &&
+        (open.input.ongoingPlans?.[decision.characterId] ?? []).some((plan) =>
+          plan.steps.some((existing) => existing.action === step.action && existing.destination === destination),
+        )
+      ) {
+        open.notes.push(`${decision.characterId}: travel to ${destination} is already running or queued`);
+        continue;
+      }
       steps.push(
         Object.freeze({
           action: step.action,
@@ -363,28 +405,35 @@ export class CognitionCoordinator {
     characterId: string,
     draft: CognitiveDecision,
     recalled: ReadonlySet<string>,
-  ): { readonly ok: true; readonly decision: CognitiveDecision } | { readonly ok: false; readonly reason: string } {
+  ):
+    | { readonly ok: true; readonly decision: CognitiveDecision; readonly notes: readonly string[] }
+    | { readonly ok: false; readonly reason: string } {
     const settings = cognitionSettings(this.config);
     if (settings === undefined) return { ok: false, reason: "cognition is not configured" };
     const entries = open.input.entries[characterId] ?? [];
     const references = new Set(
       entries.map((entry) => entry.reference).filter((reference): reference is string => reference !== null),
     );
+    const previousAttention = new Set(this.cognition.record(open.input.cognition, characterId)?.attention ?? []);
     for (const reference of draft.attention)
-      if (reference === "" || !references.has(reference))
+      if (reference === "" || (!references.has(reference) && !previousAttention.has(reference)))
         return { ok: false, reason: `attention names ${reference}, which was never admitted` };
     for (const reference of draft.consumedObservations)
       if (reference === "" || !references.has(reference))
         return { ok: false, reason: `consumption names ${reference}, which was never admitted` };
     const consumed = new Set(draft.consumedObservations);
-    for (const encoding of draft.memoryEncoding ?? []) {
-      if (
-        encoding.text.trim() === "" ||
-        encoding.sourceReferences.length === 0 ||
-        encoding.sourceReferences.some((reference) => !consumed.has(reference))
-      )
-        return { ok: false, reason: "memory encoding must cite observations this decision used" };
-    }
+    const memoryEncoding = (draft.memoryEncoding ?? []).filter(
+      (encoding) =>
+        encoding.text.trim() !== "" &&
+        encoding.sourceReferences.length > 0 &&
+        encoding.sourceReferences.every((reference) => consumed.has(reference)),
+    );
+    const notes =
+      memoryEncoding.length === (draft.memoryEncoding ?? []).length
+        ? []
+        : [
+            `discarded ${(draft.memoryEncoding ?? []).length - memoryEncoding.length} memory encoding candidate(s) without current consumed sources`,
+          ];
     for (const claim of draft.profileClaims ?? []) {
       if (
         !references.has(claim.subjectReference) ||
@@ -440,27 +489,48 @@ export class CognitionCoordinator {
         if (!references.has(reference))
           return { ok: false, reason: `${step.action} names ${reference}, which was never admitted` };
       }
+      const command = this.actionCommand(action);
+      const argumentsValue = command?.values.arguments;
+      for (const raw of Array.isArray(argumentsValue) ? argumentsValue : []) {
+        if (typeof raw !== "object" || raw === null || Array.isArray(raw)) continue;
+        const argument = raw as Record<string, unknown>;
+        if (argument.kind !== "entity" || (argument.binding !== "target" && argument.binding !== "destination"))
+          continue;
+        const reference = step[argument.binding];
+        if (reference === undefined) return { ok: false, reason: `${step.action} requires ${argument.binding}` };
+        const role = entries.find((entry) => entry.reference === reference)?.role;
+        if (argument.candidates === "current-exits" && role !== "exit")
+          return { ok: false, reason: `${step.action} destination ${reference} is not a current exit` };
+        if ((argument.candidates === "visible-items" || argument.candidates === "held-items") && role !== "item")
+          return { ok: false, reason: `${step.action} target ${reference} is not an item` };
+        if (argument.candidates === "visible-entities" && role !== "item" && role !== "character")
+          return { ok: false, reason: `${step.action} target ${reference} is not a visible entity` };
+      }
       steps.push(Object.freeze({ ...step, action }));
     }
-    if (draft.steps.length > 0 && draft.idle !== null)
-      return { ok: false, reason: "a decision with a plan must not also declare an idle commitment" };
+    const hasImmediateAction = draft.steps.length > 0 || draft.speech !== null;
+    const idle = hasImmediateAction ? null : draft.idle;
+    if (hasImmediateAction && draft.idle !== null)
+      notes.push("discarded idle commitment because this decision already acts or speaks");
     if (draft.steps.length === 0 && draft.speech === null) {
-      if (draft.idle === null) return { ok: false, reason: "the decision neither acts nor commits to a bounded wait" };
-      const idle = this.checkIdle(open.input.tick, draft.idle, settings.idleWaitLimitTicks);
-      if (!idle.ok) return idle;
+      if (idle === null) return { ok: false, reason: "the decision neither acts nor commits to a bounded wait" };
+      const checkedIdle = this.checkIdle(open.input.tick, idle, settings.idleWaitLimitTicks);
+      if (!checkedIdle.ok) return checkedIdle;
     }
     return {
       ok: true,
+      notes: Object.freeze(notes),
       decision: Object.freeze({
         ...draft,
         characterId,
+        idle,
         attention: Object.freeze([...draft.attention]),
         questions: Object.freeze([...draft.questions]),
         intentionChanges: Object.freeze([...draft.intentionChanges]),
         steps: Object.freeze(steps),
         consumedObservations: Object.freeze([...draft.consumedObservations]),
         consideredIntentions: Object.freeze([...draft.consideredIntentions]),
-        ...(draft.memoryEncoding === undefined ? {} : { memoryEncoding: Object.freeze([...draft.memoryEncoding]) }),
+        ...(draft.memoryEncoding === undefined ? {} : { memoryEncoding: Object.freeze(memoryEncoding) }),
         ...(draft.profileClaims === undefined ? {} : { profileClaims: Object.freeze([...draft.profileClaims]) }),
         ...(draft.profileReconnections === undefined
           ? {}

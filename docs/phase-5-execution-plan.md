@@ -58,7 +58,7 @@ Recent 不设置容量上限，按配置的模拟时间窗口到期。到期且�
 
 ## 7. P5.5：本地 embedding HTTP 适配
 
-定义可替换的 `EmbeddingProvider`，分别对痕迹和查询文本生成向量。默认实现调用本地 Ollama 的 `POST /api/embed`；根目录 `config/agentlife.yaml` 选择提供器、模型、服务地址和表示版本，演示系统设置示例使用 `http://localhost:11434/api/embed` 与 `embeddinggemma`。适配器核对响应向量数量、维度及有限数值，记录提供器/模型/表示版本；同一检索只比较同一表示版本的向量，在进程内计算余弦相似度。演示和普通测试使用确定性假提供器，不依赖安装 Ollama 或网络。
+定义可替换的 `EmbeddingProvider`，分别对痕迹和查询文本生成向量。支持 Ollama `POST /api/embed` 和 OpenAI 兼容 `/v1/embeddings` 接口；根目录 `config/agentlife.yaml` 选择提供器、模型、服务地址和表示版本。适配器按所选协议核对响应向量数量、顺序、维度及有限数值；同一检索只比较同一表示版本的向量，在进程内计算余弦相似度。演示和普通测试使用确定性假提供器，不依赖外部服务。
 
 用户提供已运行且已加载所选模型的 embedding HTTP 服务后，人工验收只检查系统配置能连接该地址、`/api/embed` 能为中文演示线索返回向量，以及阶段 5 的真实服务检索流程能够完成。服务安装、启动、模型下载和运行维护均不写入开发任务或验收责任；请求与响应形状以[Ollama 官方 embedding API 文档](https://docs.ollama.com/api/embed)为准。
 
