@@ -1,0 +1,28 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "AgentLife: 调试 TUI（脚本模型）",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/tui/app.ts",
+      "cwd": "${workspaceFolder}",
+      "runtimeArgs": ["--import", "tsx"],
+      "args": ["--use_faux"],
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "name": "AgentLife: 调试 TUI（配置模型）",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/tui/app.ts",
+      "cwd": "${workspaceFolder}",
+      "runtimeArgs": ["--import", "tsx"],
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "skipFiles": ["<node_internals>/**"]
+    }
+  ]
+}
